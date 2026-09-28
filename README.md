@@ -1,0 +1,82 @@
+# chatgpt-cli
+
+> **Unofficial API disclaimer:** This CLI uses private ChatGPT web app APIs discovered by reverse engineering. It works with the current web app as of 28 September 2026, but OpenAI can change those APIs without notice. There is no guarantee it will keep working. This project is not affiliated with or endorsed by OpenAI. Contributions that help keep it working are welcome.
+
+Search, export and manage your ChatGPT history from the terminal. `chatgpt` uses your existing [Dia](https://www.diabrowser.com) session on macOS, keeps a local SQLite index, and offers a terminal UI for reviewing conversations. Search can use full text, a local embedding model, or both. Optional Jev and Luna classification suggests what to keep, archive or delete.
+
+## Quick start
+
+You need macOS, [Bun](https://bun.sh) 1.3 or later, and Dia's **Personal** profile logged in to [chatgpt.com](https://chatgpt.com).
+
+```sh
+git clone https://github.com/planetaryescape/chatgpt-cli.git
+cd chatgpt-cli
+bun install --frozen-lockfile
+bun link
+chatgpt sync
+chatgpt list --limit 10
+```
+
+The first command that contacts ChatGPT may ask for access to the macOS Keychain item **Dia Safe Storage**. Choose **Always Allow** to avoid a prompt on every run. `sync` builds the local conversation index; later runs pick up changes. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
+
+## What you can do
+
+```sh
+chatgpt search-index                                  # build local full-text and semantic indexes
+chatgpt search "garden lighting"                      # full-text search
+chatgpt search --semantic "ideas for a small garden"   # local embedding search
+chatgpt search --hybrid "garden lighting"              # combine both
+chatgpt export <chat-id> > conversation.md            # export a chat as Markdown
+chatgpt project list                                  # inspect ChatGPT projects
+chatgpt memory list --limit 10                        # read saved memories
+```
+
+Search, list and memory commands offer pipeable `--format json`, `csv` and `ids` output where applicable. For example:
+
+```sh
+chatgpt search "garden lighting" --format json | jq -r '.[].title'
+```
+
+The search index downloads a local embedding model on first use. Conversation text and search queries stay on your machine during embedding. [Search your history](docs/how-to/search-history.md) covers indexing, ranking and output formats.
+
+### Review and clean up
+
+Classification is optional. It requires a [TypeSafe](https://typesafe.ai) API key for Jev, plus either an OpenAI API key or the `codex` CLI for Luna review and titles. Configure keys with `chatgpt configure jev` and, if needed, `chatgpt configure openai`. An Anthropic key or `claude` can serve as a fallback for long-chat summaries. Model API usage may incur charges.
+
+```sh
+chatgpt classify                         # judge new or changed chats; deepen unsure cases
+chatgpt stats                            # see suggestions and topic counts
+chatgpt tui                              # read and decide one chat at a time
+chatgpt archive --suggest archive --dry-run
+chatgpt delete --suggest delete --dry-run
+```
+
+Suggestions are advisory. The dry runs show the selected chats before anything changes; the real archive and delete commands ask for confirmation. Deleting a chat is irreversible. Saved memories have a separate `chatgpt memory classify` command and are never deleted by chat cleanup. See [your first cleanup](docs/tutorial.md), [bulk cleanup](docs/how-to/clean-up-with-jev.md) and [saved memories](docs/how-to/manage-memories.md).
+
+## Data and privacy
+
+The CLI reads the ChatGPT session from Dia and exchanges it for an access token in memory. It stores the conversation index, cached transcripts, judgments and search vectors in `~/.local/share/chatgpt-cli/index.db`; optional model keys live in `~/.config/chatgpt-cli/config.json`. Neither location belongs in Git.
+
+Local embedding does not send transcript text to Hugging Face. Classification and summarisation **do** send the relevant chat or saved-memory content to the configured model providers. Read [data, files and credentials](docs/reference/data.md) before using those features on sensitive conversations.
+
+## Documentation
+
+- [CLI commands and flags](docs/reference/cli.md)
+- [TUI keys](docs/reference/tui.md)
+- [Configuration](docs/how-to/configure.md)
+- [Exporting conversations](docs/how-to/export-a-conversation.md)
+- [Moving chats into projects](docs/how-to/add-chats-to-a-project.md)
+- [How the private API was observed](docs/explanation/chatgpt-api.md)
+- [Maintainer guide](docs/maintainers.md)
+
+## Contributing
+
+Bug reports and pull requests are welcome, especially when a ChatGPT web app change breaks an observed endpoint. Include the command, expected and actual behavior, and a redacted response shape or error. Keep cookies, tokens, HAR files and conversation text out of issues and commits.
+
+```sh
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+```
+
+Tests use fixtures and do not need a ChatGPT account. API, rendering and classification changes also need a live check against your own account; record the observed behavior without publishing private data. See the [maintainer guide](docs/maintainers.md) for the change procedure.

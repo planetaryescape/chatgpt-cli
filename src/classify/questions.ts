@@ -1,0 +1,123 @@
+import type { SystemOneResult } from "@typesafe-ai/sdk";
+
+// Bump when any question or criterion changes: judgments from an older version
+// are treated as stale and redone.
+export const QUESTIONS_VERSION = "2026-09-28.9";
+
+export const TOPICS = {
+	employer_work: "Work for the user's employer: projects, code, colleagues, hiring, meetings, reviews, or internal career processes",
+	side_projects: "The user's own products, startups, and tools: product strategy, design, engineering, branding, marketing, funding, or launch",
+	coding_general: "General software, programming, infrastructure, AI, or technology questions not mainly about the user's employer or the user's own product",
+	writing_creativity: "Independent writing or creative work: essays, books, talks, fiction, poetry, writing craft, image creation or media projects. A routine email, CV, product document, work report or technical explanation belongs to its subject topic, not here",
+	faith: "Faith inquiry, Bible study, theology, church ministry, devotion, or a piece whose primary purpose is religious teaching or reflection",
+	family_relationships: "Marriage, family, parenting, childcare, friendships, or relationship dynamics; use health for clinical questions",
+	health: "Physical or mental health, symptoms, treatment, medication, pregnancy, infant health, nutrition, exercise, or fitness",
+	home_money_admin: "Housing, home design and repairs, household operations, personal finance, insurance, tax, legal or life administration, and consumer disputes",
+	career_employment: "Job search, applications, interviews, employment, and career decisions outside day-to-day work for the current employer",
+	travel_transport: "Trips, travel logistics, transport, driving, vehicles, aviation, and related arrangements",
+	learning_culture: "Standalone learning or general-interest research, history, books, film, culture, and hobbies when no more specific primary topic fits",
+	other: "Only when the main purpose is genuinely unclear or none of these recurring topics fits",
+} as const;
+
+export type Topic = keyof typeof TOPICS;
+
+export const QUESTIONS = {
+	worth_keeping: {
+		type: "score",
+		instructions:
+			"How much value would the user get from being able to find this ChatGPT conversation again later? Judge by what the conversation contains, not by how long it is.",
+		criteria: [
+			"None: empty, a test, an accidental start, or nothing of substance",
+			"Low: a generic question with a generic answer the user could get again from a web search or by asking afresh, however useful it was at the time",
+			"Moderate: specific to the user and hard to reproduce, such as advice on their situation, analysis of their data or code, or a solution worked out for their problem",
+			"High: lasting value such as decisions, plans, drafts, personal records, or thinking the user would want to keep",
+		],
+	},
+	nothing_there: {
+		type: "noul",
+		instructions:
+			"Is this conversation empty or trivial: no real content beyond a greeting, a test message, an accidental start, or a question that never got a substantive answer?",
+		criteria: {
+			true: "Empty or trivial; deleting it loses nothing",
+			false: "Contains at least one substantive exchange",
+		},
+	},
+	unfinished: {
+		type: "noul",
+		instructions:
+			"Did the user leave substantive work in progress here that they may want to return to, such as an open plan, a draft, an idea still being shaped, or a problem they were actively working through? A single question that simply never got an answer is not work in progress.",
+		criteria: {
+			true: "Substantive work was left open or in progress",
+			false: "No substantive work left open: the exchange ended, or it never got going",
+		},
+	},
+	personal_record: {
+		type: "noul",
+		instructions:
+			"Does this conversation record something about the user's own life they may need later, such as health, money, legal or housing matters, family events, or an important personal decision?",
+		criteria: {
+			true: "Holds personal information or a record worth keeping",
+			false: "No personal record of lasting importance",
+		},
+	},
+	re_askable: {
+		type: "noul",
+		instructions:
+			"Could the user get the same value again simply by asking again, so nothing would be lost if this conversation were deleted? That is true of quick help: a question about general knowledge, curiosity, a how-to, or a practical problem (pests, cooking, a gadget, a command, what a rental car class includes), with a straightforward answer, even with several follow-ups on the same question and even when the user mentions their own situation, such as 'my bin', 'my car', or 'my trip'. Help that was ephemeral also counts: it served a moment that has now passed, such as sorting out a specific trip, booking, or purchase, and the user would simply ask again if the need came back. It is false if the conversation holds something that can't be re-asked: a decision the user made, their personal records (health history, finances, legal or housing matters), a plan, a draft, the user's own data or writing, or brainstorming.",
+		criteria: {
+			true: "Quick help; asking again would give the same value",
+			false: "Holds something that would be lost if deleted",
+		},
+	},
+	time_bound: {
+		type: "noul",
+		instructions: "Was the practical value of this conversation tied to a specific event, deadline, trip, purchase, appointment, live situation, or short-lived choice? This can be true whether that moment is past or still upcoming. General knowledge, a reusable plan or artifact, a lasting personal record, and ongoing work are not time-bound just because the conversation is old.",
+		criteria: {
+			true: "The chat mainly served a particular moment or finite window",
+			false: "Its value is not mainly limited to one moment or window",
+		},
+	},
+	overtaken_by_time: {
+		type: "noul",
+		instructions: "As of the as_of date in the conversation state, has that specific moment or window passed so this exact chat no longer has practical value? Count one-off logistics, availability, event preparation, or live status that is now obsolete, even if the user mentioned personal details to get help. Do not count a trip or event merely because it is in the past when the chat preserves a meaningful decision, personal history, claim, financial or legal record, reusable artifact, original thinking, or work to resume. Do not infer that a current need is over from the chat's age alone. If the date or outcome is unclear, answer uncertain rather than assuming it passed.",
+		criteria: {
+			true: "The finite need has passed and deleting the chat loses no lasting value",
+			false: "The need is current, its timing is unclear, or the chat preserves lasting value",
+		},
+	},
+	brainstorming: {
+		type: "noul",
+		instructions:
+			"Does the user develop their own idea for a piece or project they want to create, such as an article, essay, book, talk, sermon, devotional, Bible study, app, or product? Drafting or outlining the piece counts. A chat that begins as another subject can turn into brainstorming. Routine work on an already settled task, a tutorial or interview exercise, an assistant's hypothetical idea, and creating an artifact for someone else's product do not count just because they involve making something.",
+		criteria: {
+			true: "The user develops an idea for something they want to create",
+			false: "No brainstorming toward something the user wants to create",
+		},
+	},
+	product_idea: {
+		type: "noul",
+		instructions: "Did the user originate, compare, or substantially shape a concept or new direction for an app, tool, product, or business they intend to build or pursue? Count meaningful feature ideation or a PRD while its requirements are being decided. Do not count generic coding or learning, debugging, implementation of an already decided feature, a job interview exercise, a hypothetical example, marketing copy for a settled product, or work on an employer's or another organization's product. This question is about the user's own product thinking, not merely whether software or a product is mentioned.",
+		criteria: {
+			true: "The user develops a substantive idea or direction for their own product or business",
+			false: "No user-owned product ideation; any product mention is context or routine work",
+		},
+	},
+	brainstorm_for: {
+		type: "choice",
+		instructions: "If the user is brainstorming, classify the primary purpose of what they are creating. Choose product only for a product, tool, app, or business they are considering or shaping, consistent with product_idea. Choose sermon when the piece is primarily religious teaching, devotion, or reflection. Faith references, Christian influences, or spiritual themes within a broader piece do not by themselves make it a sermon. A faith question without a piece being developed is not brainstorming.",
+		criteria: {
+			writing: "An article, essay, newsletter, book, or talk whose main purpose is broader than religious teaching, even if faith informs parts of it",
+			sermon: "A sermon, devotional, Bible study, or article, essay, book, or talk whose main purpose is religious teaching or reflection",
+			product: "The user's own app, product, tool, business, or substantial new feature being conceived or shaped",
+			other: "Some other creative or personal project",
+			none: "The user is not brainstorming",
+		},
+	},
+	topic: {
+		type: "choice",
+		instructions: "Choose one topic for the conversation's underlying purpose, not the format of the answer or every subject mentioned. Work for the user's employer is employer_work; work on their own products is side_projects; technical fixes outside those projects are coding_general. Health, family, housing, career, and travel have their own topics. Emails, applications, CVs, product docs, work reports, and other task-specific text follow that domain. Use writing_creativity only for independent creative or editorial work or writing craft, including visual art, and faith when religious inquiry, teaching, devotion, or ministry is the main purpose. Faith references in broader writing do not make it a faith chat. For infant or family questions, use health for symptoms or treatment and family_relationships for relationships or parenting routines. Use other only when no named topic fits.",
+		criteria: TOPICS,
+	},
+} as const;
+
+export type Answers = SystemOneResult<typeof QUESTIONS>["answers"];

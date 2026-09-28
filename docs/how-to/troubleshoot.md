@@ -1,0 +1,94 @@
+# Troubleshooting
+
+Find the message you're seeing and follow its fix.
+
+## macOS asks for Keychain access on every run
+
+`chatgpt` reads the "Dia Safe Storage" Keychain entry to decrypt Dia's cookies. Choose **Always Allow** in the prompt. If you chose **Allow**, it asks again next time.
+
+## `Could not read "Dia Safe Storage" from the Keychain`
+
+You denied the Keychain prompt, or Dia isn't installed. Run the command again and choose **Always Allow**.
+
+## `No ChatGPT session in Dia's Personal profile`
+
+Dia has no chatgpt.com login in its Personal profile.
+
+1. Open chatgpt.com in Dia's Personal profile and log in.
+2. Run `chatgpt sync`.
+
+## `ChatGPT session has expired`
+
+Open chatgpt.com in Dia so it refreshes the session cookie, then retry.
+
+## `403 from /api/auth/session` or `Cloudflare kept challenging requests`
+
+Cloudflare challenged the request. The client already retries on a fresh connection up to four times. If it still fails:
+
+1. Wait a minute and retry.
+2. If it keeps failing, Cloudflare or the API has changed. See [The chatgpt.com web API](../explanation/chatgpt-api.md#when-it-breaks).
+
+## Rate limited by ChatGPT
+
+```text
+rate limited by ChatGPT; waiting 5s
+```
+
+Fetching single chats quickly triggers ChatGPT's rate limit. The client waits 5, 10, 20 and 40 seconds before giving up. Bulk commands (`classify`, `sync`) use the batch endpoint, which doesn't hit this limit. If `export` or the TUI hits it, wait a minute.
+
+## `No local index yet. Run chatgpt sync first.`
+
+Run:
+
+```sh
+chatgpt sync
+```
+
+## `No conversation matching "<id>" in the index`
+
+The chat isn't in your local index. It's new, or it was deleted. Run `chatgpt sync`, or pass the full chat link, which doesn't need the index.
+
+## `"<prefix>" matches N conversations`
+
+Use a longer id prefix, or the full id.
+
+## `TYPESAFE_API_KEY is not configured`
+
+Chat and memory classification need a TypeSafe key. Run `chatgpt configure jev` or set an environment variable:
+
+```sh
+export TYPESAFE_API_KEY=<key>
+```
+
+## No summariser available or long chats skipped in step 3
+
+Summaries need an OpenAI or Anthropic API key, `codex`, or `claude`. Luna's final review and local titles need an OpenAI API key or `codex`. Run `chatgpt configure` to inspect stored-key status. Short chats can receive Jev judgments while no Luna provider is available, but the command reports unfinished review or title generation.
+
+## `No summariser succeeded. gpt-6-luna: … | claude-haiku: …`
+
+Both summary providers failed for that chat. The message includes each one's error. Check configured API keys or CLI logins (`codex login`, `claude`), then re-run `chatgpt classify`; only the failed chats are retried.
+
+## `ChatGPT returned a server error` on `rename`
+
+Renaming chats from before 2025 returns a server error even though the rename usually takes effect. Check:
+
+```sh
+chatgpt sync
+chatgpt list --title "<new title>"
+```
+
+## `Shared links (/share/…) aren't supported`
+
+Open the shared chat in ChatGPT and use its own `/c/<id>` link.
+
+## `--copy uses pbcopy and only works on macOS`
+
+Use `-o <file>` instead of `--copy`.
+
+## The TUI shows `Loading transcript…` for a while
+
+The chat's transcript isn't cached yet, so the TUI fetches it. If it stays, you've probably hit the rate limit; wait, or run `chatgpt classify` to cache every transcript in bulk.
+
+## Counts look wrong after deleting in the browser
+
+Run `chatgpt sync --full`. A normal sync can't see deletions made outside `chatgpt`.
