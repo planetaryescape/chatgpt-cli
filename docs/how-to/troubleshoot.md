@@ -4,22 +4,26 @@ Find the message you're seeing and follow its fix.
 
 ## macOS asks for Keychain access on every run
 
-`chatgpt` reads the "Dia Safe Storage" Keychain entry to decrypt Dia's cookies. Choose **Always Allow** in the prompt. If you chose **Allow**, it asks again next time.
+`chatgpt` reads the selected Chromium browser's **Safe Storage** Keychain entry to decrypt its cookies. Choose **Always Allow** in the prompt. If you chose **Allow**, it asks again next time. Firefox and Safari do not use this Keychain step.
 
 ## `Could not read "Dia Safe Storage" from the Keychain`
 
-You denied the Keychain prompt, or Dia isn't installed. Run the command again and choose **Always Allow**.
+You denied the Keychain prompt, or Dia isn't installed. Run the command again and choose **Always Allow**. The error names the browser's Keychain item when you select another Chromium browser.
 
-## `No ChatGPT session in Dia's Personal profile`
+## `No ChatGPT session in <browser>`
 
-Dia has no chatgpt.com login in its Personal profile.
+The selected browser profile has no usable chatgpt.com session.
 
-1. Open chatgpt.com in Dia's Personal profile and log in.
-2. Run `chatgpt sync`.
+1. Open chatgpt.com in your browser and log in.
+2. Run `chatgpt sync`. If you use several browsers or profiles, choose one: `chatgpt --browser chrome --profile "Profile 1" sync`.
+
+## Safari cookies are blocked by macOS
+
+Grant Full Disk Access to the terminal app running `chatgpt`, then retry `chatgpt --browser safari sync`. Safari stores cookies in its protected application container.
 
 ## `ChatGPT session has expired`
 
-Open chatgpt.com in Dia so it refreshes the session cookie, then retry.
+Open chatgpt.com in the browser named in the error so it refreshes the session cookie, then retry.
 
 ## `403 from /api/auth/session` or `Cloudflare kept challenging requests`
 

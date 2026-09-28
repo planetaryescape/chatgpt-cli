@@ -1,4 +1,17 @@
-# Configure model API keys
+# Configure browser and model API keys
+
+## Choose a ChatGPT browser
+
+`chatgpt` uses the macOS default browser unless you select another one. Put global flags before the command:
+
+```sh
+chatgpt --browser chrome sync
+chatgpt --browser chrome --profile "Profile 1" sync
+```
+
+Supported browser names are `safari`, `chrome`, `firefox`, `dia`, `arc`, `brave` and `edge`. `--profile` takes a Chromium or Firefox profile directory name. To keep the choice for your shell, set `CHATGPT_BROWSER` and optionally `CHATGPT_BROWSER_PROFILE`; no session token is saved in the CLI config. If you use different ChatGPT accounts, give each one a separate `XDG_DATA_HOME` so their local indexes do not mix.
+
+## Model API keys
 
 ```sh
 chatgpt configure                 # show which keys are stored, never their values

@@ -2,7 +2,7 @@
 
 In this tutorial you index your ChatGPT history, have Jev judge every chat, review its delete suggestions in the terminal UI, and delete the ones you agree with. It takes about 20 minutes, most of it waiting on the first `classify`.
 
-Before you start, finish the [quick start](../README.md#quick-start) and check you're logged in to chatgpt.com in Dia's Personal profile.
+Before you start, finish the [quick start](../README.md#quick-start) and check you're logged in to chatgpt.com in a supported browser.
 
 ## 1. Index your chats
 
@@ -18,7 +18,7 @@ Listed 3 archived chat(s) (0.7s)
 Full sync: 45 chats (42 active, 3 archived), +45 vs before, in 3.9s.
 ```
 
-macOS asks for Keychain access to "Dia Safe Storage" the first time. Choose **Always Allow**, or it will ask on every run.
+If you use a Chromium browser, macOS may ask for Keychain access to that browser's Safe Storage item the first time. Choose **Always Allow**, or it will ask on every run. Safari may require Full Disk Access for your terminal.
 
 Check the index:
 

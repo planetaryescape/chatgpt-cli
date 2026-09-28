@@ -32,7 +32,11 @@ import { formatSearchResults, type SearchOutputFormat, type SearchResult } from 
 import { searchLocal, type SearchMode } from "./search/query.ts";
 import { SearchStore } from "./search/store.ts";
 
-const client = new ChatGPTClient();
+const program = new Command("chatgpt")
+	.description("Manage your ChatGPT conversations from the terminal (uses your browser login).")
+	.option("--browser <name>", "use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge")
+	.option("--profile <name>", "use a browser profile directory (with --browser)");
+const client = new ChatGPTClient(() => ({ browser: program.opts().browser, profile: program.opts().profile }));
 const index = new ConversationIndex();
 const store = new ClassificationStore(index.db);
 const memoryStore = new MemoryClassificationStore(index.db);
@@ -41,7 +45,6 @@ const deepClassifier = new DeepClassifier(client, store);
 const searchStore = new SearchStore(index.db);
 const embedder = new LocalEmbedder();
 const searchIndexer = new SearchIndexer(client, index, store, searchStore, embedder);
-const program = new Command("chatgpt").description("Manage your ChatGPT conversations from the terminal (uses your Dia login).");
 
 function positiveLimit(raw: string): number {
 	const limit = Number(raw);

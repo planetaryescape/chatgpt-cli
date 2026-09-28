@@ -18,9 +18,13 @@ Shared behaviour:
 ```text
 Usage: chatgpt [options] [command]
 
-Manage your ChatGPT conversations from the terminal (uses your Dia login).
+Manage your ChatGPT conversations from the terminal (uses your browser login).
 
 Options:
+  --browser <name>                use a specific browser: dia, chrome, safari,
+                                  firefox, arc, brave, or edge
+  --profile <name>                use a browser profile directory (with
+                                  --browser)
   -h, --help                      display help for command
 
 Commands:

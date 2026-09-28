@@ -47,6 +47,8 @@ sqlite3 ~/.local/share/chatgpt-cli/index.db "select model, count(*) from summari
 | `TYPESAFE_API_KEY` | Jev, during `classify` | configured `jev` key; otherwise required |
 | `OPENAI_API_KEY` | Luna review, local titles, and first summary provider | configured key, then Codex CLI if absent |
 | `ANTHROPIC_API_KEY` | summary fallback | configured key, then Claude CLI if absent |
+| `CHATGPT_BROWSER` | select a browser session (`dia`, `chrome`, `safari`, `firefox`, `arc`, `brave`, `edge`) | macOS default browser |
+| `CHATGPT_BROWSER_PROFILE` | select a Chromium or Firefox profile directory | browser's last used or first session profile |
 | `XDG_CONFIG_HOME` | where `config.json` lives | `~/.config` |
 | `XDG_DATA_HOME` | where `index.db` lives | `~/.local/share` |
 | `XDG_CACHE_HOME` | where the embedding model is cached | `~/.cache` |
@@ -56,13 +58,13 @@ sqlite3 ~/.local/share/chatgpt-cli/index.db "select model, count(*) from summari
 
 | Credential | Source | Needed by |
 |---|---|---|
-| ChatGPT session | Dia's Personal profile cookie store (`~/Library/Application Support/Dia/User Data/Default/Cookies`), decrypted with the Keychain entry "Dia Safe Storage" | every command that talks to ChatGPT |
+| ChatGPT session | Local browser cookie store; Chromium cookies are decrypted with that browser's macOS Keychain item, Firefox cookies are in `cookies.sqlite`, and Safari cookies are in `Cookies.binarycookies` | every command that talks to ChatGPT |
 | ChatGPT access token | exchanged from the session at `/api/auth/session` on each run, kept in memory only | same |
 | TypeSafe key | `TYPESAFE_API_KEY` or configured `jev` key | chat and memory classification, `--check` |
 | OpenAI key or Codex login | `OPENAI_API_KEY`, configured `openai` key, then existing `codex` login | summarising long chats, Luna review and local titles |
 | Anthropic key or Claude login | `ANTHROPIC_API_KEY`, configured `anthropic` key, then existing `claude` login | summary fallback |
 
-`chatgpt configure` writes only the API keys you enter to `config.json` with mode `0600`. The ChatGPT session is read fresh from Dia on each run, so logging out of ChatGPT in Dia also logs `chatgpt` out.
+`chatgpt configure` writes only the API keys you enter to `config.json` with mode `0600`. The ChatGPT session is read fresh from the selected browser on each run; logging out there also logs `chatgpt` out. The selected browser is not saved in `config.json`.
 
 ## What goes where
 

@@ -1,18 +1,18 @@
 # How it works
 
-How `chatgpt` gets from your Dia login to a delete suggestion, and why each piece is built the way it is.
+How `chatgpt` gets from your browser login to a delete suggestion, and why each piece is built the way it is.
 
 ## The path of a request
 
 ```text
-Dia cookie store ──(Keychain key)──▶ session cookie ──▶ /api/auth/session ──▶ bearer token
-                                                                                 │
-                                        impit (Chrome TLS fingerprint) ◀─────────┘
-                                                  │
-                                           chatgpt.com/backend-api
+Browser cookie store ──▶ session cookie ──▶ /api/auth/session ──▶ bearer token
+                                                                      │
+                             impit (Chrome TLS fingerprint) ◀─────────┘
+                                       │
+                                chatgpt.com/backend-api
 ```
 
-1. **`src/auth/dia-cookies.ts`** copies Dia's cookie database and decrypts the chatgpt.com cookies. It uses Chromium's macOS scheme: AES-128-CBC with a key derived from the "Dia Safe Storage" Keychain password. Reading Dia's own login means there's no separate sign-in, no copied tokens, and nothing to refresh by hand.
+1. **`src/auth/browser-cookies.ts`** selects the macOS default browser, or one named with `--browser`. Chromium profiles use a read-only SQLite connection and decrypt chatgpt.com cookies with a key derived from that browser's Safe Storage Keychain password. Firefox reads its SQLite cookie store; Safari reads its binary cookie store. `--profile` selects a specific Chromium or Firefox profile. There is no separate sign-in or stored ChatGPT token.
 2. **`src/api/client.ts`** exchanges the session cookie for a bearer token, then calls the API. Every request goes through `impit`, an HTTP client that impersonates Chrome's TLS fingerprint. Plain `fetch` and `curl` are challenged by Cloudflare, and so is headless Chrome. A visible browser gets through, but opening one for every command isn't workable. It also retries Cloudflare challenges on a fresh connection, and 429s and gateway errors with backoff.
 3. **`src/api/conversations.ts`** holds one function per endpoint. [The chatgpt.com web API](chatgpt-api.md) records each endpoint's observed behaviour.
 

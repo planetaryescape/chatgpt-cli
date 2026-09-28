@@ -2,11 +2,11 @@
 
 > **Unofficial API disclaimer:** This CLI uses private ChatGPT web app APIs discovered by reverse engineering. It works with the current web app as of 28 September 2026, but OpenAI can change those APIs without notice. There is no guarantee it will keep working. This project is not affiliated with or endorsed by OpenAI. Contributions that help keep it working are welcome.
 
-Search, export and manage your ChatGPT history from the terminal. `chatgpt` uses your existing [Dia](https://www.diabrowser.com) session on macOS, keeps a local SQLite index, and offers a terminal UI for reviewing conversations. Search can use full text, a local embedding model, or both. Optional Jev and Luna classification suggests what to keep, archive or delete.
+Search, export and manage your ChatGPT history from the terminal. `chatgpt` uses your existing browser session on macOS, keeps a local SQLite index, and offers a terminal UI for reviewing conversations. Search can use full text, a local embedding model, or both. Optional Jev and Luna classification suggests what to keep, archive or delete.
 
 ## Quick start
 
-You need macOS, [Bun](https://bun.sh) 1.3 or later, and Dia's **Personal** profile logged in to [chatgpt.com](https://chatgpt.com).
+You need macOS, [Bun](https://bun.sh) 1.3 or later, and a browser logged in to [chatgpt.com](https://chatgpt.com). Supported browsers are Safari, Chrome, Firefox, Dia, Arc, Brave and Edge.
 
 ```sh
 git clone https://github.com/planetaryescape/chatgpt-cli.git
@@ -17,7 +17,7 @@ chatgpt sync
 chatgpt list --limit 10
 ```
 
-The first command that contacts ChatGPT may ask for access to the macOS Keychain item **Dia Safe Storage**. Choose **Always Allow** to avoid a prompt on every run. `sync` builds the local conversation index; later runs pick up changes. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
+The CLI uses your macOS default browser. To choose another browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync`. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. `sync` builds the local conversation index; later runs pick up changes. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
 
 ## What you can do
 
@@ -55,7 +55,7 @@ Suggestions are advisory. The dry runs show the selected chats before anything c
 
 ## Data and privacy
 
-The CLI reads the ChatGPT session from Dia and exchanges it for an access token in memory. It stores the conversation index, cached transcripts, judgments and search vectors in `~/.local/share/chatgpt-cli/index.db`; optional model keys live in `~/.config/chatgpt-cli/config.json`. Neither location belongs in Git.
+The CLI reads the ChatGPT session from your browser and exchanges it for an access token in memory. It stores the conversation index, cached transcripts, judgments and search vectors in `~/.local/share/chatgpt-cli/index.db`; optional model keys live in `~/.config/chatgpt-cli/config.json`. Neither location belongs in Git.
 
 Local embedding does not send transcript text to Hugging Face. Classification and summarisation **do** send the relevant chat or saved-memory content to the configured model providers. Read [data, files and credentials](docs/reference/data.md) before using those features on sensitive conversations.
 

@@ -1,5 +1,5 @@
 import { type HttpMethod, Impit } from "impit";
-import { readDiaCookies } from "../auth/dia-cookies.ts";
+import { readBrowserSession, type BrowserSelection } from "../auth/browser-cookies.ts";
 
 const BASE = "https://chatgpt.com";
 const MAX_RETRIES = 4;
@@ -21,15 +21,16 @@ export class ApiError extends Error {
 export class ChatGPTClient {
 	private http = new Impit({ browser: "chrome" });
 	private cookieHeader: string | undefined;
+	private sessionSource: string | undefined;
 	private accessToken: string | undefined;
+
+	constructor(private readonly browserSelection: () => BrowserSelection = () => ({})) {}
 
 	private cookies(): string {
 		if (!this.cookieHeader) {
-			const cookies = readDiaCookies("chatgpt.com");
-			if (!cookies.some((c) => c.name.startsWith("__Secure-next-auth.session-token"))) {
-				throw new Error("No ChatGPT session in Dia's Personal profile. Log in to chatgpt.com in Dia and retry.");
-			}
-			this.cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+			const session = readBrowserSession(this.browserSelection());
+			this.sessionSource = `${session.browser}${session.profile ? ` profile "${session.profile}"` : ""}`;
+			this.cookieHeader = session.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 		}
 		return this.cookieHeader;
 	}
@@ -60,7 +61,7 @@ export class ChatGPTClient {
 		if (this.accessToken) return this.accessToken;
 		const session = JSON.parse(await this.send("GET", "/api/auth/session", {})) as { accessToken?: string };
 		if (!session.accessToken) {
-			throw new Error("ChatGPT session has expired. Open chatgpt.com in Dia to refresh it, then retry.");
+			throw new Error(`ChatGPT session in ${this.sessionSource} has expired. Open chatgpt.com there to refresh it, then retry.`);
 		}
 		this.accessToken = session.accessToken;
 		return this.accessToken;

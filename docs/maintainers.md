@@ -7,7 +7,7 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | Path | Job |
 |---|---|
 | `src/cli.ts` | Command definitions (commander) and wiring |
-| `src/auth/` | Dia cookie decryption, model keys from env or config |
+| `src/auth/` | Browser session cookies, model keys from env or config |
 | `src/api/` | HTTP client (impit, retries) and one function per chatgpt.com endpoint |
 | `src/index/` | SQLite: chat index, cached transcripts, summaries, judgments |
 | `src/search/` | Transcript chunks, SQLite FTS5 and vectors, local embedding model, search ranking |
@@ -82,7 +82,7 @@ The database holds private conversations that mention other people.
 
 Settle these with the owner before changing them.
 
-- **Auth comes from Dia.** No separate login flow or stored tokens.
+- **Auth comes from a local browser session.** Use the macOS default browser unless `--browser` and `--profile` select another source. Do not silently fall back to another browser, which may be logged into a different account. No separate login flow or stored ChatGPT tokens.
 - **HTTP goes through `impit`.** Plain fetch and curl are blocked by Cloudflare. Headless Chrome was challenged too; a visible browser works but can't run for every command.
 - **Model credentials.** Environment variables take precedence over `~/.config/chatgpt-cli/config.json`. A configured OpenAI or Anthropic key replaces that provider's subscription CLI for model work. Without those keys, summaries try Codex `gpt-6-luna`, then `claude -p --model haiku`.
 - **Memory classification.** The saved-memory rubric and version are separate from chat classification; see `docs/reference/memory-classification.md`. Quick decisions can only keep or route to Luna. Every delete suggestion needs Luna review. Do not infer memory staleness from an archived source chat.
@@ -95,7 +95,7 @@ Settle these with the owner before changing them.
 
 ## Out of scope
 
-- Other browsers or operating systems for auth. Dia on macOS is the only supported source.
+- Other operating systems for browser-session auth. macOS supports Safari, Chrome, Firefox, Dia, Arc, Brave and Edge.
 - Sending messages or starting chats. Verified 2026-09-28: a send without sentinel tokens gets `403 Unusual activity has been detected from your device`, and the tokens need Turnstile and fingerprinting programs that only a real browser runs. See [The chatgpt.com web API](explanation/chatgpt-api.md#sending-messages).
 - Shared links (`/share/…`).
 - A web UI.
