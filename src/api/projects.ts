@@ -14,6 +14,23 @@ type ProjectPage = {
 	cursor: string | null;
 };
 
+type CreatedProject = { resource?: { gizmo?: SidebarProject } };
+
+export async function createProject(client: ChatGPTClient, input: string): Promise<Project> {
+	const name = input.trim();
+	if (!name) throw new Error("Project name cannot be empty.");
+	const existing = (await listProjects(client)).find((project) => project.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+	if (existing) throw new Error(`Project "${existing.name}" already exists (${existing.id}).`);
+	const result = await client.request<CreatedProject>("POST", "/backend-api/projects", {
+		emoji: null, instructions: "", memory_scope: "unset", name, theme: null,
+	});
+	const gizmo = result?.resource?.gizmo;
+	if (!gizmo?.id?.startsWith("g-p-") || typeof gizmo.display?.name !== "string" || gizmo.current_user_permission?.can_write !== true) {
+		throw new Error("ChatGPT returned an invalid created project.");
+	}
+	return { id: gizmo.id, name: gizmo.display.name, canWrite: true };
+}
+
 export async function listProjects(client: ChatGPTClient): Promise<Project[]> {
 	const projects: Project[] = [];
 	const seenCursors = new Set<string>();

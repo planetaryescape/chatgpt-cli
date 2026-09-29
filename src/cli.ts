@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import { ApiError, ChatGPTClient } from "./api/client.ts";
 import { BATCH_MAX, type ConversationSummary, getConversation, getConversationsBatch, listConversations, renameConversation, searchConversations } from "./api/conversations.ts";
-import { listProjects } from "./api/projects.ts";
+import { createProject, listProjects } from "./api/projects.ts";
 import { getMemorySummary, listMemories } from "./api/memories.ts";
 import { classifyMemories, memoryCounts } from "./classify/memories.ts";
 import { Classifier } from "./classify/pipeline.ts";
@@ -357,7 +357,15 @@ program.command("search <query>")
 		if (localResultCount !== undefined) note(`${localResultCount} conversation(s) found locally.`);
 	});
 
-const projectCommand = program.command("project").description("List projects and move chats into or out of them");
+const projectCommand = program.command("project").description("Create, list and manage chat projects");
+
+projectCommand.command("create <name>")
+	.description("Create a project with ChatGPT's default settings")
+	.option("--json", "output JSON")
+	.action(async (name: string, opts: { json?: boolean }) => {
+		const project = await createProject(client, name);
+		console.log(opts.json ? JSON.stringify(project, null, 2) : `${project.id}  ${project.name}`);
+	});
 
 projectCommand.command("list")
 	.description("List projects available to your account")

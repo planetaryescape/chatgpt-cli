@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ApiError, type ChatGPTClient } from "../api/client.ts";
-import { addConversationToProject, listProjects, removeConversationFromProject, type Project } from "../api/projects.ts";
+import { addConversationToProject, createProject, listProjects, removeConversationFromProject, type Project } from "../api/projects.ts";
 import { ConversationIndex } from "../index/store.ts";
 import { applyProjectAdd, applyProjectRemove, resolveProject } from "./projects.ts";
 
@@ -8,6 +8,35 @@ const projects: Project[] = [
 	{ id: "g-p-one111", name: "Garden Planner", canWrite: true },
 	{ id: "g-p-two222", name: "Reading Club", canWrite: true },
 ];
+
+test("project creation uses the observed ChatGPT request and returns its id", async () => {
+	const calls: { method: string; path: string; body?: unknown }[] = [];
+	const client = { async request(method: string, path: string, body?: unknown) {
+		calls.push({ method, path, body });
+		return method === "GET"
+			? { items: [], cursor: null }
+			: { resource: { gizmo: { id: "g-p-created", display: { name: "Research Notes" }, current_user_permission: { can_write: true } } } };
+	} } as ChatGPTClient;
+	expect(await createProject(client, "  Research Notes  ")).toEqual({ id: "g-p-created", name: "Research Notes", canWrite: true });
+	expect(calls[1]).toEqual({ method: "POST", path: "/backend-api/projects", body: {
+		emoji: null, instructions: "", memory_scope: "unset", name: "Research Notes", theme: null,
+	} });
+});
+
+test("project creation rejects empty and duplicate names before posting", async () => {
+	const methods: string[] = [];
+	const existing = projects[0] as Project;
+	const client = { async request(method: string, _path: string, _body?: unknown) {
+		methods.push(method);
+		return { items: [{ gizmo: { gizmo: {
+			id: existing.id, display: { name: existing.name },
+			current_user_permission: { can_write: true }, is_archived: false,
+		} } }], cursor: null };
+	} } as ChatGPTClient;
+	await expect(createProject(client, "  ")).rejects.toThrow("cannot be empty");
+	await expect(createProject(client, "garden planner")).rejects.toThrow("already exists");
+	expect(methods).toEqual(["GET"]);
+});
 
 test("project listing reads every cursor and keeps ids, names and permissions", async () => {
 	const paths: string[] = [];

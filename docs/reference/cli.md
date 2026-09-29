@@ -44,8 +44,7 @@ Commands:
   search [options] <query>        Search the local transcript index; use
                                   --semantic or --hybrid for meaning-based
                                   matches
-  project                         List projects and move chats into or out of
-                                  them
+  project                         Create, list and manage chat projects
   archive [options] [ids...]      Archive conversations by id/prefix, `-` for
                                   ids on stdin, or by filter
   unarchive [options] [ids...]    Unarchive conversations by id/prefix, `-` for
@@ -255,18 +254,32 @@ Options:
 ```text
 Usage: chatgpt project [options] [command]
 
-List projects and move chats into or out of them
+Create, list and manage chat projects
 
 Options:
   -h, --help                           display help for command
 
 Commands:
+  create [options] <name>              Create a project with ChatGPT's default
+                                       settings
   list [options]                       List projects available to your account
   add [options] <project> <ids...>     Move chats into an existing project by
                                        name or id; use `-` for ids on stdin
   remove [options] <project> <ids...>  Remove chats from an existing project;
                                        use `-` for ids on stdin
   help [command]                       display help for command
+```
+
+## `chatgpt project create`
+
+```text
+Usage: chatgpt project create [options] <name>
+
+Create a project with ChatGPT's default settings
+
+Options:
+  --json      output JSON
+  -h, --help  display help for command
 ```
 
 ## `chatgpt project list`
@@ -291,6 +304,21 @@ Move chats into an existing project by name or id; use `-` for ids on stdin
 
 Options:
   -n, --dry-run  preview without moving chats
+  -y, --yes      skip the confirmation prompt
+  --archived     select archived conversations instead of active ones
+  --all          select both active and archived conversations
+  -h, --help     display help for command
+```
+
+## `chatgpt project remove`
+
+```text
+Usage: chatgpt project remove [options] <project> <ids...>
+
+Remove chats from an existing project; use `-` for ids on stdin
+
+Options:
+  -n, --dry-run  preview without removing chats
   -y, --yes      skip the confirmation prompt
   --archived     select archived conversations instead of active ones
   --all          select both active and archived conversations

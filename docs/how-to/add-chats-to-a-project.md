@@ -1,6 +1,12 @@
 # Add chats to a project
 
-Move chats from your local index into an existing ChatGPT project:
+Create a project if you need a new one:
+
+```sh
+chatgpt project create "Research Notes"
+```
+
+Then move chats from your local index into an existing project:
 
 ```sh
 chatgpt sync
@@ -9,7 +15,7 @@ chatgpt project add "Garden Planner" <chat-id> --dry-run
 chatgpt project add "Garden Planner" <chat-id>
 ```
 
-The dry run prints the selected chat and the number that would move. The final command asks for confirmation. `--yes` skips that prompt. You can name a project by its exact name, full id, or a unique id prefix. If names match more than one project, use an id. The command rejects projects where your account lacks write access.
+`project create` uses ChatGPT's default project settings, rejects empty or already used names, and prints the new id and name. Add `--json` for structured output. Skip creation if the project already exists. The dry run prints the selected chat and the number that would move. The final command asks for confirmation. `--yes` skips that prompt. You can name a project by its exact name, full id, or a unique id prefix. If names match more than one project, use an id. The command rejects projects where your account lacks write access.
 
 ## Move several chats
 
