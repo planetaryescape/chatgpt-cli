@@ -6,7 +6,7 @@ const ROOT = join(import.meta.dir, "..");
 export const REFERENCE_PATH = join(ROOT, "docs/reference/cli.md");
 
 // Order matches how the docs introduce them, not the CLI's registration order.
-const COMMANDS = ["configure", "sync", "list", "stats", "search", "memory", "memory list", "memory classify", "memory summary", "memory delete", "project", "project list", "project add", "export", "classify", "review", "tui", "archive", "unarchive", "delete", "rename"];
+const COMMANDS = ["configure", "sync", "list", "stats", "search", "memory", "memory list", "memory classify", "memory summary", "memory delete", "project", "project create", "project list", "project add", "project remove", "export", "classify", "review", "tui", "archive", "unarchive", "delete", "rename"];
 
 function help(args: string[]): string {
 	// Piped stdout isn't a TTY, so commander wraps at its fixed default width and

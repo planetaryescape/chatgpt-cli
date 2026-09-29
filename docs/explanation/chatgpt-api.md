@@ -1,6 +1,6 @@
 # The chatgpt.com web API
 
-What chatgpt.com's private API does, as observed on 2026-09-27 and 2026-09-28, and how to re-observe it when something changes. OpenAI doesn't document or version this API, so treat every line here as a dated observation.
+What chatgpt.com's private API does, as observed on 2026-09-27, 2026-09-28 and 2026-09-29, and how to re-observe it when something changes. OpenAI doesn't document or version this API, so treat every line here as a dated observation.
 
 ## Endpoints in use
 
@@ -15,6 +15,7 @@ What chatgpt.com's private API does, as observed on 2026-09-27 and 2026-09-28, a
 | Memory summary | `POST /backend-api/memories/about_you/summary?source=personalization-setting` `{}` | JSON fallback for the UI's streamed summary; returns titled sections |
 | Delete saved memory | `DELETE /backend-api/memories/{memory_id}` | Returns `{success: true}` after the UI's confirmation |
 | List projects | `GET /backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&limit=20&owned_only=false` | `items` contain project ids, names, write permission and archive state; `cursor` pages results |
+| Create project | `POST /backend-api/projects` `{emoji: null, instructions: "", memory_scope: "unset", name, theme: null}` | Observed in the ChatGPT UI on 2026-09-29; returns `resource.gizmo` with the new project id and display name |
 | Move into project | `PATCH /backend-api/conversation/{id}` `{gizmo_id: "g-p-…"}` | Returns `{success: true}`; observed through the ChatGPT UI and replayed by the CLI |
 | Remove from project | `PATCH /backend-api/conversation/{id}` `{gizmo_id: ""}` | Observed through the ChatGPT UI; the CLI confirms legacy 500 responses by reading the chat |
 | Archive / unarchive | `PATCH /backend-api/conversation/{id}` `{is_archived}` | |
