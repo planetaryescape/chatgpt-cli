@@ -282,7 +282,7 @@ fn apply_update(content: &mut String, update: &Value) -> Option<()> {
         *content = replacement.to_owned();
         return Some(());
     }
-    let regex = fancy_regex::Regex::new(pattern).ok()?;
+    let regex = js::regex(pattern, false).ok()?;
     let literal = fancy_regex::NoExpand(replacement);
     let multiple = update.get("multiple").and_then(Value::as_bool) == Some(true);
     *content = if multiple {
@@ -374,6 +374,15 @@ mod tests {
              ## ChatGPT\n\n[generated image]\n\n---\n\n\
              ## Canvas (final): Doc\n\none $1 $1\n"
         );
+    }
+
+    #[test]
+    fn canvas_edits_use_js_regex_semantics() {
+        let mut content = "café menu".to_owned();
+        let edit = json!({ "pattern": r"\w+", "replacement": "X", "multiple": true });
+        apply_update(&mut content, &edit).expect("applied");
+        // JS's \w stops at é.
+        assert_eq!(content, "Xé X");
     }
 
     #[test]

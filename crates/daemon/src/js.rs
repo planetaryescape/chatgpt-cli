@@ -9,10 +9,10 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc
 /// (`0.13`). Everything else rounds the same way.
 pub fn to_fixed(value: f64, digits: usize) -> String {
     if !value.is_finite() {
-        return number_to_string(value);
+        return chatgpt_core::js_number_string(value);
     }
     if value.abs() >= 1e21 {
-        return number_to_string(value);
+        return chatgpt_core::js_number_string(value);
     }
     let magnitude = value.abs();
     // A tie at `digits` places is a multiple of 2^-k for small k, so its
@@ -60,18 +60,84 @@ fn round_half_up(whole: &str, kept: &str, digits: usize) -> String {
     format!("{}.{}", &text[..split], &text[split..])
 }
 
-/// `String(number)` for the cases the CLI meets: integers print without a
-/// fraction, others in their shortest round-trip form.
-pub fn number_to_string(value: f64) -> String {
-    if value.is_nan() {
-        "NaN".to_owned()
-    } else if value.is_infinite() {
-        if value > 0.0 { "Infinity" } else { "-Infinity" }.to_owned()
-    } else if value == value.trunc() && value.abs() < 1e21 {
-        format!("{value:.0}")
-    } else {
-        format!("{value}")
+/// JS's `\s`: WhiteSpace and LineTerminator, without U+0085.
+const JS_SPACE: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
+
+/// A JS regex source (no `u` flag) rewritten for Rust's regex syntax, so
+/// it matches what `new RegExp(source)` would: `\w`, `\d` and `\b` are
+/// ASCII-only, `\s` is JS's whitespace set, and `.` stops at every JS line
+/// terminator, not only `\n`. Everything else passes through.
+fn regex_source(source: &str) -> String {
+    const WORD: &str = "0-9A-Za-z_";
+    let mut out = String::with_capacity(source.len() + 16);
+    let mut chars = source.chars().peekable();
+    let mut in_class = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let Some(next) = chars.next() else {
+                    out.push('\\');
+                    break;
+                };
+                let replacement = match (next, in_class) {
+                    ('w', false) => Some(format!("[{WORD}]")),
+                    ('w', true) => Some(WORD.to_owned()),
+                    ('W', false) => Some(format!("[^{WORD}]")),
+                    ('d', false) => Some("[0-9]".to_owned()),
+                    ('d', true) => Some("0-9".to_owned()),
+                    ('D', false) => Some("[^0-9]".to_owned()),
+                    // fancy-regex has no `(?-u:\b)`: spell the ASCII
+                    // boundary out with lookarounds.
+                    ('b', false) => Some(format!(
+                        "(?:(?<={W})(?!{W})|(?<!{W})(?={W}))",
+                        W = format!("[{WORD}]")
+                    )),
+                    ('B', false) => Some(format!(
+                        "(?:(?<={W})(?={W})|(?<!{W})(?!{W}))",
+                        W = format!("[{WORD}]")
+                    )),
+                    ('s', false) => Some(format!("[{JS_SPACE}]")),
+                    ('s', true) => Some(JS_SPACE.to_owned()),
+                    ('S', false) => Some(format!("[^{JS_SPACE}]")),
+                    _ => None,
+                };
+                match replacement {
+                    Some(text) => out.push_str(&text),
+                    None => {
+                        out.push('\\');
+                        out.push(next);
+                    }
+                }
+            }
+            '[' if !in_class => {
+                in_class = true;
+                out.push('[');
+                // A leading `^` negates the class: keep it ahead of any
+                // translated escape.
+                if chars.next_if_eq(&'^').is_some() {
+                    out.push('^');
+                }
+            }
+            ']' if in_class => {
+                in_class = false;
+                out.push(']');
+            }
+            '.' if !in_class => out.push_str(r"[^\n\r\x{2028}\x{2029}]"),
+            _ => out.push(c),
+        }
     }
+    out
+}
+
+/// `new RegExp(source, flags)` for flags `""` or `"i"`: every JS regex the
+/// TS CLI builds goes through here, so none skips the translation.
+pub fn regex(
+    source: &str,
+    case_insensitive: bool,
+) -> Result<fancy_regex::Regex, fancy_regex::Error> {
+    fancy_regex::RegexBuilder::new(&regex_source(source))
+        .case_insensitive(case_insensitive)
+        .build()
 }
 
 /// JS whitespace and line terminators: `str::trim` plus U+FEFF, minus
@@ -275,6 +341,31 @@ mod tests {
         assert_eq!(parse_date("2024-13-01"), None);
         assert_eq!(parse_date("yesterday"), None);
         assert!(parse_date("2025-01-01T00:00").is_some(), "local time");
+    }
+
+    #[test]
+    fn regexes_match_as_js_regexes_without_the_u_flag() {
+        let js = |source: &str| regex(source, false).expect("valid");
+        let word = js(r"\w+");
+        assert_eq!(
+            word.find("café").expect("ok").map(|m| m.as_str()),
+            Some("caf")
+        );
+        assert!(
+            js(r"\bé").is_match("café").expect("ok"),
+            "é isn't a JS word character"
+        );
+        assert!(!js(r"\d").is_match("٣").expect("ok"), "only ASCII digits");
+        assert!(js(r"a.b").is_match("a\u{85}b").expect("ok"));
+        assert!(!js(r"a.b").is_match("a\u{2028}b").expect("ok"));
+        assert!(js(r"\s").is_match("\u{FEFF}").expect("ok"));
+        assert!(!js(r"\s").is_match("\u{85}").expect("ok"));
+        assert!(js(r"[\w-]+$").is_match("a-b").expect("ok"));
+        assert!(
+            js(r"[^.]x").is_match("ax").expect("ok"),
+            "a class keeps its own dot"
+        );
+        assert!(js(r"\.").is_match(".").expect("ok"));
     }
 
     #[test]

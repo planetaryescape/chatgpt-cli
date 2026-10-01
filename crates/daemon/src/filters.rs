@@ -4,7 +4,7 @@
 
 use chatgpt_protocol::Filter;
 use chatgpt_store::{IndexFilter, IndexedConversation, JudgmentRow};
-use fancy_regex::{Regex, RegexBuilder};
+use fancy_regex::Regex;
 
 use crate::js;
 use crate::policy::{Judged, PolicyError, Profile, Verdict};
@@ -82,12 +82,9 @@ pub fn selection(filter: &Filter, now_ms: i64) -> Result<Selection, InvalidFilte
     };
     let title = given(&filter.title)
         .map(|pattern| {
-            RegexBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .map_err(|error| {
-                    InvalidFilter(format!("Invalid regular expression: /{pattern}/i: {error}"))
-                })
+            js::regex(pattern, true).map_err(|error| {
+                InvalidFilter(format!("Invalid regular expression: /{pattern}/i: {error}"))
+            })
         })
         .transpose()?;
     Ok(Selection {

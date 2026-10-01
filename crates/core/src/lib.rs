@@ -5,12 +5,14 @@
 
 mod duration;
 mod error;
+mod js_number;
 pub mod legacy;
 mod paths;
 pub mod ts_cli;
 
 pub use duration::format_duration;
 pub use error::{ErrorKind, message_with_causes};
+pub use js_number::js_number_string;
 pub use paths::{
     APP_NAME, DAEMON_LOG_PREFIX, INSTANCE_ENV, Instance, InvalidInstanceName, Paths, PathsError,
 };

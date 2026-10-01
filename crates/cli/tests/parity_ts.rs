@@ -117,6 +117,11 @@ fn answers(rng: &mut Lcg) -> Value {
         "brainstorm_for": { "type": "choice", "choice": rng.pick(TARGETS) },
         "topic": { "type": "choice", "choice": rng.pick(TOPICS) },
     });
+    // Numbers JSON.stringify writes differently from serde_json.
+    answers["extremes"] = json!({
+        "tiny": 1e-6, "tinier": 1e-7, "small": 0.000001234, "huge": 1e21,
+        "big": 123456789012345680000.0_f64,
+    });
     for optional in ["product_idea", "time_bound", "overtaken_by_time"] {
         if rng.chance(60) {
             answers[optional] = json!({ "type": "noul", "noul": rng.pick(NOULS) });
