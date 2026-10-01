@@ -1,6 +1,7 @@
 //! Regressions from the stage 1 review: one account per pass, TS output
 //! that never leaks, a long TS sync that never looks stalled, no network on
-//! a cold start, and a rate limit that ends the pass.
+//! a cold start within the sync interval, a rate limit that ends the pass,
+//! and the shared TS index left to the account it belongs to.
 
 #![allow(clippy::unwrap_used)]
 
@@ -242,4 +243,37 @@ fn a_listing_that_repeats_chats_is_read_again_so_none_is_skipped() {
         String::from_utf8_lossy(&synced.stderr)
     );
     assert_eq!(env.stdout(&["list", "--all", "--count"]), "105\n");
+}
+
+#[test]
+fn a_named_instance_on_another_browser_leaves_the_shared_ts_index_alone() {
+    let mut env = Env::with_fake(chats());
+    let calls = env.home.path().join("ts-calls");
+    env.fake_ts_cli(&format!("echo \"$@\" >> '{}'\n", calls.display()));
+    env.extra_env
+        .push(("CHATGPT_INSTANCE".into(), "second".into()));
+    let synced = env
+        .cmd()
+        .args(["--browser", "chrome", "sync", "--full"])
+        .output()
+        .unwrap();
+    assert!(
+        synced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    assert!(
+        !calls.exists(),
+        "the TS CLI ran for another account's instance"
+    );
+    let status = env.json(&["daemon", "status", "--json"]);
+    let message = status["ts_sync"]["last_message"].as_str().unwrap();
+    assert!(message.starts_with("TS sync skipped: "), "{status}");
+    assert!(
+        status["legacy_import"]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("TS import skipped: ")),
+        "{status}"
+    );
+    env.cmd().args(["daemon", "stop"]).assert().success();
 }

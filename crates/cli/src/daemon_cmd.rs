@@ -78,10 +78,10 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
         (None, None) => "TS CLI: unknown".to_owned(),
     });
     if let (Some(at), Some(message)) = (ts.last_run_at, &ts.last_message) {
-        let outcome = if ts.last_ok == Some(true) {
-            "ok"
-        } else {
-            "failed"
+        let outcome = match ts.last_ok {
+            Some(true) => "ok",
+            Some(false) => "failed",
+            None => "not run",
         };
         lines.push(format!("TS sync: {outcome} {} ({message})", ago(at, now)));
     }

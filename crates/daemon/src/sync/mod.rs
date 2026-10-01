@@ -78,9 +78,10 @@ pub struct PassOptions {
 
 impl Syncer {
     /// `synced_age`: how long ago the index last synced, if it ever did. A
-    /// daemon that starts with a synced index waits out the rest of the
-    /// interval, so a cold `list` costs no request; an empty index syncs at
-    /// once.
+    /// daemon that starts on an index synced within the interval waits out
+    /// the rest of it, so a cold `list` sends no request. An older index, or
+    /// an empty one, gets a background pass at once (`list` still answers
+    /// from the index without waiting for it).
     pub fn new(synced_age: Option<Duration>) -> Self {
         Self {
             running: tokio::sync::Mutex::new(()),

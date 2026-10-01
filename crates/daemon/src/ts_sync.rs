@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use chatgpt_core::Instance;
 use chatgpt_core::legacy::legacy_index_path;
 use chatgpt_core::ts_cli::{self, BRIDGED_ENV, TsCli};
 use chatgpt_protocol::{ImportReport, SessionChoice, SyncReport, TableImport, TsSyncOutcome};
@@ -34,6 +35,10 @@ pub async fn after_pass(
     report: &mut SyncReport,
 ) {
     state.syncer.ts_sync_ran();
+    if let Err(reason) = shares_the_ts_account(state, choice) {
+        state.record_ts_skipped(&reason);
+        return;
+    }
     match ts_cli::locate() {
         Ok(ts) => {
             let step = state
@@ -221,9 +226,47 @@ fn is_safe(line: &str) -> bool {
     SAFE_LINES.iter().any(|pattern| pattern.is_match(line))
 }
 
+/// Overrides the account rule below, in debug builds only, for tests that
+/// run the TS sync on a named instance (`always`).
+const TS_SYNC_OVERRIDE_ENV: &str = "CHATGPT_TS_SYNC";
+
+/// The TS CLI keeps one index, `~/.local/share/chatgpt-cli/index.db`, for
+/// whichever account its default browser session holds. Its sync and the
+/// import from it are only for the installed (or dev) instance reading the
+/// default browser choice, which is that same session. A named instance,
+/// or a pass on `--browser`/`--profile`, may be another account: a TS full
+/// sync from it would replace the default account's chats in the shared
+/// index, and an import would bring that account's judgments into this one.
+pub fn shares_the_ts_account(state: &State, choice: &SessionChoice) -> Result<(), String> {
+    if cfg!(debug_assertions)
+        && std::env::var(TS_SYNC_OVERRIDE_ENV).is_ok_and(|value| value == "always")
+    {
+        return Ok(());
+    }
+    let instance = &state.paths.instance;
+    if !matches!(instance, Instance::Default) && instance.label() != "dev" {
+        return Err(format!(
+            "instance {} keeps its own account; the TS CLI's index is the default instance's",
+            instance.label()
+        ));
+    }
+    if *choice != SessionChoice::default() {
+        return Err(
+            "this sync reads --browser/--profile, which may be another account than the TS CLI's default session"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Import the TS index now. A missing index is not an error: there's
 /// nothing to import, and nothing is deleted.
 pub async fn import(state: &State) -> Result<ImportReport, Failure> {
+    if let Err(reason) = shares_the_ts_account(state, &state.syncer.choice()) {
+        let message = format!("TS import skipped: {reason}");
+        state.record_import(Err(message.clone()));
+        return Err(Failure::new(chatgpt_core::ErrorKind::InvalidInput, message));
+    }
     // The TS CLI may have been updated, with new classification versions.
     state.reload_profile();
     let Some(path) = legacy_index_path().filter(|path| path.is_file()) else {

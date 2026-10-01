@@ -145,6 +145,15 @@ impl State {
         status.unavailable = Some(why);
     }
 
+    pub fn record_ts_skipped(&self, reason: &str) {
+        let message = format!("TS sync skipped: {reason}");
+        tracing::info!("{message}");
+        let mut status = lock(&self.ts_sync);
+        status.last_run_at = Some(now_unix());
+        status.last_ok = None;
+        status.last_message = Some(message);
+    }
+
     pub fn ts_sync_status(&self) -> TsSyncStatus {
         lock(&self.ts_sync).clone()
     }

@@ -72,7 +72,8 @@ impl Env {
             .env_remove("CHATGPT_BROWSER_PROFILE")
             .env_remove("CHATGPT_BRIDGED")
             .env_remove("CHATGPT_DAEMON_VERSION")
-            .env_remove("CHATGPT_REQUEST_TIMEOUT_MS");
+            .env_remove("CHATGPT_REQUEST_TIMEOUT_MS")
+            .env_remove("CHATGPT_TS_SYNC");
         match &self.fake {
             Some(fake) => {
                 command
