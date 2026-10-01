@@ -1,0 +1,36 @@
+[package]
+name = "chatgpt-daemon"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "The chatgpt daemon: holds the session, keeps the index fresh, answers the CLI over a Unix socket."
+
+[dependencies]
+chatgpt = { workspace = true }
+chatgpt-core = { workspace = true }
+chatgpt-protocol = { workspace = true }
+chatgpt-store = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+fancy-regex = { workspace = true }
+fs2 = { workspace = true }
+indexmap = { workspace = true }
+futures-util = { workspace = true }
+regex = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+socket2 = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "process", "sync", "io-util"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

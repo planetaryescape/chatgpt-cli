@@ -1,0 +1,187 @@
+//! Answering requests.
+
+use std::sync::Arc;
+
+use chatgpt_core::ErrorKind;
+use chatgpt_protocol::Progress;
+use chatgpt_protocol::{
+    DaemonStatus, ErrorPayload, Filter, PROTOCOL_VERSION, Request, Response, ResponseData,
+    SessionChoice, StatsReport,
+};
+use rusqlite::Connection;
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::api::ApiError;
+use crate::filters::InvalidFilter;
+use crate::policy::PolicyError;
+use crate::policy::memory::{Cached, memory_counts};
+use crate::state::State;
+use crate::sync::{PassOptions, run_pass};
+use crate::{reads, ts_sync};
+
+/// A failed request, worded for people: no response body, cookie or token.
+#[derive(Debug, Clone)]
+pub struct Failure {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+impl Failure {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn invalid(error: InvalidFilter) -> Self {
+        Self::new(ErrorKind::InvalidInput, error.0)
+    }
+
+    pub fn store(error: chatgpt_store::StoreError) -> Self {
+        let kind = match error {
+            chatgpt_store::StoreError::NewerDatabase { .. } => ErrorKind::DatabaseTooNew,
+            _ => ErrorKind::Internal,
+        };
+        Self::new(kind, format!("the index: {error}"))
+    }
+
+    pub fn policy(error: PolicyError) -> Self {
+        Self::new(ErrorKind::Internal, error.to_string())
+    }
+
+    pub fn join(error: tokio::task::JoinError) -> Self {
+        Self::new(
+            ErrorKind::Internal,
+            format!("a database task failed: {error}"),
+        )
+    }
+
+    fn payload(self) -> ErrorPayload {
+        ErrorPayload {
+            kind: self.kind.as_str().to_owned(),
+            message: self.message,
+        }
+    }
+}
+
+impl From<ApiError> for Failure {
+    fn from(error: ApiError) -> Self {
+        Self::new(error.kind, error.message)
+    }
+}
+
+pub fn error_payload(kind: ErrorKind, message: String) -> ErrorPayload {
+    Failure::new(kind, message).payload()
+}
+
+/// Answer `request`. A sync sends its progress lines to `progress`.
+pub async fn handle(
+    state: &Arc<State>,
+    request: Request,
+    progress: Option<UnboundedSender<Progress>>,
+) -> Response {
+    let answered = match request {
+        Request::Status => Ok(ResponseData::Status(Box::new(status(state).await))),
+        Request::Shutdown => Ok(ResponseData::Ack),
+        Request::Sync { full, session } => {
+            state.sessions.choose(&session).await;
+            // Its own task: a client that goes away mid-sync mustn't cancel
+            // the pass halfway.
+            let state = Arc::clone(state);
+            let options = PassOptions {
+                explicit: true,
+                full,
+                progress,
+            };
+            tokio::spawn(async move { run_pass(&state, options).await })
+                .await
+                .map_err(Failure::join)
+                .and_then(|result| result)
+                .map(|report| ResponseData::Sync(Box::new(report)))
+        }
+        Request::List { filter } => read(state, move |db, profile, now| {
+            reads::list(db, &filter, profile, now)
+        })
+        .await
+        .map(ResponseData::Rows),
+        Request::Stats { filter, session } => stats(state, *filter, &session)
+            .await
+            .map(|report| ResponseData::Stats(Box::new(report))),
+        Request::ImportLegacy => ts_sync::import(state).await.map(ResponseData::Imported),
+        Request::Unknown => Err(Failure::new(
+            ErrorKind::Unsupported,
+            "this daemon doesn't know that request; run `chatgpt daemon stop` and try again",
+        )),
+    };
+    answered.map_err(Failure::payload).into()
+}
+
+/// Run a read on the store's reader connection with the current versions.
+async fn read<T: Send + 'static>(
+    state: &State,
+    work: impl FnOnce(&Connection, &crate::policy::Profile, i64) -> Result<T, Failure> + Send + 'static,
+) -> Result<T, Failure> {
+    let profile = state.profile();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    state.db(move |db| Ok(work(db, &profile, now_ms))).await?
+}
+
+/// `stats`: the chat counts from the index, then the saved memories, read
+/// live. A failed memory read is reported, not fatal, as in the TS CLI.
+async fn stats(
+    state: &State,
+    filter: Filter,
+    session: &SessionChoice,
+) -> Result<StatsReport, Failure> {
+    let mut report = read(state, move |db, profile, now| {
+        reads::chat_stats(db, &filter, profile, now)
+    })
+    .await?;
+    state.sessions.choose(session).await;
+    match state.api.memories().await {
+        Ok(memories) => {
+            let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let counted = read(state, move |db, profile, _| {
+                memory_counts(&memories, &as_of, |id, hash| {
+                    chatgpt_store::memory_judgment(db, id, hash, &profile.memory_version)
+                        .map(|row| {
+                            row.map(|row| Cached {
+                                system_one: row.system_one,
+                                system_two: row.system_two,
+                            })
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .map_err(|message| Failure::new(ErrorKind::Internal, message))
+            })
+            .await;
+            match counted {
+                Ok(counts) => report.memory = Some(counts),
+                Err(failure) => report.memory_error = Some(failure.message),
+            }
+        }
+        Err(error) => report.memory_error = Some(error.message),
+    }
+    Ok(report)
+}
+
+async fn status(state: &State) -> DaemonStatus {
+    let synced_at = state.db(chatgpt_store::synced_at).await.ok().flatten();
+    let (sync, backoff) = state.syncer.status(synced_at);
+    DaemonStatus {
+        protocol_version: PROTOCOL_VERSION,
+        version: state.version.clone(),
+        pid: std::process::id(),
+        instance: state.paths.instance.label().to_owned(),
+        started_at: state.started_at,
+        socket: state.paths.socket_path().display().to_string(),
+        database: state.store.path().display().to_string(),
+        sync,
+        backoff,
+        session: state.sessions.source(),
+        ts_sync: state.ts_sync_status(),
+        legacy_import: state.import_status(),
+        classification: state.profile().info(),
+    }
+}
