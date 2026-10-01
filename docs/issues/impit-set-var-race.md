@@ -8,6 +8,8 @@ The F1 probe is effectively single-threaded at those moments, so this has not ca
 
 ## Mitigations
 
-- Stage 1: in `main`, before the tokio runtime starts, set `IMPIT_H2_PSEUDOHEADERS_ORDER` once, to the Chrome 124 fingerprint's order. Every later `set_var` then writes the same value, before any other thread exists to race with that first write.
-- Stage 1: rebuild clients one at a time. `HttpClient` already swaps its client behind a lock. Build the replacement while holding that lock, or a dedicated lock, so that two challenges never call `set_var` at once.
-- Consider an upstream issue or PR to apify/impit: pass the pseudo-header order through the h2 builder instead of the process environment.
+Pre-seeding the variable and serialising rebuilds narrows the race but does not remove it, because each build still writes to the environment while other threads may read it (independent review, 2026-10-01). Stage 1 must make sure no environment write happens once other threads exist. Options:
+
+- Pin a patched impit that skips `set_var` when the variable already holds the wanted value, or that passes the order through the h2 builder. Set the variable once in `main`, before the tokio runtime starts. The repo already pins apify forks, so one more `[patch]` is in keeping.
+- Pre-build a pool of impit clients in `main`, before the runtime starts. On a challenge, switch to an unused client instead of building a new one. Replenishing the pool still needs a build, so this only delays the problem.
+- Upstream: an issue or PR to apify/impit that passes the pseudo-header order through the h2 builder instead of the process environment.

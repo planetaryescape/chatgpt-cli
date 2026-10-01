@@ -349,6 +349,9 @@ fn default_browser_from_plist(plist: &plist::Value) -> Option<Browser> {
                 .and_then(plist::Value::as_string)
                 == Some("https")
         })
+        // max_by keeps the last of equal maxima; reversing keeps the first,
+        // matching the TS stable sort when dates tie or are missing.
+        .rev()
         .max_by(|a, b| modified(a).total_cmp(&modified(b)))
         .and_then(|handler| handler.get("LSHandlerRoleAll")?.as_string())
         .and_then(Browser::for_bundle_id)

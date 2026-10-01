@@ -187,6 +187,28 @@ fn picks_the_most_recently_set_https_handler() {
 }
 
 #[test]
+fn keeps_the_first_https_handler_when_dates_tie() {
+    let handler = |bundle: &str| {
+        let mut dict = plist::Dictionary::new();
+        dict.insert("LSHandlerURLScheme".into(), "https".into());
+        dict.insert("LSHandlerRoleAll".into(), bundle.into());
+        plist::Value::Dictionary(dict)
+    };
+    let mut root = plist::Dictionary::new();
+    root.insert(
+        "LSHandlers".into(),
+        plist::Value::Array(vec![
+            handler("company.thebrowser.dia"),
+            handler("com.google.chrome"),
+        ]),
+    );
+    assert_eq!(
+        default_browser_from_plist(&plist::Value::Dictionary(root)),
+        Some(Browser::Dia)
+    );
+}
+
+#[test]
 fn decrypts_chrome_session_cookies_and_ignores_lookalike_domains() {
     let home = tempfile::tempdir().unwrap();
     let root = chrome_fixture(home.path(), "Default", "chrome-session", true);
