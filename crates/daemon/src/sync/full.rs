@@ -21,22 +21,32 @@ pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError
         let kind = if archived { "archived" } else { "active" };
         let step = state.reporter.step(&format!("Listing {kind} chats"), None);
         let mut seen = 0;
-        for offset in (0..).step_by(PAGE_SIZE) {
-            let page = api.list_page(archived, offset).await?;
-            let short = page.len() < PAGE_SIZE;
-            for chat in page {
-                if !listed.contains_key(&chat.id) {
-                    listed.insert(chat.id.clone(), chat);
-                }
-                seen += 1;
-                step.update(seen);
+        let mut repeated = list_once(api, archived, &mut listed, || {
+            seen += 1;
+            step.update(seen);
+        })
+        .await?;
+        step.finish(&format!("Listed {seen} {kind} chat(s)"));
+        // Observed 2026-10-01: a listing can repeat some chats and skip
+        // others (662 entries, 657 distinct). A repeat means the pages
+        // shifted, so list again, up to twice, while that still finds chats.
+        for _ in 0..2 {
+            if repeated == 0 {
+                break;
             }
-            if short {
+            let before = listed.len();
+            let repeated_before = repeated;
+            repeated = list_once(api, archived, &mut listed, || {}).await?;
+            let found = listed.len() - before;
+            state.reporter.note(format!(
+                "The {kind} list repeated {repeated_before} chat(s); listing it again found {found} more."
+            ));
+            if found == 0 {
                 break;
             }
         }
-        step.finish(&format!("Listed {seen} {kind} chat(s)"));
     }
+
     // A chat updated during the sync jumps to the top, possibly past the
     // pages already read. Re-read the top until reaching chats older than
     // the start.
@@ -95,6 +105,34 @@ pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError
         reconcile: Some(reconciled),
         ..SyncReport::default()
     })
+}
+
+/// Every page of one list into `listed`, keeping the first copy of each
+/// chat; `on_entry` runs for every entry. Returns how many entries
+/// repeated a chat earlier in this same listing.
+async fn list_once(
+    api: &Api,
+    archived: bool,
+    listed: &mut Listing,
+    mut on_entry: impl FnMut(),
+) -> Result<usize, ApiError> {
+    let mut this_listing = std::collections::HashSet::new();
+    let mut repeated = 0;
+    for offset in (0..).step_by(PAGE_SIZE) {
+        let page = api.list_page(archived, offset).await?;
+        let short = page.len() < PAGE_SIZE;
+        for chat in page {
+            on_entry();
+            if !this_listing.insert(chat.id.clone()) {
+                repeated += 1;
+            }
+            listed.entry(chat.id.clone()).or_insert(chat);
+        }
+        if short {
+            break;
+        }
+    }
+    Ok(repeated)
 }
 
 /// Check every previously indexed chat the lists left out through the

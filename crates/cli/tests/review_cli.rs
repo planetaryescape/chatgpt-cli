@@ -218,3 +218,28 @@ fn a_rate_limit_during_the_reconcile_ends_the_pass_without_the_ts_sync() {
     assert!(status["sync"]["last_error"].is_string(), "{status}");
     assert!(!calls.exists(), "the TS sync ran after a rate-limited pass");
 }
+
+#[test]
+fn a_listing_that_repeats_chats_is_read_again_so_none_is_skipped() {
+    // More than one page, so the second page can shift.
+    let chats: Vec<Chat> = (0..105)
+        .map(|n| {
+            Chat::new(
+                &format!("chat-{n:03}"),
+                "Chat",
+                &format!("2026-09-{:02}T10:{:02}:00.000000Z", 1 + n / 60, n % 60),
+            )
+        })
+        .collect();
+    let env = Env::with_fake(chats);
+    // The first listing of an empty index, with nothing indexed to recover
+    // skipped chats from.
+    env.fake().state().flaky_listings = 1;
+    let synced = env.cmd().arg("sync").output().unwrap();
+    assert!(
+        synced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    assert_eq!(env.stdout(&["list", "--all", "--count"]), "105\n");
+}

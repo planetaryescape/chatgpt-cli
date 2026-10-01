@@ -114,6 +114,10 @@ pub struct State {
     /// Answer this many next batch requests with 429 (`retry-after`
     /// seconds).
     pub rate_limit_batch: Option<(u32, u64)>,
+    /// Make this many next active listings shift: every page after the
+    /// first repeats the previous page's last two chats and skips two.
+    pub flaky_listings: u32,
+    flaky_now: bool,
 }
 
 pub struct FakeChatGpt {
@@ -202,6 +206,13 @@ impl Respond for Handler {
             return ResponseTemplate::new(401).set_body_string("{\"detail\":\"token expired\"}");
         }
         let delay = std::time::Duration::from_millis(state.list_delay_ms);
+        let active_listing = matches!(self.route, Route::List)
+            && query(request, "is_archived").as_deref() != Some("true");
+        if active_listing && query(request, "offset").as_deref() == Some("0") {
+            state.flaky_now = state.flaky_listings > 0;
+            state.flaky_listings = state.flaky_listings.saturating_sub(1);
+        }
+        let flaky = active_listing && state.flaky_now;
         let chats = if other {
             &state.other_account_chats
         } else {
@@ -223,6 +234,26 @@ impl Respond for Handler {
                     .filter(|chat| !state.omitted_from_lists.contains(&chat.id))
                     .collect();
                 listed.sort_by(|a, b| b.update_time.cmp(&a.update_time));
+                if !archived && offset > 0 && flaky {
+                    // Two chats seen again, two never seen.
+                    let skipped: Vec<String> = listed
+                        .iter()
+                        .skip(offset)
+                        .take(2)
+                        .map(|chat| chat.id.clone())
+                        .collect();
+                    listed.retain(|chat| !skipped.contains(&chat.id));
+                    let offset = offset - 2;
+                    let items: Vec<Value> = listed
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit)
+                        .map(Chat::list_item)
+                        .collect();
+                    let total = offset + items.len() + 1;
+                    return ResponseTemplate::new(200)
+                        .set_body_json(json!({ "items": items, "total": total }));
+                }
                 let items: Vec<Value> = listed
                     .into_iter()
                     .skip(offset)
