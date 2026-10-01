@@ -1,0 +1,66 @@
+# Adapted from ms-todo .github/workflows/ci.yml @ 72a406042a4d46c2f8cc7c3afe6bda12e11f923b
+# (action pins; fmt, clippy and nextest). Changes: the full Rust suite runs on
+# macOS only, because reading browser cookies is macOS-only; Ubuntu builds and
+# tests the platform-free crates. The TS CLI keeps its own job.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-macos:
+    name: Rust (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: taiki-e/install-action@23c1afe4238f0421bd35351b5c0a6d40ceef5283 # nextest
+      # The TS parity harness (crates/cli/tests/parity_ts.rs) runs the TS CLI.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Install the TS CLI's dependencies
+        run: bun install --frozen-lockfile
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo nextest run --locked
+
+  rust-linux:
+    name: Rust (Ubuntu, platform-free crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Build and test core and protocol
+        run: cargo test --locked -p chatgpt-core -p chatgpt-protocol
+
+  ts:
+    name: TS CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bunx tsc --noEmit
+      - name: Tests
+        run: bun test

@@ -1,0 +1,107 @@
+# Adapted from ms-todo .github/workflows/release-please.yml @ 72a406042a4d46c2f8cc7c3afe6bda12e11f923b
+# (one workflow, draft release published only after every build uploads).
+# Changes: the two macOS targets only (reading browser cookies is
+# macOS-only); no Homebrew job yet (docs/issues/homebrew-tap.md).
+#
+# One workflow on purpose. release-please runs with GITHUB_TOKEN, and GitHub
+# doesn't start other workflows from events GITHUB_TOKEN creates: a separate
+# tag-triggered release workflow would never run.
+#
+# release-please creates the release as a draft (with its tag, via
+# force-tag-creation), and `publish` makes it public only once both builds
+# have uploaded, so install.sh's "latest" never finds a release missing an
+# archive. Its Cargo.lock version bump skips the vendored impit
+# (`@.name != 'impit'` in release-please-config.json), whose version must
+# stay its own.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          manifest-file: .release-please-manifest.json
+          config-file: release-please-config.json
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            arch: aarch64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # No RUSTFLAGS: it would replace .cargo/config.toml's
+      # `--cfg reqwest_unstable`, which impit needs.
+      - name: Build release binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --locked --release --target "$TARGET" --bin chatgpt
+
+      - name: Smoke test
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          test "$("target/${TARGET}/release/chatgpt" --version)" = "chatgpt ${TAG#v}"
+
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="chatgpt-${TAG}-macos-${ARCH}.tar.gz"
+          mkdir -p package
+          cp "target/${TARGET}/release/chatgpt" README.md package/
+          tar czf "$ARCHIVE" -C package .
+          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+          gh release upload "$TAG" "$ARCHIVE" "${ARCHIVE}.sha256" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    needs: [release-please, build]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
