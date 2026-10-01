@@ -3,6 +3,10 @@
 resolver = "3"
 members = [
     "crates/chatgpt",
+    "crates/core",
+    "crates/protocol",
+    "crates/launcher",
+    "crates/store",
 ]
 
 [workspace.package]
