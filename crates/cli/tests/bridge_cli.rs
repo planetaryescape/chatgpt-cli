@@ -1,0 +1,85 @@
+//! The bridge: unported commands reach the TS CLI with their arguments,
+//! stdin, stdout, stderr and exit code untouched. A shell script stands in
+//! for the TS CLI (`CHATGPT_BUN=/bin/sh`).
+
+#![allow(clippy::unwrap_used)]
+
+mod support;
+
+use support::Env;
+
+const ECHO_CLI: &str = r#"printf 'argv:'
+for arg in "$@"; do printf ' [%s]' "$arg"; done
+printf '\n'
+printf 'stdin:%s\n' "$(cat)"
+printf 'bridged:%s\n' "$CHATGPT_BRIDGED"
+echo 'to stderr' >&2
+exit 3
+"#;
+
+#[test]
+fn an_unported_command_runs_in_the_ts_cli_unchanged() {
+    let mut env = Env::new();
+    env.fake_ts_cli(ECHO_CLI);
+    let output = env
+        .cmd()
+        .args(["--browser", "dia", "export", "abc def", "-o", "--copy"])
+        .write_stdin("piped ids")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "the TS CLI's exit code");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "argv: [--browser] [dia] [export] [abc def] [-o] [--copy]\nstdin:piped ids\nbridged:1\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "to stderr\n");
+}
+
+#[test]
+fn an_unported_commands_help_comes_from_the_ts_cli() {
+    let mut env = Env::new();
+    env.fake_ts_cli(ECHO_CLI);
+    let output = env.cmd().args(["classify", "--help"]).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).lines().next(),
+        Some("argv: [classify] [--help]")
+    );
+}
+
+#[test]
+fn top_level_help_lists_native_and_bridged_commands() {
+    let env = Env::new();
+    let help = env.stdout(&["--help"]);
+    for command in [
+        "sync", "list", "stats", "daemon", "export", "classify", "tui",
+    ] {
+        assert!(help.contains(command), "{command} missing from:\n{help}");
+    }
+    assert_eq!(
+        env.stdout(&["--version"]),
+        format!("chatgpt {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn the_bridge_refuses_to_loop_and_says_when_the_ts_cli_is_missing() {
+    let mut env = Env::new();
+    let missing = env.cmd().arg("export").output().unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("TS chatgpt CLI, which isn't installed"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+
+    env.fake_ts_cli(ECHO_CLI);
+    let looped = env
+        .cmd()
+        .arg("export")
+        .env("CHATGPT_BRIDGED", "1")
+        .output()
+        .unwrap();
+    assert_eq!(looped.status.code(), Some(1));
+    assert!(looped.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&looped.stderr).contains("ran this chatgpt again"));
+}

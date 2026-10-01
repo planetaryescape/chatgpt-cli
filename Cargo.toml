@@ -8,6 +8,8 @@ members = [
     "crates/launcher",
     "crates/store",
     "crates/daemon",
+    "crates/cli",
+    "crates/fake-chatgpt",
 ]
 
 [workspace.package]
