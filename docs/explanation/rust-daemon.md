@@ -15,9 +15,10 @@ Bun comes from PATH, else `~/.bun/bin/bun`. A bridged process carries `CHATGPT_B
 
 Native commands ask a background daemon over a Unix socket. Any command that finds no daemon starts one, detached from the terminal, and waits until it answers. The daemon:
 
-- reads the browser's cookies once (the read can raise a Keychain prompt) and keeps the access token in memory only. It reads them again only when ChatGPT rejects the token (401, or a 403 that isn't a Cloudflare challenge), or when a command passes another `--browser`/`--profile`;
-- keeps its own index, `~/Library/Application Support/chatgpt-cli/chatgpt.db`, fresh: a delta sync every 2 minutes while a command ran in the last 10 minutes, otherwise every 15. The archived-list sweep and the cache reconcile run at most hourly in the background, and on every `chatgpt sync`. `sync --full` is only ever run on request;
-- backs off for as long as ChatGPT's rate limit asks (at least a minute, at most an hour) and shows it in `chatgpt daemon status`;
+- reads the browser's cookies once per `--browser`/`--profile` choice (the read can raise a Keychain prompt) and keeps the access token in memory only. It reads them again only when ChatGPT rejects the token (401, or a 403 that isn't a Cloudflare challenge);
+- syncs one account per index. A pass pins its browser choice and the session's account from start to finish, so a command choosing another browser meanwhile can't change what it reads. A sync whose session belongs to another account than the one the index was built from is refused: keep each account in its own instance (`CHATGPT_INSTANCE=<name>`);
+- keeps its own index, `~/Library/Application Support/chatgpt-cli/chatgpt.db`, fresh (a daemon started on a synced index waits for the cadence before its first pass, so a cold `list` sends nothing): a delta sync every 2 minutes while a command ran in the last 10 minutes, otherwise every 15. The archived-list sweep and the cache reconcile run at most hourly in the background, and on every `chatgpt sync`. `sync --full` is only ever run on request;
+- backs off for as long as ChatGPT's rate limit asks (at least a minute, at most an hour) and shows it in `chatgpt daemon status`. A rate limit in any step, the cache reconcile included, ends the pass, and the TS sync waits for the next one;
 - logs to `~/Library/Application Support/chatgpt-cli/logs/daemon.log.<date>`, one file a day, seven kept. Logs never hold cookies, tokens or response bodies.
 
 `list` never touches the network. `stats` reads the saved memories live, as the TS CLI does.
@@ -30,7 +31,7 @@ Debug builds and binaries under `target/` use the `dev` instance (`chatgpt-cli-d
 
 While the bridge exists the TS CLI still writes every Jev judgment, follow-up, Luna review, local title, summary and cached transcript, into `~/.local/share/chatgpt-cli/index.db`. The daemon imports those tables into its own index at startup, after every TS sync and on `chatgpt import-legacy`. The import opens the TS index read-only, mirrors each table by its key (rows the TS index dropped are dropped), and keeps a newer `update_time` the daemon's reconcile wrote when nothing else differs.
 
-After a pass that's due for it (every 15 minutes, and on every `chatgpt sync`), the daemon also runs the TS CLI's own `sync`, niced, so bridged commands such as `classify` see the same chats. Its output goes to the daemon's log with response bodies redacted. Its failures show in `daemon status` and never fail the Rust sync.
+After a pass that's due for it (every 15 minutes, and on every `chatgpt sync`), the daemon also runs the TS CLI's own `sync`, niced, so bridged commands such as `classify` see the same chats. Only the TS CLI's own progress and summary lines (counts and durations) reach the daemon's log, `daemon status` or the waiting client; every other line, such as an error that quotes a response body, is counted as withheld. Each line and a 10-second heartbeat keep a waiting `chatgpt sync` from timing out during a long TS sync, which is stopped after 10 minutes. Its failures show in `daemon status` and never fail the Rust sync.
 
 ## Which versions count
 
