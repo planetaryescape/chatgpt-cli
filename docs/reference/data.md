@@ -8,6 +8,7 @@ Where `chatgpt` keeps data, which credentials it reads, and what it sends to whi
 |---|---|
 | `~/.local/share/chatgpt-cli/index.db` | SQLite database: the chat index, cached transcripts, search index and embeddings, summaries and Jev judgments. Set `XDG_DATA_HOME` to move it to `$XDG_DATA_HOME/chatgpt-cli/index.db` |
 | `~/.cache/chatgpt-cli/models` | Downloaded local embedding model. Set `XDG_CACHE_HOME` to move it to `$XDG_CACHE_HOME/chatgpt-cli/models` |
+| `~/Library/Application Support/chatgpt-cli/` | The Rust CLI's daemon (0700): `chatgpt.db` (its index: the chat list plus the judgments, titles, summaries and transcripts it imports read-only from the TS `index.db`), `run/` (socket, pid file and lock) and `logs/` (one log a day, seven kept). Debug builds use `chatgpt-cli-dev` |
 | `~/.config/chatgpt-cli/config.json` | Optional Jev, OpenAI, and Anthropic API keys saved by `chatgpt configure`, owner-readable only. Set `XDG_CONFIG_HOME` to move it |
 
 Delete the database to start over; `chatgpt sync`, `chatgpt search-index` and `chatgpt classify` rebuild their respective data.

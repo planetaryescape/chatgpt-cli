@@ -17,8 +17,15 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `src/tui/` | OpenTUI React app |
 | `src/progress.ts` | Progress bars and timings on stderr |
 | `scripts/gen-cli-reference.ts` | Generates `docs/reference/cli.md` |
-| `crates/chatgpt/` | Rust port, in progress: browser cookies, session exchange, Chrome-impersonating HTTP client (impit) |
-| `crates/chatgpt-probe/` | Rust connectivity probe; a later stage folds it into the Rust CLI |
+| `crates/chatgpt/` | Rust port: browser cookies, session exchange, Chrome-impersonating HTTP client (impit) |
+| `crates/core/` | Rust: file locations and instances, error kinds and exit codes, where the TS CLI and its index live |
+| `crates/protocol/` | Rust: the CLI–daemon IPC messages and codec |
+| `crates/launcher/` | Rust: finding, starting, restarting and stopping the daemon, and talking to it |
+| `crates/store/` | Rust: the daemon's SQLite index and the import from the TS index |
+| `crates/daemon/` | Rust: the daemon (sync, policy, `list`/`stats` reads, TS sync while bridged) |
+| `crates/cli/` | Rust: the `chatgpt` binary, its native commands and the bridge to the TS CLI |
+| `crates/fake-chatgpt/` | Rust: a fake chatgpt.com for tests |
+| `third_party/impit/` | impit with one patch: no environment writes after startup (`third_party/README.md`) |
 
 ## Verify a change
 
@@ -43,10 +50,10 @@ For the Rust workspace:
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
-cargo run -p chatgpt-probe -- probe                    # live: session, token, one page of chats
-cargo run -p chatgpt-probe -- probe --connections 20   # live: fresh-connection challenge rate
+cargo nextest run        # or cargo test
 ```
+
+`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; it skips without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
 
 impit is a git dependency that only impersonates Chrome when apify's forks of `h2`, `rustls`, `hyper-util` and `tower-http` are in the graph (`[patch.crates-io]` in `Cargo.toml`), built with `--cfg reqwest_unstable` (`.cargo/config.toml`, which a `RUSTFLAGS` variable overrides). Cargo drops a patch with only a warning when the graph wants a newer version, so `hyper` and `reqwest` stay pinned in `Cargo.lock` to impit's own lockfile versions, and `crates/chatgpt/tests/fingerprint_patches.rs` fails if a fork falls out. Re-check that test after any `cargo update`.
 
