@@ -1,0 +1,4 @@
+# impit builds on reqwest's unstable HTTP/3 API. Note: a RUSTFLAGS environment
+# variable replaces this setting rather than adding to it.
+[build]
+rustflags = ["--cfg", "reqwest_unstable"]

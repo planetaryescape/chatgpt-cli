@@ -1,0 +1,18 @@
+[package]
+name = "chatgpt-probe"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Connectivity probe: reads the browser session, exchanges it for a token and lists one page of chats."
+
+[dependencies]
+chatgpt = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

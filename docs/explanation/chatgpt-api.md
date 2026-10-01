@@ -26,7 +26,7 @@ Every call needs `Authorization: Bearer <token>` and the session cookies.
 
 ## Observed behaviour
 
-- **Cloudflare.** Plain `fetch` and `curl` get `403` with `cf-mitigated: challenge`, because the check is on the TLS and HTTP/2 fingerprint. `impit`, impersonating Chrome, passes. About 1 in 7 fresh connections is still challenged, and a new connection usually passes.
+- **Cloudflare.** Plain `fetch` and `curl` get `403` with `cf-mitigated: challenge`, because the check is on the TLS and HTTP/2 fingerprint. `impit`, impersonating Chrome, passes. About 1 in 7 fresh connections is still challenged, and a new connection usually passes. On 2026-10-01, Bun and Node `fetch` and macOS `curl` were still challenged, but no fresh connection was: 50 of 50 through the Rust impit client and 20 of 20 through npm `impit` passed, and so did plain Rust `reqwest` (rustls) with or without the `cf_clearance` cookie. The challenge rate drifts, so keep retrying challenges on a fresh connection.
 - **Rate limits.** Repeated single-chat `GET`s hit `429` within a few hundred calls, with no `retry-after`. It clears after about a minute. The batch endpoint handled 100 chats in 43 seconds with no 429s.
 - **List paging.** `total` is only `offset + items + 1`, a "there's more" hint, so page until a page comes back short. `order=created` returns 500. Ordering is by `update_time`, so a chat updated while you page moves to the top, shifts later pages and can be skipped. Dedupe by id, then re-read the top.
 - **update_time.** New messages and renames change it; archiving and unarchiving don't. A delta sync therefore can't see archive changes from `update_time` alone.

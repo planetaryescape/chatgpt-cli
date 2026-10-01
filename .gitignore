@@ -45,3 +45,6 @@ auth-state*.json
 *.pem
 *.p8
 *.key
+
+# Rust build output
+/target

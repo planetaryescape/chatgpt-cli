@@ -1,0 +1,285 @@
+//! The Chrome-impersonating HTTP client, with the TS CLI's retry policy.
+//!
+//! Ported from the TS CLI's `src/api/client.ts` @ 1b8c950.
+//!
+//! Cloudflare challenges any client whose TLS/HTTP2 fingerprint isn't a real
+//! browser's (plain reqwest and curl both get 403). impit impersonates
+//! Chrome's. Even then some fresh connections get a challenge; a new
+//! connection usually passes, so challenges retry on a fresh client.
+
+use std::fmt;
+use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
+
+use impit::impit::{Impit, RedirectBehavior};
+use impit::request::RequestOptions;
+use reqwest::StatusCode;
+use reqwest::cookie::Jar;
+use reqwest::header::{HeaderMap, HeaderValue};
+
+pub const CHATGPT_BASE: &str = "https://chatgpt.com";
+
+#[derive(Debug, thiserror::Error)]
+pub enum HttpError {
+    #[error("Cloudflare kept challenging requests to {path}. Wait a minute and retry.")]
+    Challenged { path: String },
+    #[error("{status} from {path}: {snippet}", snippet = truncate(body, 300))]
+    Status {
+        status: StatusCode,
+        path: String,
+        body: String,
+    },
+    #[error("Request to {path} failed: {source}")]
+    Transport {
+        path: String,
+        source: impit::errors::ImpitError,
+    },
+    #[error("Could not build the HTTP client: {0}")]
+    Build(impit::errors::ImpitError),
+    /// impit's own error would echo the value, which may be the cookie or a token.
+    #[error("A request header for {path} has characters HTTP does not allow")]
+    InvalidHeaderValue { path: String },
+}
+
+fn truncate(text: &str, max_chars: usize) -> &str {
+    text.char_indices()
+        .nth(max_chars)
+        .map_or(text, |(end, _)| &text[..end])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryReason {
+    Challenge,
+    RateLimited,
+    Gateway(StatusCode),
+}
+
+/// One retry about to happen, for callers that report progress.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryEvent {
+    pub reason: RetryReason,
+    /// Zero-based: the attempt that just failed.
+    pub attempt: u32,
+    pub wait: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    /// Doubles each attempt, for gateway errors and challenges.
+    pub base_backoff: Duration,
+    /// Doubles each attempt, for 429. ChatGPT's 429s outlast a gateway blip.
+    pub rate_limit_backoff: Duration,
+    /// Upper bound on a server's `retry-after`.
+    pub max_retry_after: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        RetryPolicy {
+            max_retries: 4,
+            base_backoff: Duration::from_secs(1),
+            rate_limit_backoff: Duration::from_secs(5),
+            max_retry_after: Duration::from_secs(60),
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// Fails on the first non-2xx response, to measure raw challenge rates.
+    pub fn none() -> Self {
+        RetryPolicy {
+            max_retries: 0,
+            ..RetryPolicy::default()
+        }
+    }
+
+    fn wait(&self, status: StatusCode, attempt: u32, retry_after: Option<&str>) -> Duration {
+        let server_wait = retry_after
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+            .map(|seconds| Duration::from_secs_f64(seconds).min(self.max_retry_after));
+        server_wait.unwrap_or_else(|| {
+            let base = match status {
+                StatusCode::TOO_MANY_REQUESTS => self.rate_limit_backoff,
+                _ => self.base_backoff,
+            };
+            base.saturating_mul(2u32.saturating_pow(attempt))
+        })
+    }
+}
+
+/// A secret header value: Debug never prints it.
+#[derive(Clone)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: String) -> Self {
+        Secret(value)
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+type RetryObserver = Box<dyn Fn(&RetryEvent) + Send + Sync>;
+
+/// Whether a non-2xx response is worth retrying, and why.
+///
+/// A challenge is a 403 with `cf-mitigated: challenge`. A 500 is an
+/// application error (e.g. legacy-chat rename) and repeats, so only gateway
+/// errors count as transient.
+pub fn retry_reason(status: StatusCode, headers: &HeaderMap) -> Option<RetryReason> {
+    match status {
+        StatusCode::FORBIDDEN
+            if headers
+                .get("cf-mitigated")
+                .is_some_and(|value| value == "challenge") =>
+        {
+            Some(RetryReason::Challenge)
+        }
+        StatusCode::TOO_MANY_REQUESTS => Some(RetryReason::RateLimited),
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT => {
+            Some(RetryReason::Gateway(status))
+        }
+        _ => None,
+    }
+}
+
+/// Sends every request with the browser's cookies, impersonating Chrome.
+///
+/// Shareable across tasks: a challenge swaps in a fresh impit client, and
+/// requests already in flight finish on the old one.
+pub struct HttpClient {
+    base: String,
+    cookie_header: Secret,
+    policy: RetryPolicy,
+    impit: RwLock<Arc<Impit<Jar>>>,
+    on_retry: Option<RetryObserver>,
+}
+
+impl fmt::Debug for HttpClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpClient")
+            .field("base", &self.base)
+            .field("cookie_header", &self.cookie_header)
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Chrome 124, the fingerprint the npm `impit` picks for `browser: "chrome"`.
+fn build_impit() -> Result<Arc<Impit<Jar>>, HttpError> {
+    Impit::<Jar>::builder()
+        .with_fingerprint(impit::fingerprint::database::chrome_124::fingerprint())
+        .with_redirect(RedirectBehavior::ManualRedirect)
+        .build()
+        .map(Arc::new)
+        .map_err(HttpError::Build)
+}
+
+impl HttpClient {
+    pub fn new(
+        base: impl Into<String>,
+        cookie_header: Secret,
+        policy: RetryPolicy,
+    ) -> Result<Self, HttpError> {
+        let base = base.into();
+        if HeaderValue::from_str(cookie_header.expose()).is_err() {
+            return Err(HttpError::InvalidHeaderValue { path: base });
+        }
+        Ok(HttpClient {
+            base,
+            cookie_header,
+            policy,
+            impit: RwLock::new(build_impit()?),
+            on_retry: None,
+        })
+    }
+
+    pub fn on_retry(mut self, observer: impl Fn(&RetryEvent) + Send + Sync + 'static) -> Self {
+        self.on_retry = Some(Box::new(observer));
+        self
+    }
+
+    fn current_impit(&self) -> Arc<Impit<Jar>> {
+        Arc::clone(&self.impit.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// GETs `path`, retrying challenges, 429s and gateway errors. Returns the 2xx body.
+    pub async fn get(&self, path: &str, headers: &[(&str, &str)]) -> Result<String, HttpError> {
+        let url = format!("{}{path}", self.base);
+        let options = RequestOptions {
+            headers: std::iter::once(("cookie", self.cookie_header.expose()))
+                .chain(headers.iter().copied())
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
+            ..RequestOptions::default()
+        };
+        let mut attempt = 0;
+        loop {
+            let response = self
+                .current_impit()
+                .get(url.clone(), None, Some(options.clone()))
+                .await
+                .map_err(|error| transport_error(path, error))?;
+            let status = response.status();
+            let reason = match retry_reason(status, response.headers()) {
+                Some(reason) if attempt < self.policy.max_retries => reason,
+                Some(RetryReason::Challenge) => {
+                    return Err(HttpError::Challenged {
+                        path: path.to_owned(),
+                    });
+                }
+                _ => {
+                    let body = response
+                        .text()
+                        .await
+                        .map_err(|error| transport_error(path, error.into()))?;
+                    if status.is_success() {
+                        return Ok(body);
+                    }
+                    let path = path.to_owned();
+                    return Err(HttpError::Status { status, path, body });
+                }
+            };
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok());
+            let wait = self.policy.wait(status, attempt, retry_after);
+            // The retry doesn't need this body; dropping it frees the connection.
+            drop(response);
+            if reason == RetryReason::Challenge {
+                *self.impit.write().unwrap_or_else(PoisonError::into_inner) = build_impit()?;
+            }
+            if let Some(observer) = &self.on_retry {
+                observer(&RetryEvent {
+                    reason,
+                    attempt,
+                    wait,
+                });
+            }
+            tokio::time::sleep(wait).await;
+            attempt += 1;
+        }
+    }
+}
+
+fn transport_error(path: &str, error: impit::errors::ImpitError) -> HttpError {
+    let path = path.to_owned();
+    match error {
+        impit::errors::ImpitError::InvalidHeaderValue(_) => HttpError::InvalidHeaderValue { path },
+        source => HttpError::Transport { path, source },
+    }
+}
+
+#[cfg(test)]
+mod tests;
