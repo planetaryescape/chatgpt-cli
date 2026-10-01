@@ -19,6 +19,16 @@ chatgpt list --limit 10
 
 The CLI uses your macOS default browser. To choose another browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync`. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. `sync` builds the local conversation index; later runs pick up changes. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
 
+### The Rust CLI (preview)
+
+A Rust `chatgpt` is replacing the TS one. It runs `sync`, `list` and `stats` itself, through a background daemon that keeps the index fresh and holds your session (no Keychain prompt per command), and hands every other command to the TS CLI installed above. Install a release into `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh
+```
+
+`bun link` puts the TS CLI's `chatgpt` in `~/.bun/bin`; the installer warns when that comes first on your PATH. See [how the Rust CLI works](docs/explanation/rust-daemon.md).
+
 ## What you can do
 
 ```sh

@@ -1,7 +1,16 @@
 # The Rust port lives beside the TS CLI until the TS code is deleted.
 [workspace]
 resolver = "3"
-members = ["crates/chatgpt", "crates/chatgpt-probe"]
+members = [
+    "crates/chatgpt",
+    "crates/core",
+    "crates/protocol",
+    "crates/launcher",
+    "crates/store",
+    "crates/daemon",
+    "crates/cli",
+    "crates/fake-chatgpt",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,18 +29,36 @@ todo = "warn"
 
 [workspace.dependencies]
 chatgpt = { path = "crates/chatgpt" }
+chatgpt-core = { path = "crates/core" }
+chatgpt-protocol = { path = "crates/protocol" }
+chatgpt-launcher = { path = "crates/launcher" }
+chatgpt-store = { path = "crates/store" }
+chatgpt-daemon = { path = "crates/daemon" }
+fake-chatgpt = { path = "crates/fake-chatgpt" }
 
 aes = "0.8"
+bytes = "1"
 cbc = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
+# JS-compatible regexes (lookaround, backreferences) for `--title` and canvas
+# edits, which the TS CLI hands to `new RegExp`.
+fancy-regex = "0.17"
+fs2 = "0.4"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# A JS-`Map`-like listing: insertion order, overwrite in place.
+indexmap = "2"
 # Chrome TLS and HTTP/2 impersonation, the engine under the TS CLI's npm
 # `impit` 0.14.5 (tag js-0.14.5). Not on crates.io: it needs the
 # [patch.crates-io] forks below and `--cfg reqwest_unstable` (.cargo/config.toml).
+# Built from third_party/impit through the [patch] below.
 impit = { git = "https://github.com/apify/impit", rev = "152e7db1d39b35affd9635675b575e8ba5d0565f" }
+nix = { version = "0.30", default-features = false, features = ["process", "signal"] }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 # Reads the binary LaunchServices plist without spawning plutil.
 plist = "1"
+regex = "1"
 # Exact pins keep the resolver from moving past what apify's forks (below)
 # support. Cargo would drop a patch with only a warning, losing the Chrome
 # fingerprint. Match impit's Cargo.lock at the pinned impit rev.
@@ -39,15 +66,28 @@ h2 = "=0.4.7"
 hyper = "=1.8.1"
 # impit returns reqwest types.
 reqwest = { version = "=0.13.2", default-features = false }
+# One SQLite binding for the whole build (docs/issues/sqlite-crate-choice.md).
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `list --json` re-serialises Jev's answers as the TS CLI's JSON.stringify
+# does: in their stored key order (`preserve_order`), and with every float
+# read exactly (`float_roundtrip`; the default parser turns
+# 0.9400000000000001 into 0.94).
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha1 = "0.10"
 sha2 = "0.10"
+# A bigger send buffer for the daemon socket (SOCKET_BUFFER_BYTES).
+socket2 = "0.6"
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "env-filter"] }
 
+assert_cmd = "2"
 tempfile = "3"
+toml = "1"
 wiremock = "0.6"
 
 # impit's browser fingerprints live in these forks. Keep the revs in step with
@@ -57,3 +97,8 @@ h2 = { git = "https://github.com/apify/h2", rev = "7f393a728a8db07cabb1b78d20947
 rustls = { git = "https://github.com/apify/rustls", rev = "23b2c17427c095b768e22ccf0dadb97266860cf1" }
 tower-http = { git = "https://github.com/apify/tower-http", rev = "f9efc0d9193e774d33aedc1022b922efefc22052" }
 hyper-util = { git = "https://github.com/apify/hyper-util", rev = "9b7795dfd7158fc55e7c84b65bf1dae1d2dea67d" }
+
+# impit at the rev above with one change: it writes IMPIT_H2_PSEUDOHEADERS_ORDER
+# only when the value differs (third_party/README.md, docs/issues/impit-set-var-race.md).
+[patch."https://github.com/apify/impit"]
+impit = { path = "third_party/impit" }

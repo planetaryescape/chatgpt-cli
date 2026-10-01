@@ -11,8 +11,8 @@ use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use impit::impit::{Impit, RedirectBehavior};
-use impit::request::RequestOptions;
+use impit::impit::{Impit, PSEUDOHEADERS_ORDER_ENV, RedirectBehavior};
+use impit::request::{ImpitBody, RequestOptions};
 use reqwest::StatusCode;
 use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -47,6 +47,33 @@ pub enum HttpError {
     /// impit's own error would echo the value, which may be the cookie or a token.
     #[error("A request header for {path} has characters HTTP does not allow")]
     InvalidHeaderValue { path: String },
+    /// Building a client would write the process environment
+    /// (docs/issues/impit-set-var-race.md). Call [`prepare_environment`]'s
+    /// check before any thread starts.
+    #[error(
+        "{PSEUDO_HEADER_ORDER_ENV} must be set to Chrome's HTTP/2 pseudo-header order before the HTTP client is built"
+    )]
+    EnvironmentNotPrepared,
+}
+
+/// The variable apify's h2 fork reads for the HTTP/2 pseudo-header order.
+pub const PSEUDO_HEADER_ORDER_ENV: &str = PSEUDOHEADERS_ORDER_ENV;
+
+/// Chrome 124's pseudo-header order, the value impit would write into
+/// [`PSEUDO_HEADER_ORDER_ENV`] when it builds a client.
+pub fn pseudo_header_order() -> String {
+    chrome_fingerprint().http2.pseudo_header_order.join(",")
+}
+
+/// Whether the environment already holds [`pseudo_header_order`], so that
+/// building a client only reads it. A process sets it before it starts any
+/// thread (the daemon re-executes itself with it), never afterwards.
+pub fn environment_prepared() -> bool {
+    std::env::var(PSEUDO_HEADER_ORDER_ENV).ok() == Some(pseudo_header_order())
+}
+
+fn chrome_fingerprint() -> impit::fingerprint::BrowserFingerprint {
+    impit::fingerprint::database::chrome_124::fingerprint()
 }
 
 const SNIPPET_CHARS: usize = 300;
@@ -144,6 +171,14 @@ impl fmt::Debug for Secret {
 
 type RetryObserver = Box<dyn Fn(&RetryEvent) + Send + Sync>;
 
+/// The methods the client sends. Only reads: the daemon never mutates chats,
+/// and the batch read is a POST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpMethod {
+    Get,
+    Post,
+}
+
 /// Whether a non-2xx response is worth retrying, and why.
 ///
 /// A challenge is a 403 with `cf-mitigated: challenge`. A 500 is an
@@ -189,9 +224,16 @@ impl fmt::Debug for HttpClient {
 }
 
 /// Chrome 124, the fingerprint the npm `impit` picks for `browser: "chrome"`.
+///
+/// Refuses unless the environment is prepared: the vendored impit then only
+/// reads the variable, so no build (the first, or one after a challenge)
+/// writes the environment while other threads may read it.
 fn build_impit() -> Result<Arc<Impit<Jar>>, HttpError> {
+    if !environment_prepared() {
+        return Err(HttpError::EnvironmentNotPrepared);
+    }
     Impit::<Jar>::builder()
-        .with_fingerprint(impit::fingerprint::database::chrome_124::fingerprint())
+        .with_fingerprint(chrome_fingerprint())
         .with_redirect(RedirectBehavior::ManualRedirect)
         .build()
         .map(Arc::new)
@@ -228,6 +270,20 @@ impl HttpClient {
 
     /// GETs `path`, retrying challenges, 429s and gateway errors. Returns the 2xx body.
     pub async fn get(&self, path: &str, headers: &[(&str, &str)]) -> Result<String, HttpError> {
+        self.send(HttpMethod::Get, path, headers, None).await
+    }
+
+    /// Sends `method` to `path` with an optional body, retrying challenges,
+    /// 429s and gateway errors as [`HttpClient::get`] does. A retried POST is
+    /// sent again, so only reads belong here, such as the batch read
+    /// (`POST /backend-api/conversations/batch`).
+    pub async fn send(
+        &self,
+        method: HttpMethod,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> Result<String, HttpError> {
         let url = format!("{}{path}", self.base);
         let options = RequestOptions {
             headers: std::iter::once(("cookie", self.cookie_header.expose()))
@@ -238,11 +294,22 @@ impl HttpClient {
         };
         let mut attempt = 0;
         loop {
-            let response = self
-                .current_impit()
-                .get(url.clone(), None, Some(options.clone()))
-                .await
-                .map_err(|error| transport_error(path, error))?;
+            let impit = self.current_impit();
+            let request_body =
+                body.map(|text| ImpitBody::Bytes(bytes::Bytes::copy_from_slice(text.as_bytes())));
+            let sent = match method {
+                HttpMethod::Get => {
+                    impit
+                        .get(url.clone(), request_body, Some(options.clone()))
+                        .await
+                }
+                HttpMethod::Post => {
+                    impit
+                        .post(url.clone(), request_body, Some(options.clone()))
+                        .await
+                }
+            };
+            let response = sent.map_err(|error| transport_error(path, error))?;
             let status = response.status();
             let reason = match retry_reason(status, response.headers()) {
                 Some(reason) if attempt < self.policy.max_retries => reason,

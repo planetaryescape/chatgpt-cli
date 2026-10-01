@@ -1,0 +1,16 @@
+[package]
+name = "chatgpt-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Shared by every chatgpt crate: file locations, instances, error kinds and where the TS CLI lives."
+
+[dependencies]
+dirs = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

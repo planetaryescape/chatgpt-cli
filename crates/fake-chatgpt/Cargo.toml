@@ -1,0 +1,15 @@
+[package]
+name = "fake-chatgpt"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "A wiremock double of the chatgpt.com endpoints the daemon calls, for tests."
+
+[dependencies]
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "chatgpt-protocol"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "The IPC protocol between the chatgpt CLI and its daemon: length-delimited JSON over a Unix socket."
+
+[dependencies]
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio-util = { workspace = true }
+
+[lints]
+workspace = true

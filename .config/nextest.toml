@@ -1,0 +1,11 @@
+# Adapted from ms-todo .config/nextest.toml @ 72a406042a4d46c2f8cc7c3afe6bda12e11f923b
+#
+# Each test runs in its own process, so one hung test is terminated and
+# reported instead of wedging the whole run.
+
+[profile.default]
+# Warn at 30s, kill after 2 periods (60s). The slowest test, the TS parity
+# harness, takes about 15s.
+slow-timeout = { period = "30s", terminate-after = 2 }
+# The dev loop wants the full failure list from one run.
+fail-fast = false
