@@ -71,8 +71,15 @@ pub(crate) async fn serve(paths: Paths) -> Result<(), Fatal> {
         .into());
     }
 
-    write_private(&paths.pid_file(), std::process::id().to_string().as_bytes())
-        .map_err(|error| describe(&paths.pid_file(), &error))?;
+    // The start time lets a client make sure the PID is still this daemon
+    // before it signals it.
+    let pid = std::process::id();
+    let started = chatgpt_core::process_start_time(pid).unwrap_or_default();
+    write_private(
+        &paths.pid_file(),
+        chatgpt_core::pid_file_contents(pid, &started).as_bytes(),
+    )
+    .map_err(|error| describe(&paths.pid_file(), &error))?;
     // Open the index before binding: a daemon that can't start (an index a
     // newer chatgpt migrated) then never has a socket, and the client that
     // started it reads its exit status instead.

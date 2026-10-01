@@ -218,11 +218,11 @@ pub async fn inspect(paths: &Paths) -> Inspection {
     match probe(paths).await {
         Probe::Ready(_, status) => Inspection::Ready(status),
         Probe::Incompatible(why) => Inspection::Unhealthy {
-            pid: read_pid_file(paths),
+            pid: read_pid_file(paths).map(|(pid, _)| pid),
             why,
         },
         Probe::Unreachable if daemon_lock_held(paths) => Inspection::Unhealthy {
-            pid: read_pid_file(paths),
+            pid: read_pid_file(paths).map(|(pid, _)| pid),
             why: "it's running but not answering on its socket".into(),
         },
         Probe::Unreachable => Inspection::Stopped,
@@ -254,13 +254,14 @@ pub async fn stop(paths: &Paths) -> Result<Option<u32>, ClientError> {
             // It holds the lock but can't be asked to stop, so signal it.
             // The PID is safe to signal: the daemon wrote it under the lock
             // it still holds, so it can't have been reused.
-            let pid = read_pid_file(paths).ok_or_else(|| {
+            let (pid, _) = read_pid_file(paths).ok_or_else(|| {
                 unavailable(format!(
                     "a daemon holds {} but wrote no PID to {}",
                     paths.daemon_lock_file().display(),
                     paths.pid_file().display()
                 ))
             })?;
+            verify_daemon_pid(paths, pid)?;
             terminate(pid)?;
             pid
         }
@@ -268,6 +269,7 @@ pub async fn stop(paths: &Paths) -> Result<Option<u32>, ClientError> {
     if wait_until_gone(paths, pid, EXIT_TIMEOUT).await {
         return Ok(Some(pid));
     }
+    verify_daemon_pid(paths, pid)?;
     terminate(pid)?;
     if wait_until_gone(paths, pid, EXIT_TIMEOUT).await {
         return Ok(Some(pid));
@@ -562,15 +564,7 @@ fn pid_alive(pid: u32) -> bool {
 /// workspace forbids; `ps` is mxr's probe. A `ps` that can't run says
 /// "not a zombie", so the caller keeps waiting as before.
 fn process_is_zombie(pid: u32) -> bool {
-    std::process::Command::new("ps")
-        .args(["-o", "state=", "-p", &pid.to_string()])
-        .stderr(Stdio::null())
-        .output()
-        .is_ok_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .trim_start()
-                .starts_with('Z')
-        })
+    chatgpt_core::ps_field(pid, "state").is_some_and(|state| state.starts_with('Z'))
 }
 
 fn terminate(pid: u32) -> Result<(), ClientError> {
@@ -595,12 +589,29 @@ fn daemon_lock_held(paths: &Paths) -> bool {
     }
 }
 
-fn read_pid_file(paths: &Paths) -> Option<u32> {
-    std::fs::read_to_string(paths.pid_file())
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+/// The PID file's PID and the start time recorded with it.
+fn read_pid_file(paths: &Paths) -> Option<(u32, Option<String>)> {
+    chatgpt_core::parse_pid_file(&std::fs::read_to_string(paths.pid_file()).ok()?)
+}
+
+/// Make sure `pid` is still the daemon that wrote the PID file: same PID,
+/// same start time. A PID that can't be confirmed is never signalled.
+fn verify_daemon_pid(paths: &Paths, pid: u32) -> Result<(), ClientError> {
+    let confirmed = match read_pid_file(paths) {
+        Some((recorded, Some(started))) if recorded == pid => {
+            chatgpt_core::process_start_time(pid).as_deref() == Some(started.as_str())
+        }
+        _ => false,
+    };
+    if confirmed {
+        Ok(())
+    } else {
+        Err(unavailable(format!(
+            "won't signal pid {pid}: it can't be confirmed as the daemon that wrote {} \
+             (the PID may have been reused). Stop the daemon yourself if it's still running",
+            paths.pid_file().display()
+        )))
+    }
 }
 
 fn unavailable(message: String) -> ClientError {
@@ -675,6 +686,28 @@ mod tests {
         assert!(version_at_least("v0.2.0", "0.1.99"));
         assert!(version_at_least("1.0", "0.9.9"));
         assert!(!version_at_least("garbage", "0.1.0"));
+    }
+
+    #[test]
+    fn only_a_pid_whose_start_time_matches_is_signalled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Paths::under(chatgpt_core::Instance::Named("t".into()), dir.path(), None);
+        std::fs::create_dir_all(&paths.run_dir).expect("mkdir");
+        let pid = std::process::id();
+        let started = chatgpt_core::process_start_time(pid).expect("start time");
+        let write = |contents: String| std::fs::write(paths.pid_file(), contents).expect("write");
+
+        write(chatgpt_core::pid_file_contents(pid, &started));
+        assert!(verify_daemon_pid(&paths, pid).is_ok());
+        // Same PID, another process's start time: a reused PID.
+        write(chatgpt_core::pid_file_contents(
+            pid,
+            "Thu Jan  1 00:00:00 1970",
+        ));
+        assert!(verify_daemon_pid(&paths, pid).is_err());
+        // An old PID file without a start time can't be confirmed.
+        write(format!("{pid}\n"));
+        assert!(verify_daemon_pid(&paths, pid).is_err());
     }
 
     #[test]
