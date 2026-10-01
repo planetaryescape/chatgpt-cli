@@ -277,6 +277,7 @@ name = "chatgpt"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "bytes",
  "cbc",
  "h2",
  "hyper",
@@ -1271,7 +1272,6 @@ dependencies = [
 [[package]]
 name = "impit"
 version = "0.1.0"
-source = "git+https://github.com/apify/impit?rev=152e7db1d39b35affd9635675b575e8ba5d0565f#152e7db1d39b35affd9635675b575e8ba5d0565f"
 dependencies = [
  "bytes",
  "encoding",
@@ -2316,6 +2316,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",

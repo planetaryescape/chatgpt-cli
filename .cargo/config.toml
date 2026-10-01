@@ -2,3 +2,9 @@
 # variable replaces this setting rather than adding to it.
 [build]
 rustflags = ["--cfg", "reqwest_unstable"]
+
+# Tests build HTTP clients, which refuse to start unless this already holds
+# Chrome's HTTP/2 pseudo-header order (docs/issues/impit-set-var-race.md).
+# crates/chatgpt/tests/environment.rs checks it matches the fingerprint.
+[env]
+IMPIT_H2_PSEUDOHEADERS_ORDER = ":method,:authority,:scheme,:path,:protocol,:status"
