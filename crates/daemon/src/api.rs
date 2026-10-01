@@ -9,6 +9,7 @@ use chatgpt::cookies::CookieError;
 use chatgpt::http::{HttpError, HttpMethod};
 use chatgpt::session::SessionError;
 use chatgpt_core::ErrorKind;
+use chatgpt_protocol::SessionChoice;
 use chatgpt_store::NewConversation;
 use serde::Deserialize;
 use serde_json::Value;
@@ -181,21 +182,64 @@ pub struct BatchItem {
     pub conversation: Conversation,
 }
 
-/// Calls made with one browser session, which the daemon reads once and
-/// renews only when ChatGPT rejects it.
+/// Calls made with one browser choice's session, which the daemon reads
+/// once and renews only when ChatGPT rejects it. A sync pins the account
+/// too: a renewed session for another account fails the call rather than
+/// mixing two accounts' chats in one pass.
 #[derive(Clone)]
 pub struct Api {
-    pub sessions: Arc<Sessions>,
+    sessions: Arc<Sessions>,
+    choice: SessionChoice,
+    account: Option<String>,
 }
 
 impl Api {
+    pub fn new(sessions: Arc<Sessions>, choice: SessionChoice) -> Self {
+        Self {
+            sessions,
+            choice,
+            account: None,
+        }
+    }
+
+    pub fn choice(&self) -> &SessionChoice {
+        &self.choice
+    }
+
+    /// Open this choice's session if need be and pin its account: later
+    /// calls fail if a renewal brings another account.
+    pub async fn pinned(mut self) -> Result<Self, ApiError> {
+        let session = self.sessions.current(&self.choice).await?;
+        self.account = session.token.account().map(str::to_owned);
+        Ok(self)
+    }
+
+    /// The account a pinned client keeps to.
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
+    }
+
+    fn same_account(&self, session: &Session) -> Result<(), ApiError> {
+        match (&self.account, session.token.account()) {
+            (Some(pinned), Some(now)) if pinned != now => Err(ApiError::new(
+                ErrorKind::AuthRequired,
+                format!(
+                    "the session in {} now belongs to another ChatGPT account; stopped this sync so it doesn't mix accounts",
+                    session.source
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     async fn send(
         &self,
         method: HttpMethod,
         path: &str,
         body: Option<&str>,
     ) -> Result<String, ApiError> {
-        let session = self.sessions.current().await?;
+        let session = self.sessions.current(&self.choice).await?;
+        self.same_account(&session)?;
         match call(&session, method, path, body).await {
             // 401, or a 403 that isn't a Cloudflare challenge (that's a
             // separate error): the token or the cookies went stale. Read
@@ -203,7 +247,8 @@ impl Api {
             Err(HttpError::Status { status, .. })
                 if status.as_u16() == 401 || status.as_u16() == 403 =>
             {
-                let renewed = self.sessions.renew(&session).await?;
+                let renewed = self.sessions.renew(&self.choice, &session).await?;
+                self.same_account(&renewed)?;
                 Ok(call(&renewed, method, path, body).await?)
             }
             other => Ok(other?),

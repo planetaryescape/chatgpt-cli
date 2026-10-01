@@ -20,11 +20,11 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chatgpt_core::ErrorKind;
-use chatgpt_protocol::{Backoff, Progress, SyncMode, SyncReport, SyncStatus};
+use chatgpt_protocol::{Backoff, Progress, SessionChoice, SyncMode, SyncReport, SyncStatus};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::ApiError;
+use crate::api::{Api, ApiError};
 use crate::handlers::Failure;
 use crate::state::{State, now_unix};
 
@@ -54,6 +54,9 @@ pub struct Syncer {
 
 struct Schedule {
     status: SyncStatus,
+    /// The browser choice passes read with: the last one `chatgpt sync`
+    /// sent. It only changes under `running`, between passes.
+    choice: SessionChoice,
     last_client: Instant,
     last_pass: Option<Instant>,
     last_sweep: Option<Instant>,
@@ -65,21 +68,31 @@ pub struct PassOptions {
     /// `chatgpt sync`: sweep, reconcile and run the TS sync now.
     pub explicit: bool,
     pub full: bool,
+    /// The browser and profile `chatgpt sync` asked for; it becomes the one
+    /// background passes use too. `None`: keep the current one.
+    pub choice: Option<SessionChoice>,
     /// Where the waiting client wants progress lines; a background pass
     /// has no client.
     pub progress: Option<UnboundedSender<Progress>>,
 }
 
 impl Syncer {
-    pub fn new() -> Self {
+    /// `synced_age`: how long ago the index last synced, if it ever did. A
+    /// daemon that starts with a synced index waits out the rest of the
+    /// interval, so a cold `list` costs no request; an empty index syncs at
+    /// once.
+    pub fn new(synced_age: Option<Duration>) -> Self {
         Self {
             running: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Schedule {
                 status: SyncStatus::default(),
+                choice: SessionChoice::default(),
                 last_client: Instant::now(),
-                last_pass: None,
-                last_sweep: None,
-                last_ts_sync: None,
+                // A restart behaves as if the last pass, with its sweep and
+                // TS sync, ran when the index last synced.
+                last_pass: synced_age.and_then(|age| Instant::now().checked_sub(age)),
+                last_sweep: synced_age.and_then(|age| Instant::now().checked_sub(age)),
+                last_ts_sync: synced_age.and_then(|age| Instant::now().checked_sub(age)),
                 backoff: None,
             }),
             wake: Notify::new(),
@@ -115,6 +128,11 @@ impl Syncer {
             .filter(|(until, _)| *until > Instant::now())
             .map(|(_, backoff)| backoff.clone());
         (status, backoff)
+    }
+
+    /// The browser choice passes read with.
+    pub fn choice(&self) -> SessionChoice {
+        self.schedule().choice.clone()
     }
 
     pub fn ts_sync_due(&self, explicit: bool) -> bool {
@@ -166,6 +184,7 @@ pub async fn run_scheduled(state: std::sync::Arc<State>) {
                 PassOptions {
                     explicit: false,
                     full: false,
+                    choice: None,
                     progress: None,
                 },
             )
@@ -219,9 +238,19 @@ pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport,
         tokio::time::sleep(left).await;
     }
 
+    // One browser session, and one account, for the whole pass: a client
+    // choosing another browser meanwhile can't change what this pass reads.
+    let choice = {
+        let mut schedule = state.syncer.schedule();
+        if let Some(choice) = &options.choice {
+            schedule.choice = choice.clone();
+        }
+        schedule.choice.clone()
+    };
     let started = Instant::now();
     state.syncer.schedule().status.in_progress = true;
-    let outcome = pass(state, &options).await;
+    let outcome =
+        async { pass(state, &pinned_api(state, choice.clone()).await?, &options).await }.await;
     let finished_at = now_unix();
     {
         let mut schedule = state.syncer.schedule();
@@ -261,12 +290,45 @@ pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport,
     tracing::info!("sync pass done: {}", summary(&report));
 
     if state.syncer.ts_sync_due(options.explicit) {
-        crate::ts_sync::after_pass(state, options.full, &mut report).await;
+        crate::ts_sync::after_pass(state, &choice, options.full, &mut report).await;
     }
     Ok(report)
 }
 
-async fn pass(state: &State, options: &PassOptions) -> Result<SyncReport, ApiError> {
+/// An API client for `choice` pinned to the session's account, refusing an
+/// account other than the one the index was built from: reconciling one
+/// account's chats against another's would delete them.
+async fn pinned_api(state: &State, choice: SessionChoice) -> Result<Api, ApiError> {
+    let api = Api::new(std::sync::Arc::clone(&state.sessions), choice)
+        .pinned()
+        .await?;
+    let Some(account) = api.account().map(str::to_owned) else {
+        return Ok(api);
+    };
+    let stored = state.db(chatgpt_store::account).await?;
+    match stored {
+        Some(stored) if stored != account => Err(ApiError::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "this index holds another ChatGPT account's chats than the session in {}. \
+                 Keep each account in its own instance: CHATGPT_INSTANCE=<name> chatgpt sync",
+                state
+                    .sessions
+                    .source(api.choice())
+                    .unwrap_or_else(|| "this browser".into())
+            ),
+        )),
+        Some(_) => Ok(api),
+        None => {
+            state
+                .db_write(move |db| chatgpt_store::set_account(db, &account))
+                .await?;
+            Ok(api)
+        }
+    }
+}
+
+async fn pass(state: &State, api: &Api, options: &PassOptions) -> Result<SyncReport, ApiError> {
     let watermark = state.db(chatgpt_store::active_watermark).await?;
     match watermark {
         Some(watermark) if !options.full => {
@@ -276,9 +338,9 @@ async fn pass(state: &State, options: &PassOptions) -> Result<SyncReport, ApiErr
                     .schedule()
                     .last_sweep
                     .is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL);
-            delta::run(state, &watermark, sweep).await
+            delta::run(state, api, &watermark, sweep).await
         }
-        _ => full::run(state).await,
+        _ => full::run(state, api).await,
     }
 }
 

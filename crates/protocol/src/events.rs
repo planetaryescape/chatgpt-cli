@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     Progress(Progress),
+    /// Sent every few seconds while a request runs, so a long step that
+    /// has nothing to report never trips the client's stall timeout.
+    Heartbeat,
     #[serde(other)]
     Unknown,
 }

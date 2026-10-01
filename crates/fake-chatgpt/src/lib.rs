@@ -14,6 +14,10 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 pub const ACCESS_TOKEN: &str = "fake-access-token";
 pub const COOKIE: &str = "__Secure-next-auth.session-token=fake-session";
+/// A second ChatGPT account, with chats of its own
+/// (`State::other_account_chats`).
+pub const OTHER_COOKIE: &str = "__Secure-next-auth.session-token=other-session";
+const OTHER_ACCESS_TOKEN: &str = "other-access-token";
 
 /// A chat the fake serves.
 #[derive(Clone, Debug)]
@@ -103,6 +107,13 @@ pub struct State {
     pub session_exchanges: u32,
     /// Reject the next request's token with a 401, as an expired one is.
     pub expire_token: bool,
+    /// The second account's chats.
+    pub other_account_chats: Vec<Chat>,
+    /// Hold every conversation-list answer this long.
+    pub list_delay_ms: u64,
+    /// Answer this many next batch requests with 429 (`retry-after`
+    /// seconds).
+    pub rate_limit_batch: Option<(u32, u64)>,
 }
 
 pub struct FakeChatGpt {
@@ -166,21 +177,36 @@ impl Respond for Handler {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        if header("cookie").as_deref() != Some(COOKIE) {
-            return ResponseTemplate::new(401);
-        }
+        let (token, user, other) = match header("cookie").as_deref() {
+            Some(COOKIE) => (ACCESS_TOKEN, "user-a", false),
+            Some(OTHER_COOKIE) => (OTHER_ACCESS_TOKEN, "user-b", true),
+            _ => return ResponseTemplate::new(401),
+        };
         if let Route::Session = self.route {
             state.session_exchanges += 1;
             return ResponseTemplate::new(200)
-                .set_body_json(json!({ "accessToken": ACCESS_TOKEN }));
+                .set_body_json(json!({ "accessToken": token, "user": { "id": user } }));
         }
-        if header("authorization").as_deref() != Some(&format!("Bearer {ACCESS_TOKEN}")) {
+        if header("authorization").as_deref() != Some(&format!("Bearer {token}")) {
             return ResponseTemplate::new(401);
+        }
+        if let (Route::Batch, Some((left, retry_after))) = (self.route, state.rate_limit_batch)
+            && left > 0
+        {
+            state.rate_limit_batch = (left > 1).then_some((left - 1, retry_after));
+            return ResponseTemplate::new(429)
+                .insert_header("retry-after", retry_after.to_string());
         }
         if state.expire_token {
             state.expire_token = false;
             return ResponseTemplate::new(401).set_body_string("{\"detail\":\"token expired\"}");
         }
+        let delay = std::time::Duration::from_millis(state.list_delay_ms);
+        let chats = if other {
+            &state.other_account_chats
+        } else {
+            &state.chats
+        };
         match self.route {
             Route::Session => ResponseTemplate::new(500),
             Route::List => {
@@ -191,25 +217,26 @@ impl Respond for Handler {
                 let limit: usize = query(request, "limit")
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(100);
-                let mut chats: Vec<&Chat> = state
-                    .chats
+                let mut listed: Vec<&Chat> = chats
                     .iter()
                     .filter(|chat| chat.archived == archived)
                     .filter(|chat| !state.omitted_from_lists.contains(&chat.id))
                     .collect();
-                chats.sort_by(|a, b| b.update_time.cmp(&a.update_time));
-                let items: Vec<Value> = chats
+                listed.sort_by(|a, b| b.update_time.cmp(&a.update_time));
+                let items: Vec<Value> = listed
                     .into_iter()
                     .skip(offset)
                     .take(limit)
                     .map(Chat::list_item)
                     .collect();
                 let total = offset + items.len() + 1;
-                ResponseTemplate::new(200).set_body_json(json!({ "items": items, "total": total }))
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "items": items, "total": total }))
+                    .set_delay(delay)
             }
             Route::Detail => {
                 let id = request.url.path().rsplit('/').next().unwrap_or("");
-                match state.chats.iter().find(|chat| chat.id == id) {
+                match chats.iter().find(|chat| chat.id == id) {
                     Some(chat) => ResponseTemplate::new(200).set_body_json(chat.detail()),
                     None => ResponseTemplate::new(404)
                         .set_body_json(json!({ "detail": "conversation_deleted" })),
@@ -227,7 +254,7 @@ impl Respond for Handler {
                     .unwrap_or_default();
                 let items: Vec<Value> = ids
                     .iter()
-                    .filter_map(|id| state.chats.iter().find(|chat| &chat.id == id))
+                    .filter_map(|id| chats.iter().find(|chat| &chat.id == id))
                     .map(Chat::batch_item)
                     .collect();
                 ResponseTemplate::new(200).set_body_json(items)

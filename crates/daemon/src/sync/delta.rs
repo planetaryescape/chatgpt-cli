@@ -9,12 +9,13 @@ use chatgpt_protocol::{SyncMode, SyncReport};
 use chatgpt_store::NewConversation;
 
 use super::{Listing, reconcile};
-use crate::api::{ApiError, BATCH_MAX, PAGE_SIZE};
+use crate::api::{Api, ApiError, BATCH_MAX, PAGE_SIZE};
 use crate::js;
 use crate::state::State;
 
 pub(super) async fn run(
     state: &State,
+    api: &Api,
     watermark: &str,
     sweep: bool,
 ) -> Result<SyncReport, ApiError> {
@@ -29,7 +30,7 @@ pub(super) async fn run(
         .step("Checking for new and updated chats", None);
     let mut changed = Listing::new();
     'pages: for offset in (0..).step_by(PAGE_SIZE) {
-        let page = state.api.list_page(false, offset).await?;
+        let page = api.list_page(false, offset).await?;
         let short = page.len() < PAGE_SIZE;
         for chat in page {
             if chat.update_time.as_str() <= watermark {
@@ -64,7 +65,7 @@ pub(super) async fn run(
     let archived_step = state.reporter.step("Reading archived chats", None);
     let mut archived = Listing::new();
     for offset in (0..).step_by(PAGE_SIZE) {
-        let page = state.api.list_page(true, offset).await?;
+        let page = api.list_page(true, offset).await?;
         let short = page.len() < PAGE_SIZE;
         for chat in page {
             archived.insert(chat.id.clone(), chat);
@@ -99,7 +100,7 @@ pub(super) async fn run(
         .await?;
 
     for ids in dropped.chunks(BATCH_MAX) {
-        let found = state.api.batch(ids).await?;
+        let found = api.batch(ids).await?;
         for id in ids {
             match found.iter().find(|item| &item.id == id) {
                 None => {
@@ -122,6 +123,6 @@ pub(super) async fn run(
     }
 
     let all_ids = state.db(chatgpt_store::all_ids).await?;
-    report.reconcile = Some(reconcile::run(state, &all_ids).await);
+    report.reconcile = Some(reconcile::run(state, api, &all_ids).await?);
     Ok(report)
 }

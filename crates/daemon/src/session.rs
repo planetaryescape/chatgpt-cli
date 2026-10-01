@@ -1,8 +1,9 @@
-//! The one browser session the daemon holds. Cookies are read once (the
-//! read can raise a Keychain prompt), exchanged for an access token that
-//! stays in memory, and read again only when ChatGPT rejects them, the
-//! session expired, or a client asks for another browser or profile.
+//! The browser sessions the daemon holds. Cookies are read once per
+//! browser choice (the read can raise a Keychain prompt), exchanged for an
+//! access token that stays in memory, and read again only when ChatGPT
+//! rejects them or the session expired.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -30,13 +31,17 @@ pub struct Session {
     pub token: AccessToken,
 }
 
+/// The sessions the daemon holds, one per browser choice, so a client
+/// asking for another browser (`stats --browser chrome`) never changes the
+/// session a running sync uses. Each choice has its own lock: reading one
+/// browser's cookies, which can wait on a Keychain prompt, holds up only
+/// calls for that browser.
 pub struct Sessions {
-    current: tokio::sync::Mutex<Option<Arc<Session>>>,
-    /// What the next session should be read from: the last choice a client
-    /// sent, which background syncs keep using.
-    wanted: Mutex<SessionChoice>,
+    slots: Mutex<HashMap<SessionChoice, Arc<Slot>>>,
     reporter: Reporter,
 }
+
+type Slot = tokio::sync::Mutex<Option<Arc<Session>>>;
 
 fn debug_env(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {
@@ -49,77 +54,64 @@ fn debug_env(name: &str) -> Option<String> {
 impl Sessions {
     pub fn new(reporter: Reporter) -> Self {
         Self {
-            current: tokio::sync::Mutex::new(None),
-            wanted: Mutex::new(SessionChoice::default()),
+            slots: Mutex::new(HashMap::new()),
             reporter,
         }
     }
 
-    /// Use `choice` from now on. A different choice drops the held session,
-    /// so the next call reads the newly chosen browser's cookies.
-    pub async fn choose(&self, choice: &SessionChoice) {
-        let changed = {
-            let mut wanted = self.wanted.lock().unwrap_or_else(PoisonError::into_inner);
-            let changed = *wanted != *choice;
-            *wanted = choice.clone();
-            changed
-        };
-        if changed {
-            *self.current.lock().await = None;
-        }
+    fn slot(&self, choice: &SessionChoice) -> Arc<Slot> {
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(slots.entry(choice.clone()).or_default())
     }
 
-    /// The browser and profile sessions are read from.
-    pub fn chosen(&self) -> SessionChoice {
-        self.wanted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Where the held session came from, for `daemon status`. `None` while
-    /// one is being read: `Status` must answer at once, even while a
-    /// Keychain prompt waits.
-    pub fn source(&self) -> Option<String> {
-        self.current
+    /// Where the session for `choice` came from, for `daemon status`.
+    /// `None` while one is being read: `Status` must answer at once, even
+    /// while a Keychain prompt waits.
+    pub fn source(&self, choice: &SessionChoice) -> Option<String> {
+        self.slot(choice)
             .try_lock()
             .ok()?
             .as_ref()
             .map(|session| session.source.clone())
     }
 
-    /// The held session, or a new one read from the browser.
-    pub async fn current(&self) -> Result<Arc<Session>, ApiError> {
-        let mut current = self.current.lock().await;
-        if let Some(session) = current.as_ref() {
+    /// The session held for `choice`, or a new one read from the browser.
+    pub async fn current(&self, choice: &SessionChoice) -> Result<Arc<Session>, ApiError> {
+        let slot = self.slot(choice);
+        let mut held = slot.lock().await;
+        if let Some(session) = held.as_ref() {
             return Ok(Arc::clone(session));
         }
-        let session = Arc::new(self.open().await?);
-        *current = Some(Arc::clone(&session));
+        let session = Arc::new(self.open(choice).await?);
+        *held = Some(Arc::clone(&session));
         Ok(session)
     }
 
-    /// Read the cookies again and exchange them for a new token, unless
-    /// another call already replaced `stale`.
-    pub async fn renew(&self, stale: &Arc<Session>) -> Result<Arc<Session>, ApiError> {
-        let mut current = self.current.lock().await;
-        if let Some(session) = current.as_ref()
+    /// Read `choice`'s cookies again and exchange them for a new token,
+    /// unless another call already replaced `stale`.
+    pub async fn renew(
+        &self,
+        choice: &SessionChoice,
+        stale: &Arc<Session>,
+    ) -> Result<Arc<Session>, ApiError> {
+        let slot = self.slot(choice);
+        let mut held = slot.lock().await;
+        if let Some(session) = held.as_ref()
             && !Arc::ptr_eq(session, stale)
         {
             return Ok(Arc::clone(session));
         }
         tracing::info!(source = %stale.source, "ChatGPT rejected the session; reading cookies again");
-        *current = None;
-        let session = Arc::new(self.open().await?);
-        *current = Some(Arc::clone(&session));
+        *held = None;
+        let session = Arc::new(self.open(choice).await?);
+        *held = Some(Arc::clone(&session));
         Ok(session)
     }
 
-    async fn open(&self) -> Result<Session, ApiError> {
-        let choice = self.chosen();
-        let (cookie_header, source) = match debug_env(TEST_COOKIE_ENV) {
+    async fn open(&self, choice: &SessionChoice) -> Result<Session, ApiError> {
+        let (cookie_header, source) = match test_cookie(choice) {
             Some(cookie) => (cookie, "test cookie".to_owned()),
-            None => read_cookies(&choice).await?,
+            None => read_cookies(choice).await?,
         };
         let base = debug_env(BASE_URL_ENV).unwrap_or_else(|| CHATGPT_BASE.to_owned());
         let policy = if debug_env(FAST_RETRY_ENV).is_some() {
@@ -152,6 +144,16 @@ impl Sessions {
             token,
         })
     }
+}
+
+/// In debug builds: `CHATGPT_TEST_COOKIE_<BROWSER>` for a chosen browser,
+/// else `CHATGPT_TEST_COOKIE`, instead of a real browser's cookies.
+fn test_cookie(choice: &SessionChoice) -> Option<String> {
+    choice
+        .browser
+        .as_deref()
+        .and_then(|browser| debug_env(&format!("{TEST_COOKIE_ENV}_{}", browser.to_uppercase())))
+        .or_else(|| debug_env(TEST_COOKIE_ENV))
 }
 
 /// The browser's cookies, read off the async threads: it reads SQLite and

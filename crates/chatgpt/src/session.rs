@@ -10,16 +10,25 @@ pub const SESSION_PATH: &str = "/api/auth/session";
 
 /// A bearer token for `/backend-api`. It lives in memory only; Debug never prints it.
 #[derive(Clone, Debug)]
-pub struct AccessToken(Secret);
+pub struct AccessToken {
+    token: Secret,
+    account: Option<String>,
+}
 
 impl AccessToken {
     pub fn expose(&self) -> &str {
-        self.0.expose()
+        self.token.expose()
     }
 
     /// The `authorization` header value.
     pub fn bearer(&self) -> Secret {
-        Secret::new(format!("Bearer {}", self.0.expose()))
+        Secret::new(format!("Bearer {}", self.token.expose()))
+    }
+
+    /// The ChatGPT account the session belongs to (`user.id`), when the
+    /// session says.
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
     }
 }
 
@@ -47,6 +56,12 @@ pub enum SessionError {
 struct SessionBody {
     #[serde(rename = "accessToken")]
     access_token: Option<String>,
+    user: Option<SessionUser>,
+}
+
+#[derive(Deserialize)]
+struct SessionUser {
+    id: Option<String>,
 }
 
 /// `source_name` names the browser session in the expiry message, e.g. `dia profile "Default"`.
@@ -61,10 +76,14 @@ pub async fn exchange_session(
             line: error.line(),
             column: error.column(),
         })?;
+    let account = session.user.and_then(|user| user.id);
     session
         .access_token
         .filter(|token| !token.is_empty())
-        .map(|token| AccessToken(Secret::new(token)))
+        .map(|token| AccessToken {
+            token: Secret::new(token),
+            account,
+        })
         .ok_or_else(|| SessionError::Expired {
             source_name: source_name.to_owned(),
         })

@@ -455,7 +455,7 @@ fn the_ts_sync_runs_after_an_explicit_sync_and_its_judgments_show_up() {
 case " $* " in
   *" sync "*)
     sqlite3 "$CHATGPT_LEGACY_DB" < '{sql}'
-    echo "Sync done in 0.1s: 0 new (fake)" >&2
+    echo 'Sync done in 0.1s: 0 new, 1 updated, 0 newly archived, 0 unarchived, 0 deleted. `sync --full` also drops chats deleted in the browser.' >&2
     ;;
 esac
 "#,
@@ -470,7 +470,7 @@ esac
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("TS sync: Sync done in 0.1s: 0 new (fake)"),
+        stderr.contains("TS sync: Sync done in 0.1s: 0 new, 1 updated"),
         "{stderr}"
     );
     assert!(

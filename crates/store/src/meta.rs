@@ -19,3 +19,12 @@ pub fn set_meta(connection: &Connection, key: &str, value: &str) -> Result<()> {
     )?;
     Ok(())
 }
+
+/// The ChatGPT account the index holds chats for, from its first sync on.
+pub fn account(connection: &Connection) -> Result<Option<String>> {
+    get_meta(connection, "account_id")
+}
+
+pub fn set_account(connection: &Connection, account: &str) -> Result<()> {
+    set_meta(connection, "account_id", account)
+}

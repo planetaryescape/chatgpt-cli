@@ -10,6 +10,10 @@ use chatgpt_core::format_duration;
 use chatgpt_protocol::{Progress, ProgressKind};
 use tokio::sync::mpsc::UnboundedSender;
 
+/// How often the server tells a client waiting on any request that it's
+/// still working, well inside the client's 300-second stall timeout.
+pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Clone, Default)]
 pub struct Reporter {
     sink: Arc<Mutex<Option<UnboundedSender<Progress>>>>,

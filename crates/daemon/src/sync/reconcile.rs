@@ -13,14 +13,19 @@ use std::time::Duration;
 use chatgpt_protocol::ReconcileReport;
 use chatgpt_store::Candidate;
 
-use crate::api::{BATCH_MAX, BatchItem};
+use crate::api::{Api, ApiError, BATCH_MAX, BatchItem};
 use crate::js;
 use crate::render::{SEPARATOR, render_transcript, visible_turns};
 use crate::state::State;
 
-/// Never fails as a whole: a chat that can't be checked is a failure in
-/// the report and stays stale.
-pub(super) async fn run(state: &State, ids: &[String]) -> ReconcileReport {
+/// A chat that can't be checked is a failure in the report and stays
+/// stale. A rate limit ends the whole pass instead, so the backoff is
+/// recorded and nothing more is sent.
+pub(super) async fn run(
+    state: &State,
+    api: &Api,
+    ids: &[String],
+) -> Result<ReconcileReport, ApiError> {
     let mut report = ReconcileReport::default();
     let render_version = state.profile().render_version;
     let ids = ids.to_vec();
@@ -33,11 +38,11 @@ pub(super) async fn run(state: &State, ids: &[String]) -> ReconcileReport {
             report
                 .failures
                 .push(format!("reading the cache: {}", failure.message));
-            return report;
+            return Ok(report);
         }
     };
     if candidates.is_empty() {
-        return report;
+        return Ok(report);
     }
     let step = state
         .reporter
@@ -46,11 +51,12 @@ pub(super) async fn run(state: &State, ids: &[String]) -> ReconcileReport {
     for (index, batch) in batches.iter().enumerate() {
         let ids: Vec<String> = batch.iter().map(|candidate| candidate.id.clone()).collect();
         let done = (index * BATCH_MAX + batch.len()).min(candidates.len());
-        let fetched: HashMap<String, BatchItem> = match state.api.batch(&ids).await {
+        let fetched: HashMap<String, BatchItem> = match api.batch(&ids).await {
             Ok(items) => items
                 .into_iter()
                 .map(|item| (item.id.clone(), item))
                 .collect(),
+            Err(error) if error.is_rate_limit() => return Err(error),
             Err(error) => {
                 report
                     .failures
@@ -101,7 +107,7 @@ pub(super) async fn run(state: &State, ids: &[String]) -> ReconcileReport {
     for failure in &report.failures {
         tracing::warn!("reconcile failed: {failure}");
     }
-    report
+    Ok(report)
 }
 
 /// `sameContent`. The batch endpoint returns old or rounded update times

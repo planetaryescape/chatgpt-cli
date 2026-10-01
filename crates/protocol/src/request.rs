@@ -40,7 +40,7 @@ pub enum Request {
 /// `CHATGPT_BROWSER_PROFILE`), as the client resolved them. `None` means the
 /// macOS default browser. A daemon holding another session reads cookies
 /// again for this one.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionChoice {
     #[serde(default)]
     pub browser: Option<String>,

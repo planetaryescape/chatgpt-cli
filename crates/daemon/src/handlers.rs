@@ -11,7 +11,7 @@ use chatgpt_protocol::{
 use rusqlite::Connection;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::ApiError;
+use crate::api::{Api, ApiError};
 use crate::filters::InvalidFilter;
 use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
@@ -85,13 +85,13 @@ pub async fn handle(
         Request::Status => Ok(ResponseData::Status(Box::new(status(state).await))),
         Request::Shutdown => Ok(ResponseData::Ack),
         Request::Sync { full, session } => {
-            state.sessions.choose(&session).await;
             // Its own task: a client that goes away mid-sync mustn't cancel
             // the pass halfway.
             let state = Arc::clone(state);
             let options = PassOptions {
                 explicit: true,
                 full,
+                choice: Some(session),
                 progress,
             };
             tokio::spawn(async move { run_pass(&state, options).await })
@@ -138,8 +138,9 @@ async fn stats(
         reads::chat_stats(db, &filter, profile, now)
     })
     .await?;
-    state.sessions.choose(session).await;
-    match state.api.memories().await {
+    // Its own session for this choice: a sync running meanwhile keeps its.
+    let api = Api::new(Arc::clone(&state.sessions), session.clone());
+    match api.memories().await {
         Ok(memories) => {
             let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
             let counted = read(state, move |db, profile, _| {
@@ -179,7 +180,7 @@ async fn status(state: &State) -> DaemonStatus {
         database: state.store.path().display().to_string(),
         sync,
         backoff,
-        session: state.sessions.source(),
+        session: state.sessions.source(&state.syncer.choice()),
         ts_sync: state.ts_sync_status(),
         legacy_import: state.import_status(),
         classification: state.profile().info(),

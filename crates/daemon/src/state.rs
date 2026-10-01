@@ -4,11 +4,10 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use chatgpt_core::Paths;
 use chatgpt_core::ts_cli::{self, TsCli};
-use chatgpt_protocol::{ImportReport, ImportStatus, SessionChoice, TsSyncOutcome, TsSyncStatus};
+use chatgpt_protocol::{ImportReport, ImportStatus, TsSyncOutcome, TsSyncStatus};
 use chatgpt_store::Store;
 use rusqlite::Connection;
 
-use crate::api::Api;
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::progress::Reporter;
@@ -23,7 +22,6 @@ pub struct State {
     pub paths: Paths,
     pub store: Arc<Store>,
     pub sessions: Arc<Sessions>,
-    pub api: Api,
     pub reporter: Reporter,
     pub syncer: Syncer,
     pub started_at: i64,
@@ -64,15 +62,21 @@ impl State {
                 ..TsSyncStatus::default()
             },
         };
+        let synced_age = store
+            .read(chatgpt_store::synced_at)
+            .ok()
+            .flatten()
+            .and_then(|at| crate::js::parse_date(&at))
+            .map(|at| {
+                let age_ms = (chrono::Utc::now().timestamp_millis() - at).max(0);
+                std::time::Duration::from_millis(u64::try_from(age_ms).unwrap_or(0))
+            });
         Self {
             paths,
             store: Arc::new(store),
-            api: Api {
-                sessions: Arc::clone(&sessions),
-            },
             sessions,
             reporter,
-            syncer: Syncer::new(),
+            syncer: Syncer::new(synced_age),
             started_at: now_unix(),
             version,
             profile: RwLock::new(Arc::new(profile)),
@@ -119,10 +123,6 @@ impl State {
             tracing::info!(source = %profile.source, questions = %profile.questions_version, "classification versions changed");
             *current = Arc::new(profile);
         }
-    }
-
-    pub fn sessions_choice(&self) -> SessionChoice {
-        self.sessions.chosen()
     }
 
     pub fn record_ts_sync(&self, ts: Option<&TsCli>, outcome: &TsSyncOutcome) {

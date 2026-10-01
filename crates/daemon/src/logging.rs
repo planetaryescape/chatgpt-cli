@@ -6,8 +6,8 @@
 //! The daemon's log: `<data_dir>/logs/daemon.log.YYYY-MM-DD`, one file a
 //! day, the last 7 kept. Never cookies, tokens or response bodies: the HTTP
 //! client's errors drop bodies before they reach a log line
-//! (`api::ApiError`), and the TS sync's output is redacted
-//! (`ts_sync::redact`).
+//! (`api::ApiError`), and of the TS sync's output only the TS CLI's own
+//! progress and summary lines are kept (`ts_sync::Output`).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

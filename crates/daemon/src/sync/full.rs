@@ -10,11 +10,11 @@ use chatgpt_store::{IndexFilter, IndexedConversation, NewConversation};
 use serde_json::Value;
 
 use super::{Listing, reconcile};
-use crate::api::{ApiError, ConversationSummary, PAGE_SIZE};
+use crate::api::{Api, ApiError, ConversationSummary, PAGE_SIZE};
 use crate::js;
 use crate::state::State;
 
-pub(super) async fn run(state: &State) -> Result<SyncReport, ApiError> {
+pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError> {
     let started_at = js::now_iso();
     let mut listed = Listing::new();
     for archived in [false, true] {
@@ -22,7 +22,7 @@ pub(super) async fn run(state: &State) -> Result<SyncReport, ApiError> {
         let step = state.reporter.step(&format!("Listing {kind} chats"), None);
         let mut seen = 0;
         for offset in (0..).step_by(PAGE_SIZE) {
-            let page = state.api.list_page(archived, offset).await?;
+            let page = api.list_page(archived, offset).await?;
             let short = page.len() < PAGE_SIZE;
             for chat in page {
                 if !listed.contains_key(&chat.id) {
@@ -42,7 +42,7 @@ pub(super) async fn run(state: &State) -> Result<SyncReport, ApiError> {
     // the start.
     for archived in [false, true] {
         'pages: for offset in (0..).step_by(PAGE_SIZE) {
-            let page = state.api.list_page(archived, offset).await?;
+            let page = api.list_page(archived, offset).await?;
             let short = page.len() < PAGE_SIZE;
             for chat in page {
                 if chat.update_time < started_at {
@@ -68,7 +68,7 @@ pub(super) async fn run(state: &State) -> Result<SyncReport, ApiError> {
             )
         })
         .await?;
-    let recovered = recover_omissions(state, &mut listed, &previous).await?;
+    let recovered = recover_omissions(api, &mut listed, &previous).await?;
     if recovered > 0 {
         state.reporter.note(format!(
             "Recovered {recovered} chat(s) omitted from the conversation lists after individual checks."
@@ -84,7 +84,7 @@ pub(super) async fn run(state: &State) -> Result<SyncReport, ApiError> {
     state
         .db_write(move |db| chatgpt_store::replace_all(db, &all, &synced_at))
         .await?;
-    let reconciled = reconcile::run(state, &ids).await;
+    let reconciled = reconcile::run(state, api, &ids).await?;
     Ok(SyncReport {
         mode: SyncMode::Full,
         swept: true,
@@ -100,7 +100,7 @@ pub(super) async fn run(state: &State) -> Result<SyncReport, ApiError> {
 /// Check every previously indexed chat the lists left out through the
 /// single-chat endpoint: a 404 is a deletion, anything found goes back in.
 async fn recover_omissions(
-    state: &State,
+    api: &Api,
     listed: &mut Listing,
     previous: &[IndexedConversation],
 ) -> Result<u64, ApiError> {
@@ -109,7 +109,7 @@ async fn recover_omissions(
         if listed.contains_key(&old.id) {
             continue;
         }
-        let Some(chat) = state.api.conversation(&old.id).await? else {
+        let Some(chat) = api.conversation(&old.id).await? else {
             continue;
         };
         listed.insert(old.id.clone(), recovered_summary(old, &chat)?);

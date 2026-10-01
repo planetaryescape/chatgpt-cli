@@ -200,9 +200,17 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
         let (progress, mut updates) = mpsc::unbounded_channel();
         let work = handle(&state, request, Some(progress));
         tokio::pin!(work);
+        let mut heartbeat = tokio::time::interval(crate::progress::HEARTBEAT);
+        heartbeat.tick().await;
         let response = loop {
             tokio::select! {
                 response = &mut work => break response,
+                _ = heartbeat.tick() => {
+                    let beat = Message { id: message.id, payload: Payload::Event(Event::Heartbeat) };
+                    if framed.send(beat).await.is_err() {
+                        return;
+                    }
+                }
                 Some(update) = updates.recv() => {
                     let event = Message {
                         id: message.id,

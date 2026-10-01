@@ -103,7 +103,7 @@ pub use conversations::{
 };
 pub use judgments::{current_judgments, memory_judgment};
 pub use legacy::import_legacy;
-pub use meta::{get_meta, set_meta};
+pub use meta::{account, get_meta, set_account, set_meta};
 pub use reconcile::{candidates, preserve};
 
 #[cfg(test)]

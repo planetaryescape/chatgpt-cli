@@ -274,6 +274,22 @@ async fn never_echoes_an_auth_error_body() {
 }
 
 #[tokio::test]
+async fn the_token_names_the_account_it_belongs_to() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SESSION_PATH))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"accessToken":"t","user":{"id":"user-abc","email":"x"}}"#),
+        )
+        .mount(&server)
+        .await;
+    let (http, _) = client(&server, fast_policy());
+    let token = exchange_session(&http, "dia").await.unwrap();
+    assert_eq!(token.account(), Some("user-abc"));
+}
+
+#[tokio::test]
 async fn sends_the_browser_cookies_and_exchanges_them_for_a_token() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -290,6 +306,7 @@ async fn sends_the_browser_cookies_and_exchanges_them_for_a_token() {
         .await
         .unwrap();
     assert_eq!(token.expose(), "secret-token");
+    assert_eq!(token.account(), None, "`user` without an id");
     let printed = format!("{token:?} {http:?}");
     assert!(
         !printed.contains("secret-token") && !printed.contains("secret-cookie"),
