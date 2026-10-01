@@ -149,7 +149,7 @@ async fn gives_up_after_four_retries() {
 }
 
 #[tokio::test]
-async fn honours_retry_after() {
+async fn honours_a_retry_after_within_the_limit() {
     let server = MockServer::start().await;
     mount_then_ok(
         &server,
@@ -163,21 +163,114 @@ async fn honours_retry_after() {
 }
 
 #[test]
-fn clamps_retry_after_and_ignores_unusable_values() {
-    let policy = RetryPolicy::default();
-    let wait = |status: u16, attempt, retry_after| {
-        policy.wait(StatusCode::from_u16(status).unwrap(), attempt, retry_after)
-    };
-    assert_eq!(wait(429, 0, Some("7")), Duration::from_secs(7));
-    assert_eq!(wait(429, 0, Some("3600")), Duration::from_secs(60));
-    // An HTTP date, zero or garbage falls back to the backoff.
+fn parses_retry_after_seconds_and_ignores_unusable_values() {
+    assert_eq!(parse_retry_after("7"), Some(Duration::from_secs(7)));
+    assert_eq!(parse_retry_after(" 0.5 "), Some(ms(500)));
+    // Past u64 seconds: saturates instead of panicking.
     assert_eq!(
-        wait(429, 1, Some("Wed, 21 Oct 2026 07:28:00 GMT")),
+        parse_retry_after("18446744073709551616"),
+        Some(Duration::MAX)
+    );
+    assert_eq!(parse_retry_after("1e300"), Some(Duration::MAX));
+    for unusable in ["Wed, 21 Oct 2026 07:28:00 GMT", "0", "-3", "NaN", "inf", ""] {
+        assert_eq!(parse_retry_after(unusable), None, "{unusable}");
+    }
+    let policy = RetryPolicy::default();
+    assert_eq!(
+        policy.backoff(RetryReason::RateLimited, 1),
         Duration::from_secs(10)
     );
-    assert_eq!(wait(503, 2, Some("0")), Duration::from_secs(4));
-    assert_eq!(wait(503, 3, None), Duration::from_secs(8));
-    assert_eq!(wait(429, 4, Some("NaN")), Duration::from_secs(80));
+    let gateway = RetryReason::Gateway(StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(policy.backoff(gateway, 3), Duration::from_secs(8));
+}
+
+#[tokio::test]
+async fn stops_instead_of_retrying_early_when_429_asks_for_too_long() {
+    for retry_after in ["3600", "18446744073709551616"] {
+        let server = MockServer::start().await;
+        let limited = ResponseTemplate::new(429).insert_header("retry-after", retry_after);
+        mount_then_ok(&server, limited, 1).await;
+        let (http, events) = client(&server, fast_policy());
+        let error = http.get("/x", &[]).await.unwrap_err();
+        assert!(matches!(error, HttpError::RateLimited { .. }), "{error:?}");
+        assert!(
+            error.to_string().starts_with("rate limited by ChatGPT"),
+            "{error}"
+        );
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn stops_on_a_gateway_error_that_asks_for_too_long() {
+    let server = MockServer::start().await;
+    let down = ResponseTemplate::new(503).insert_header("retry-after", "3600");
+    mount_then_ok(&server, down, 1).await;
+    let (http, _) = client(&server, fast_policy());
+    let error = http.get("/x", &[]).await.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            HttpError::Status {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+const SENTINEL: &str = "SENTINEL-access-token-value";
+
+fn assert_hidden(error: &(impl std::fmt::Debug + std::fmt::Display)) {
+    let printed = format!("{error} {error:?}");
+    assert!(!printed.contains(SENTINEL), "{printed}");
+}
+
+#[tokio::test]
+async fn never_echoes_a_malformed_session_body() {
+    // Valid JSON of the wrong shape: serde's message would quote the string.
+    for body in [
+        format!(r#""{SENTINEL}""#),
+        format!(r#"{{"accessToken":["{SENTINEL}"]}}"#),
+        format!("{SENTINEL} not json"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SESSION_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let (http, _) = client(&server, fast_policy());
+        let error = exchange_session(&http, "dia").await.unwrap_err();
+        assert!(matches!(error, SessionError::Malformed { .. }), "{error:?}");
+        assert_hidden(&error);
+    }
+}
+
+#[tokio::test]
+async fn never_echoes_an_auth_error_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SESSION_PATH))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_string(format!(r#"{{"accessToken":"{SENTINEL}"}}"#)),
+        )
+        .mount(&server)
+        .await;
+    let (http, _) = client(&server, fast_policy());
+    let error = exchange_session(&http, "dia").await.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            SessionError::Http(HttpError::Status { snippet: None, .. })
+        ),
+        "{error:?}"
+    );
+    assert_hidden(&error);
 }
 
 #[tokio::test]

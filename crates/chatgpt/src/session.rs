@@ -31,8 +31,16 @@ pub enum SessionError {
         "ChatGPT session in {source_name} has expired. Open chatgpt.com there to refresh it, then retry."
     )]
     Expired { source_name: String },
-    #[error("{SESSION_PATH} returned something other than session JSON: {0}")]
-    Malformed(serde_json::Error),
+    /// Only the parse position: serde's message would echo string values from
+    /// a body that can hold tokens.
+    #[error(
+        "{SESSION_PATH} returned something other than session JSON ({category:?} error at line {line}, column {column})"
+    )]
+    Malformed {
+        category: serde_json::error::Category,
+        line: usize,
+        column: usize,
+    },
 }
 
 #[derive(Deserialize)]
@@ -47,7 +55,12 @@ pub async fn exchange_session(
     source_name: &str,
 ) -> Result<AccessToken, SessionError> {
     let body = http.get(SESSION_PATH, &[]).await?;
-    let session: SessionBody = serde_json::from_str(&body).map_err(SessionError::Malformed)?;
+    let session: SessionBody =
+        serde_json::from_str(&body).map_err(|error| SessionError::Malformed {
+            category: error.classify(),
+            line: error.line(),
+            column: error.column(),
+        })?;
     session
         .access_token
         .filter(|token| !token.is_empty())

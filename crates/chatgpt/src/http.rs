@@ -23,12 +23,20 @@ pub const CHATGPT_BASE: &str = "https://chatgpt.com";
 pub enum HttpError {
     #[error("Cloudflare kept challenging requests to {path}. Wait a minute and retry.")]
     Challenged { path: String },
-    #[error("{status} from {path}: {snippet}", snippet = truncate(body, 300))]
+    /// `snippet` is the start of the response body, for the user's own
+    /// terminal. It is always `None` for `/api/auth/` paths, whose bodies carry
+    /// tokens. A long-running process must still not log it verbatim: it can
+    /// hold conversation content.
+    #[error("{status} from {path}{}", snippet.as_deref().map(|text| format!(": {text}")).unwrap_or_default())]
     Status {
         status: StatusCode,
         path: String,
-        body: String,
+        snippet: Option<String>,
     },
+    /// The server asked for a longer pause than `RetryPolicy::max_retry_after`,
+    /// so the client stops instead of retrying early.
+    #[error("rate limited by ChatGPT; it asked to wait {}s before retrying {path}", retry_after.as_secs())]
+    RateLimited { path: String, retry_after: Duration },
     #[error("Request to {path} failed: {source}")]
     Transport {
         path: String,
@@ -41,10 +49,11 @@ pub enum HttpError {
     InvalidHeaderValue { path: String },
 }
 
-fn truncate(text: &str, max_chars: usize) -> &str {
-    text.char_indices()
-        .nth(max_chars)
-        .map_or(text, |(end, _)| &text[..end])
+const SNIPPET_CHARS: usize = 300;
+
+/// Auth endpoint bodies carry session and access tokens, so errors never show them.
+fn shows_snippet(path: &str) -> bool {
+    !path.starts_with("/api/auth/")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +79,9 @@ pub struct RetryPolicy {
     pub base_backoff: Duration,
     /// Doubles each attempt, for 429. ChatGPT's 429s outlast a gateway blip.
     pub rate_limit_backoff: Duration,
-    /// Upper bound on a server's `retry-after`.
+    /// The longest `retry-after` the client will wait out. A longer one ends
+    /// the call with `HttpError::RateLimited` (on 429) rather than retrying
+    /// before the server allows it.
     pub max_retry_after: Duration,
 }
 
@@ -94,19 +105,21 @@ impl RetryPolicy {
         }
     }
 
-    fn wait(&self, status: StatusCode, attempt: u32, retry_after: Option<&str>) -> Duration {
-        let server_wait = retry_after
-            .and_then(|value| value.trim().parse::<f64>().ok())
-            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-            .map(|seconds| Duration::from_secs_f64(seconds).min(self.max_retry_after));
-        server_wait.unwrap_or_else(|| {
-            let base = match status {
-                StatusCode::TOO_MANY_REQUESTS => self.rate_limit_backoff,
-                _ => self.base_backoff,
-            };
-            base.saturating_mul(2u32.saturating_pow(attempt))
-        })
+    fn backoff(&self, reason: RetryReason, attempt: u32) -> Duration {
+        let base = match reason {
+            RetryReason::RateLimited => self.rate_limit_backoff,
+            _ => self.base_backoff,
+        };
+        base.saturating_mul(2u32.saturating_pow(attempt))
     }
+}
+
+/// A `retry-after` in seconds. HTTP dates, zero and garbage count as absent;
+/// a value too large for `Duration` saturates.
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let seconds = value.trim().parse::<f64>().ok()?;
+    (seconds.is_finite() && seconds > 0.0)
+        .then(|| Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX))
 }
 
 /// A secret header value: Debug never prints it.
@@ -238,23 +251,26 @@ impl HttpClient {
                         path: path.to_owned(),
                     });
                 }
-                _ => {
-                    let body = response
-                        .text()
-                        .await
-                        .map_err(|error| transport_error(path, error.into()))?;
-                    if status.is_success() {
-                        return Ok(body);
-                    }
-                    let path = path.to_owned();
-                    return Err(HttpError::Status { status, path, body });
-                }
+                _ => return finish(response, path).await,
             };
-            let retry_after = response
+            let server_wait = response
                 .headers()
                 .get("retry-after")
-                .and_then(|value| value.to_str().ok());
-            let wait = self.policy.wait(status, attempt, retry_after);
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after);
+            let wait = match server_wait {
+                Some(wait) if wait > self.policy.max_retry_after => {
+                    if reason == RetryReason::RateLimited {
+                        return Err(HttpError::RateLimited {
+                            path: path.to_owned(),
+                            retry_after: wait,
+                        });
+                    }
+                    return finish(response, path).await;
+                }
+                Some(wait) => wait,
+                None => self.policy.backoff(reason, attempt),
+            };
             // The retry doesn't need this body; dropping it frees the connection.
             drop(response);
             if reason == RetryReason::Challenge {
@@ -271,6 +287,32 @@ impl HttpClient {
             attempt += 1;
         }
     }
+}
+
+/// The body of a final response: `Ok` for 2xx, otherwise `HttpError::Status`.
+async fn finish(response: reqwest::Response, path: &str) -> Result<String, HttpError> {
+    let status = response.status();
+    if !status.is_success() && !shows_snippet(path) {
+        // Never read an auth error body: it is not shown, and it may hold tokens.
+        let path = path.to_owned();
+        return Err(HttpError::Status {
+            status,
+            path,
+            snippet: None,
+        });
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|error| transport_error(path, error.into()))?;
+    if status.is_success() {
+        return Ok(body);
+    }
+    Err(HttpError::Status {
+        status,
+        path: path.to_owned(),
+        snippet: Some(body.chars().take(SNIPPET_CHARS).collect()),
+    })
 }
 
 fn transport_error(path: &str, error: impit::errors::ImpitError) -> HttpError {

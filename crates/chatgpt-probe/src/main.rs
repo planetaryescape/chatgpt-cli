@@ -227,6 +227,10 @@ async fn impit_attempt(session: &BrowserSession) -> (Outcome, String) {
 fn classify(error: &HttpError, step: &str) -> (Outcome, String) {
     match error {
         HttpError::Challenged { .. } => (Outcome::Challenged, format!("at {step}")),
+        HttpError::RateLimited { retry_after, .. } => (
+            Outcome::RateLimited,
+            format!("at {step}: retry-after {}s", retry_after.as_secs()),
+        ),
         HttpError::Status { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
             (Outcome::RateLimited, format!("at {step}: {status}"))
         }
