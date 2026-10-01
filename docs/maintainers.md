@@ -17,6 +17,8 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `src/tui/` | OpenTUI React app |
 | `src/progress.ts` | Progress bars and timings on stderr |
 | `scripts/gen-cli-reference.ts` | Generates `docs/reference/cli.md` |
+| `crates/chatgpt/` | Rust port, in progress: browser cookies, session exchange, Chrome-impersonating HTTP client (impit) |
+| `crates/chatgpt-probe/` | Rust connectivity probe; a later stage folds it into the Rust CLI |
 
 ## Verify a change
 
@@ -35,6 +37,18 @@ bun src/cli.ts classify --title "<a few known chats>"
 ```
 
 Before a change to the TUI, run `bun test src/tui` (which drives it with simulated keys). Then open `bun src/cli.ts tui` yourself.
+
+For the Rust workspace:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo run -p chatgpt-probe -- probe                    # live: session, token, one page of chats
+cargo run -p chatgpt-probe -- probe --connections 20   # live: fresh-connection challenge rate
+```
+
+impit is a git dependency that only impersonates Chrome when apify's forks of `h2`, `rustls`, `hyper-util` and `tower-http` are in the graph (`[patch.crates-io]` in `Cargo.toml`), built with `--cfg reqwest_unstable` (`.cargo/config.toml`, which a `RUSTFLAGS` variable overrides). Cargo drops a patch with only a warning when the graph wants a newer version, so `hyper` and `reqwest` stay pinned in `Cargo.lock` to impit's own lockfile versions, and `crates/chatgpt/tests/fingerprint_patches.rs` fails if a fork falls out. Re-check that test after any `cargo update`.
 
 ## Regenerate docs
 
