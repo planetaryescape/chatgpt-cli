@@ -230,7 +230,7 @@ impl JevFilter<'_> {
             }
         }
         match self.topic {
-            Some(topic) => Ok(judged.topic()? == topic),
+            Some(topic) => Ok(judged.topic().as_deref() == Some(topic)),
             None => Ok(true),
         }
     }

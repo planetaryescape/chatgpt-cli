@@ -277,3 +277,78 @@ fn a_named_instance_on_another_browser_leaves_the_shared_ts_index_alone() {
     );
     env.cmd().args(["daemon", "stop"]).assert().success();
 }
+
+#[test]
+fn the_ts_sync_reads_the_passs_browser_choice_not_the_daemons_environment() {
+    let mut env = Env::with_fake(chats());
+    let seen = env.home.path().join("ts-env");
+    env.fake_ts_cli(&format!(
+        "echo \"browser=$CHATGPT_BROWSER profile=$CHATGPT_BROWSER_PROFILE args=$*\" >> '{}'\n",
+        seen.display()
+    ));
+    // The client that starts the daemon has CHATGPT_BROWSER set…
+    env.cmd()
+        .args(["daemon", "status"])
+        .env("CHATGPT_BROWSER", "chrome")
+        .env("CHATGPT_BROWSER_PROFILE", "Profile 9")
+        .assert()
+        .success();
+    // …but this sync asks for the default browser.
+    env.cmd().arg("sync").assert().success();
+    let seen = std::fs::read_to_string(&seen).unwrap();
+    assert_eq!(
+        seen.lines().last(),
+        Some("browser= profile= args=sync"),
+        "{seen}"
+    );
+}
+
+#[test]
+fn a_session_that_doesnt_name_its_account_is_refused_for_an_index_that_has_one() {
+    let env = Env::with_fake(chats());
+    env.cmd().arg("sync").assert().success();
+    env.cmd().args(["daemon", "stop"]).assert().success();
+    env.fake().state().omit_user_id = true;
+    let refused = env.cmd().arg("sync").output().unwrap();
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("doesn't say which ChatGPT account"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    // An index that never stored an account still syncs, as before.
+    let fresh = Env::with_fake(chats());
+    fresh.fake().state().omit_user_id = true;
+    fresh.cmd().arg("sync").assert().success();
+    assert_eq!(ids(&fresh, &["list"]).len(), 3);
+}
+
+#[test]
+fn a_judgment_without_a_topic_has_none_and_fails_nothing() {
+    let env = Env::with_fake(chats());
+    let db = env.legacy_db();
+    let mut answers: serde_json::Value = serde_json::from_str(&delete_answers("other")).unwrap();
+    answers.as_object_mut().unwrap().remove("topic");
+    judge(
+        &db,
+        "a-one",
+        "2026-09-27T10:00:00.000000Z",
+        &answers.to_string(),
+    );
+    drop(db);
+    env.cmd().arg("sync").assert().success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
+    assert_eq!(rows[0]["topic"], serde_json::Value::Null);
+    assert_eq!(rows[0]["jev"]["suggestion"], "delete");
+    assert!(
+        env.stdout(&["list"])
+            .starts_with("a-one  2026-09-27       delete                        ")
+    );
+    assert!(
+        env.stdout(&["stats"])
+            .starts_with("3 chat(s), 1 judged, 2 not yet judged")
+    );
+    assert_eq!(ids(&env, &["list", "--topic", "other"]).len(), 0);
+}

@@ -105,6 +105,10 @@ pub fn install(paths: &Paths) -> Result<ExitCode, ClientError> {
                 format!("cannot find this executable: {error}"),
             )
         })?;
+    // launchd opens StandardErrorPath itself, creating it with its own
+    // permissions: make the directory (0700) and the file (0600) first.
+    chatgpt_launcher::open_log(&paths.daemon_stderr_file())
+        .map_err(|error| io_error(&paths.daemon_stderr_file(), &error))?;
     let contents = plist(
         &program,
         &paths.daemon_stderr_file(),

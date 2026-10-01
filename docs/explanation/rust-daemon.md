@@ -13,7 +13,7 @@ Bun comes from PATH, else `~/.bun/bin/bun`. A bridged process carries `CHATGPT_B
 
 ## The daemon
 
-Native commands ask a background daemon over a Unix socket. Any command that finds no daemon starts one, detached from the terminal, and waits until it answers. The daemon:
+Native commands ask a background daemon over a Unix socket. A native command that finds no daemon starts one (bridged commands don't need it), detached from the terminal, and waits until it answers. The daemon:
 
 - reads the browser's cookies once per `--browser`/`--profile` choice (the read can raise a Keychain prompt) and keeps the access token in memory only. It reads them again only when ChatGPT rejects the token (401, or a 403 that isn't a Cloudflare challenge);
 - syncs one account per index. A pass pins its browser choice and the session's account from start to finish, so a command choosing another browser meanwhile can't change what it reads. A sync whose session belongs to another account than the one the index was built from is refused: keep each account in its own instance (`CHATGPT_INSTANCE=<name>`);

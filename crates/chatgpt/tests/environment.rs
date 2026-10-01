@@ -21,7 +21,10 @@ const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 #[test]
 fn the_test_environment_holds_chromes_order() {
     let config = std::fs::read_to_string(format!("{ROOT}/.cargo/config.toml")).unwrap();
-    let expected = format!("{PSEUDO_HEADER_ORDER_ENV} = \"{}\"", pseudo_header_order());
+    let expected = format!(
+        "{PSEUDO_HEADER_ORDER_ENV} = {{ value = \"{}\", force = true }}",
+        pseudo_header_order()
+    );
     assert!(
         config.contains(&expected),
         ".cargo/config.toml must set {expected}"

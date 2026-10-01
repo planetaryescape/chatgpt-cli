@@ -116,7 +116,9 @@ fi
 bin_dir="$prefix/bin"
 mkdir -p "$bin_dir"
 install -m 0755 "$tmpdir/unpacked/chatgpt" "$bin_dir/chatgpt"
-echo "installed $("$bin_dir/chatgpt" --version) to $bin_dir/chatgpt"
+# Its own command, so `set -e` stops on a binary that can't run here.
+installed_version="$("$bin_dir/chatgpt" --version)"
+echo "installed $installed_version to $bin_dir/chatgpt"
 
 # The first `chatgpt` on PATH is the one a shell runs.
 first=""

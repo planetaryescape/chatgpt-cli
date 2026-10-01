@@ -16,6 +16,10 @@ pub fn process_start_time(pid: u32) -> Option<String> {
 pub fn ps_field(pid: u32, field: &str) -> Option<String> {
     let output = Command::new("ps")
         .args(["-o", &format!("{field}="), "-p", &pid.to_string()])
+        // The same text whoever runs it: launchd and a login shell can
+        // differ in locale and time zone.
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

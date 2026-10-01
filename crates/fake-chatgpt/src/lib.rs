@@ -118,6 +118,8 @@ pub struct State {
     /// first repeats the previous page's last two chats and skips two.
     pub flaky_listings: u32,
     flaky_now: bool,
+    /// Leave `user.id` out of session exchanges.
+    pub omit_user_id: bool,
 }
 
 pub struct FakeChatGpt {
@@ -188,8 +190,13 @@ impl Respond for Handler {
         };
         if let Route::Session = self.route {
             state.session_exchanges += 1;
+            let user = if state.omit_user_id {
+                json!({})
+            } else {
+                json!({ "id": user })
+            };
             return ResponseTemplate::new(200)
-                .set_body_json(json!({ "accessToken": token, "user": { "id": user } }));
+                .set_body_json(json!({ "accessToken": token, "user": user }));
         }
         if header("authorization").as_deref() != Some(&format!("Bearer {token}")) {
             return ResponseTemplate::new(401);

@@ -5,7 +5,8 @@
 //! `1e+21`.
 
 /// The shortest round-trip digits, placed as JS places them: plain
-/// decimals from 1e-7 up to but not including 1e21, exponent form beyond.
+/// decimals from 1e-6 up to but not including 1e21, exponent form outside
+/// that (1e-7, 1e+21).
 pub fn js_number_string(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_owned();

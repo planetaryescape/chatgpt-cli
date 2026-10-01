@@ -91,7 +91,7 @@ pub fn list(
                     luna: verdict.luna,
                     answers,
                 };
-                (Some(judged.topic().map_err(Failure::policy)?), Some(jev))
+                (judged.topic(), Some(jev))
             }
             None => (None, None),
         };
@@ -153,11 +153,9 @@ pub fn chat_stats(
         {
             brainstorms[at] += 1;
         }
-        let counts = by_topic
-            .entry(judged.topic().map_err(Failure::policy)?)
-            .or_default();
-        if let Some(index) = index {
-            counts[index] += 1;
+        // A judgment without a topic counts in no topic row.
+        if let (Some(topic), Some(index)) = (judged.topic(), index) {
+            by_topic.entry(topic).or_default()[index] += 1;
         }
     }
     let mut topics: Vec<TopicCounts> = profile

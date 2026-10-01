@@ -84,8 +84,13 @@ async fn run(ts: &TsCli, choice: &SessionChoice, full: bool, step: &Step) -> TsS
     if full {
         command.arg("--full");
     }
+    // The pass's browser choice and nothing else: the daemon's environment
+    // is whichever client auto-started it, and the TS CLI would read
+    // CHATGPT_BROWSER* from there.
     command
         .env(BRIDGED_ENV, "1")
+        .env_remove("CHATGPT_BROWSER")
+        .env_remove("CHATGPT_BROWSER_PROFILE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

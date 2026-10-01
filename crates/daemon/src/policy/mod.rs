@@ -321,13 +321,14 @@ impl<'a> Judged<'a> {
         }
     }
 
-    /// `topicOf`: the stored topic, else Jev's answer.
-    pub fn topic(&self) -> Result<String, PolicyError> {
+    /// `topicOf`: the stored topic, else Jev's answer, else none. The TS
+    /// CLI throws on a judgment without `topic.choice`; here it simply has
+    /// no topic, so one odd judgment can't fail `list` or `stats`.
+    pub fn topic(&self) -> Option<String> {
         self.row
             .topic
             .clone()
             .or_else(|| self.answers.topic.clone())
-            .ok_or_else(|| self.error("topic.choice is missing".into()))
     }
 
     fn deep_is_current(&self) -> bool {
@@ -361,13 +362,13 @@ impl<'a> Judged<'a> {
     /// `needsProductReview`.
     pub fn needs_product_review(&self) -> Result<bool, PolicyError> {
         let a = &self.answers;
-        if self.topic()? == self.profile.employer_topic {
+        if self.topic().as_deref() == Some(self.profile.employer_topic.as_str()) {
             return Ok(false);
         }
         let target_product = a.target == "product" && a.brainstorming >= 0.5;
         Ok(self.jev_verdict()?.brainstorm.as_deref() == Some("product")
             || (target_product && a.product_idea >= 0.4)
-            || (self.topic()? == "side_projects"
+            || (self.topic().as_deref() == Some("side_projects")
                 && a.product_idea >= 0.45
                 && a.product_idea < 0.75))
     }
@@ -378,10 +379,9 @@ impl<'a> Judged<'a> {
             return Ok(kind.map(str::to_owned));
         }
         let a = &self.answers;
-        Ok(
-            (a.product_idea >= 0.4 && self.topic()? != self.profile.employer_topic)
-                .then(|| "product".to_owned()),
-        )
+        Ok((a.product_idea >= 0.4
+            && self.topic().as_deref() != Some(self.profile.employer_topic.as_str()))
+        .then(|| "product".to_owned()))
     }
 
     /// `needsTimeReview`.

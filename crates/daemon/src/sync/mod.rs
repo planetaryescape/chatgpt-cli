@@ -303,20 +303,36 @@ async fn pinned_api(state: &State, choice: SessionChoice) -> Result<Api, ApiErro
     let api = Api::new(std::sync::Arc::clone(&state.sessions), choice)
         .pinned()
         .await?;
-    let Some(account) = api.account().map(str::to_owned) else {
-        return Ok(api);
-    };
     let stored = state.db(chatgpt_store::account).await?;
+    let source = || {
+        state
+            .sessions
+            .source(api.choice())
+            .unwrap_or_else(|| "this browser".into())
+    };
+    let Some(account) = api.account().map(str::to_owned) else {
+        // A session that doesn't say whose it is can't be checked against
+        // an index that already belongs to an account.
+        return match stored {
+            Some(_) => Err(ApiError::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "the session in {} doesn't say which ChatGPT account it is, and this index \
+                     holds one account's chats. Keep each account in its own instance: \
+                     CHATGPT_INSTANCE=<name> chatgpt sync",
+                    source()
+                ),
+            )),
+            None => Ok(api),
+        };
+    };
     match stored {
         Some(stored) if stored != account => Err(ApiError::new(
             ErrorKind::InvalidInput,
             format!(
                 "this index holds another ChatGPT account's chats than the session in {}. \
                  Keep each account in its own instance: CHATGPT_INSTANCE=<name> chatgpt sync",
-                state
-                    .sessions
-                    .source(api.choice())
-                    .unwrap_or_else(|| "this browser".into())
+                source()
             ),
         )),
         Some(_) => Ok(api),
