@@ -56,6 +56,9 @@ const LOG_TAIL_LINES: usize = 5;
 /// How many times `connect` looks again after finding the daemon it meant
 /// to restart already replaced.
 const RESTART_LOOKS: usize = 3;
+/// How many times a status probe is asked again when the daemon it asked
+/// was replaced before the answer failed.
+const PROBE_LOOKS: usize = 3;
 
 /// A failure talking to the daemon, or one the daemon reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,42 +446,57 @@ enum Probe {
     Unreachable,
 }
 
+/// Ask the daemon for its status. A failure is pinned on the daemon the PID
+/// file named before asking; if another took its place meanwhile, the
+/// failure was the old one's, so ask again rather than blame the new one.
 async fn probe(paths: &Paths) -> Probe {
-    let recorded = || DaemonIdentity::recorded(paths);
+    for _ in 0..PROBE_LOOKS {
+        let before = DaemonIdentity::recorded(paths);
+        if let Some(probe) = probe_as(paths, before).await {
+            return probe;
+        }
+    }
+    Probe::Incompatible {
+        why: "another daemon took its place each time it was asked for its status".into(),
+        identity: None,
+    }
+}
+
+/// One status probe, failures attributed to `before`; `None` when the PID
+/// file no longer names `before` once it failed.
+async fn probe_as(paths: &Paths, before: Option<DaemonIdentity>) -> Option<Probe> {
+    let failed = |why: String| {
+        (DaemonIdentity::recorded(paths) == before).then(|| Probe::Incompatible {
+            why,
+            identity: before.clone(),
+        })
+    };
     let mut client = match DaemonClient::connect(&paths.socket_path()).await {
         Ok(client) => client,
         // Something holds the socket but never accepts: not missing.
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-            return Probe::Incompatible {
-                why: error.to_string(),
-                identity: recorded(),
-            };
+            return failed(error.to_string());
         }
         // Missing, or a stale file nobody listens on. A new daemon removes
         // a stale socket itself, under its lock.
-        Err(_) => return Probe::Unreachable,
+        Err(_) => return Some(Probe::Unreachable),
     };
     match client
         .request_within(Request::Status, QUICK_TIMEOUT, |_| {})
         .await
     {
         Ok(ResponseData::Status(status)) => {
-            match incompatibility(&status, env!("CARGO_PKG_VERSION")) {
+            Some(match incompatibility(&status, env!("CARGO_PKG_VERSION")) {
                 None => Probe::Ready(Box::new(client), status),
+                // The answer names its own PID: no doubt whose it is.
                 Some(why) => Probe::Incompatible {
                     why,
                     identity: DaemonIdentity::of(status.pid),
                 },
-            }
+            })
         }
-        Ok(_) => Probe::Incompatible {
-            why: "its status answer isn't one this version can read".into(),
-            identity: recorded(),
-        },
-        Err(error) => Probe::Incompatible {
-            why: error.message,
-            identity: recorded(),
-        },
+        Ok(_) => failed("its status answer isn't one this version can read".into()),
+        Err(error) => failed(error.message),
     }
 }
 

@@ -352,3 +352,56 @@ fn a_daemon_stuck_starting_up_is_stopped_and_started_again() {
     assert!(stderr.contains("stuck starting up"), "{stderr}");
     assert!(!marker.exists(), "the first daemon stalled");
 }
+
+/// Client A asks a daemon that never answers for its status. While A
+/// waits, that daemon goes and another client's compatible one takes its
+/// place. A's failed probe was the old daemon's: A must use the new one,
+/// not stop it.
+#[test]
+fn a_probe_that_fails_after_a_replacement_never_stops_the_replacement() {
+    let env = Env::new();
+    let (mut old, old_pid) = stuck_daemon(&env, "stall");
+    // Takes connections but never answers: A's status request times out.
+    let silent = UnixListener::bind(env.socket()).unwrap();
+    let client = env
+        .std_cmd()
+        .args(["daemon", "status", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    old.kill().unwrap();
+    old.wait().unwrap();
+    // Another client's daemon, this version, takes over before A's
+    // request times out (A's connection stays with the silent listener,
+    // whose socket file the new daemon replaces).
+    let mut replacement = env.std_cmd().args(["daemon", "run"]).spawn().unwrap();
+    let pid_file = env.data_dir().join("run/daemon.pid");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let new_pid: u32 = loop {
+        let named = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.lines().next()?.parse().ok())
+            .filter(|pid| *pid != old_pid);
+        if let Some(pid) = named
+            && std::os::unix::net::UnixStream::connect(env.socket()).is_ok()
+        {
+            break pid;
+        }
+        assert!(std::time::Instant::now() < deadline, "no replacement");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let output = client.wait_with_output().unwrap();
+    drop(silent);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["pid"], new_pid,
+        "A didn't use the replacement: {stderr}"
+    );
+    assert!(pid_exists(u64::from(new_pid)), "A stopped the replacement");
+    env.cmd().args(["daemon", "stop"]).assert().success();
+    let _ = replacement.wait();
+}
