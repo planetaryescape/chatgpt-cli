@@ -4,7 +4,7 @@ The Rust `chatgpt` (in `crates/`) is replacing the TS CLI one group of commands 
 
 ## Native commands and the bridge
 
-`sync`, `list`, `stats`, `export` (and its alias `show`), lexical `search`, `daemon` and `import-legacy` run in Rust. `search` with `--semantic`, `--hybrid` or `--remote`, `search-index`, and every other command, including its `--help`, run as `bun <cli.ts> <args…>`: the Rust process replaces itself with bun, so arguments, stdin, stdout, stderr, the terminal and the exit code are the TS CLI's. The TS CLI is found by path, never as `chatgpt` on PATH (which may be the Rust binary):
+`sync`, `list`, `stats`, `export` (and its alias `show`), `search` (full-text, `--semantic`, `--hybrid` and `--remote`), `search-index`, `daemon` and `import-legacy` run in Rust. Every other command, including its `--help`, runs as `bun <cli.ts> <args…>`: the Rust process replaces itself with bun, so arguments, stdin, stdout, stderr, the terminal and the exit code are the TS CLI's. The TS CLI is found by path, never as `chatgpt` on PATH (which may be the Rust binary):
 
 1. `CHATGPT_TS_CLI`, the TS CLI's `src/cli.ts`;
 2. `~/.bun/install/global/node_modules/chatgpt-cli/src/cli.ts`, where `bun link` puts it.
@@ -21,7 +21,7 @@ Native commands ask a background daemon over a Unix socket. A native command tha
 - backs off for as long as ChatGPT's rate limit asks (at least a minute, at most an hour) and shows it in `chatgpt daemon status`. A rate limit in any step, the cache reconcile included, ends the pass, and the TS sync waits for the next one;
 - logs to `~/Library/Application Support/chatgpt-cli/logs/daemon.log.<date>`, one file a day, seven kept. Logs never hold cookies, tokens or response bodies.
 
-`list` and `search` never touch the network. `stats` reads the saved memories live, as the TS CLI does. `export` always fetches the chat from the single-chat endpoint, as the TS CLI does, rather than using a cached transcript: the cache is filled from the batch endpoint, which doesn't name the model, so its header would differ. An export too large for one IPC frame (16 MiB) is handed to the TS CLI with the same arguments until exports are streamed (`docs/issues/export-frame-limit.md`).
+`list` and `search` never touch the network, except `search --remote`, which asks ChatGPT's search because you asked for it. `stats` reads the saved memories live, as the TS CLI does. `export` always fetches the chat from the single-chat endpoint, as the TS CLI does, rather than using a cached transcript: the cache is filled from the batch endpoint, which doesn't name the model, so its header would differ. An export too large for one IPC frame (16 MiB) is handed to the TS CLI with the same arguments until exports are streamed (`docs/issues/export-frame-limit.md`).
 
 ## The search index
 
@@ -34,7 +34,23 @@ Lexical `search` needs no `search-index` step. The daemon keeps a full-text inde
 - It steps aside while a `sync` or `export` runs. A rate limit stops fetching for as long as ChatGPT asked (between a minute and an hour) without holding up syncs, a chat ChatGPT doesn't return (or whose batch it answers with an error) is asked for again after an hour, and a timeout or dropped connection ends the run until the next pass.
 - `chatgpt daemon status` shows `search index: N of M chats indexed`, whether it's indexing, how many transcripts it fetched, and why it's waiting. While the index is incomplete, `search` answers from what's indexed and says `N of M chats indexed` on stderr.
 
-The chunks reproduce the TS CLI's exactly, down to the bytes Bun stores when a chunk boundary splits an emoji, so ranking, scores and snippets match the TS CLI's over the same transcripts (`crates/cli/tests/parity_export_search.rs`). The TS CLI's own search index, in its own database, is never read or written.
+## Embeddings
+
+Semantic and hybrid `search` need no `search-index` step either. After the indexer writes chunks, the daemon's embedder gives each chunk that's current for its chat a 384-dimension vector, as the TS CLI's `search-index` does. It uses the same model, but a different runtime ([why, with measurements](embeddings.md)):
+
+- The model runs in a worker process, `chatgpt daemon embed-worker`, started under macOS's utility QoS (`taskpolicy -c utility`) on one thread, so embedding uses at most one core and gives way to your work. The worker is stopped after ten idle minutes, which unloads the model.
+- One chunk at a time, saved 16 at a time, so an interrupted run resumes where it stopped. It steps aside while a `sync` or `export` runs, and a semantic search's query goes before the next chunk.
+- The first run that needs the model downloads it (23 MB, checked against a pinned SHA-256) into the TS CLI's model cache, `~/.cache/chatgpt-cli/models`. When the download fails, lexical search is unaffected; `daemon status` and semantic search say why, and the daemon tries again after a later sync. A search never downloads anything.
+- A chunk's vector is deleted with it (a trigger in `crates/store/migrations/0004_search_vectors.sql`), and a vector is saved only if its chunk still holds the text it was made from.
+- `chatgpt daemon status` shows `embeddings: N of M chunks embedded` and why it waits. While embedding is incomplete, semantic and hybrid search answer from the embedded chunks and say `N of M chunks embedded` on stderr; with none yet, they say so instead of answering.
+
+`search-index` asks the indexer to fetch now (without waiting for a sync) and the embedder to retry a failed download, shows both making progress, and reports on its scope (`--archived`, `--all`) as the TS CLI's does once neither has work left. It exits 1 if a chat couldn't be fetched or the index is still incomplete.
+
+The vectors are tagged with the Rust `MODEL_VERSION` and live only in the daemon's index. An index from 0.1.1 gains the vectors table on the daemon's first start, and the existing chunks are embedded in the background while `list` and `search` keep answering.
+
+## Matching the TS CLI
+
+The chunks reproduce the TS CLI's exactly, down to the bytes Bun stores when a chunk boundary splits an emoji, so ranking, scores and snippets match the TS CLI's over the same transcripts (`crates/cli/tests/parity_export_search.rs`). The same harness gives both CLIs a stand-in embedder, so their vectors are identical, and requires identical semantic and hybrid output; and it points both at one fake `global/search` for `--remote`. The TS CLI's own search index, in its own database, is never read or written.
 
 A client keeps a running daemon that speaks its protocol and is at least as new as itself, and restarts an older one. `chatgpt daemon install` writes a LaunchAgent that starts the installed daemon at login (it doesn't load it; the command prints how).
 

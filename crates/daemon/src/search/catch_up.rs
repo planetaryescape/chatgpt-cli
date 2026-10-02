@@ -46,32 +46,44 @@ pub async fn search_index(
     state.indexer.fetch_now();
     state.embedder.retry_now();
 
-    let [chats, ..] = counts(state, scope).await?;
-    let mut indexing: Option<Step> =
-        Some(reporter.step("Indexing search transcripts", Some(chats as usize)));
-    let mut embedding: Option<Step> = None;
+    // Each step counts what was left when it began, as the TS CLI's
+    // counts the chats it downloads and the chunks it embeds.
+    let [chats, indexed_before, ..] = counts(state, scope).await?;
+    let mut indexing = Some(reporter.step(
+        "Indexing search transcripts",
+        Some(chats.saturating_sub(indexed_before) as usize),
+    ));
+    let mut embedding: Option<(Step, u64)> = None;
     let [chats, indexed, chunks, embedded] = loop {
         let indexer_busy = state.indexer.status().in_progress;
         let embedder_busy = state.embedder.status().in_progress;
         let now = counts(state, scope).await?;
         let [_, indexed, chunks, embedded] = now;
+        let indexed_now = indexed.saturating_sub(indexed_before);
         if let Some(step) = &indexing {
-            step.update(indexed as usize);
+            step.update(indexed_now as usize);
         }
         if !indexer_busy && let Some(step) = indexing.take() {
-            step.finish(&format!("Indexed {indexed} chat(s)"));
-            embedding = Some(reporter.step("Embedding search chunks", Some(chunks as usize)));
+            step.finish(&format!("Indexed {indexed_now} chat(s)"));
+            let step = reporter.step(
+                "Embedding search chunks",
+                Some(chunks.saturating_sub(embedded) as usize),
+            );
+            embedding = Some((step, embedded));
         }
-        if let Some(step) = &embedding {
-            step.update(embedded as usize);
+        if let Some((step, before)) = &embedding {
+            step.update(embedded.saturating_sub(*before) as usize);
         }
         if !indexer_busy && !embedder_busy {
             break now;
         }
         tokio::time::sleep(POLL).await;
     };
-    if let Some(step) = embedding {
-        step.finish(&format!("Embedded {embedded} chunk(s)"));
+    if let Some((step, before)) = embedding {
+        step.finish(&format!(
+            "Embedded {} chunk(s)",
+            embedded.saturating_sub(before)
+        ));
     }
 
     let unavailable = state.indexer.unavailable_ids();

@@ -7,11 +7,9 @@ chatgpt sync
 chatgpt search "garden lighting"
 ```
 
-Full-text search needs no indexing step: the background daemon fetches missing transcripts and indexes them after every sync. The first time, that takes a few minutes; until it's done, `search` answers from what's indexed and says `N of M chats indexed` on stderr. `chatgpt daemon status` shows the progress.
+No search needs an indexing step: after every sync the background daemon fetches missing transcripts, splits them into short passages, indexes them for full-text search, then embeds them with a local model for semantic search. The first time, indexing takes a few minutes and embedding about half an hour; until they're done, `search` answers from what's ready and says `N of M chats indexed` (and, for `--semantic` and `--hybrid`, `N of M chunks embedded`) on stderr. Later syncs only fetch and embed new or changed chats. `chatgpt daemon status` shows the progress, and `chatgpt search-index` waits until both are done, showing their progress. Active, archived and pinned chats are all indexed.
 
-Semantic and hybrid search (below) still need their own index, built by `chatgpt search-index`. It downloads transcripts missing from the cache, splits them into short passages, builds a SQLite full-text index, and embeds the passages with a local model. The first run can take several minutes. Later runs only fetch and embed new or changed chats, and an interrupted run resumes from saved work. It includes pinned chats. Use `chatgpt search-index --archived` to index archived chats, or `--all` to index both states.
-
-Search shows active chats by default in every mode, including `--remote`. Pass `--archived` for archived chats only, or `--all` for both. These filters apply before the result limit in local search. Full-text search covers archived chats too; for `--semantic` and `--hybrid`, run `chatgpt search-index --archived` to index them.
+Search shows active chats by default in every mode, including `--remote`. Pass `--archived` for archived chats only, or `--all` for both. These filters apply before the result limit in local search.
 ChatGPT's remote search returns at most 40 message hits per request, so an archived filter or repeated hits from one chat can leave fewer than `--limit` conversations.
 
 ## Search by meaning
@@ -23,7 +21,7 @@ chatgpt search --hybrid "power meter home wiring"
 
 `--semantic` ranks passages by local embedding similarity, so the query need not share words with a result. `--hybrid` combines that ranking with full-text matches. Plain `search` uses SQLite full-text ranking and starts without loading the model. Every mode prints one result per conversation with a passage from the best matching part.
 
-The model is downloaded from Hugging Face on the first index build and cached under `~/.cache/chatgpt-cli/models` (or `$XDG_CACHE_HOME/chatgpt-cli/models`). Transcript and query embeddings run on your machine; their text is not sent to Hugging Face. The model is English-focused, and semantic ranking can still miss a relevant passage. Use `--hybrid` when exact terms matter too.
+The daemon downloads the model (23 MB) from Hugging Face the first time it needs it, checks it against a pinned checksum and caches it under `~/.cache/chatgpt-cli/models` (or `$XDG_CACHE_HOME/chatgpt-cli/models`). Transcript and query embeddings run on your machine, in a low-priority background process that uses at most one CPU core; their text is not sent to Hugging Face. Offline, full-text search works as usual and semantic search says why it isn't ready. The model is English-focused, and semantic ranking can still miss a relevant passage. Use `--hybrid` when exact terms matter too. [Embeddings in the Rust daemon](../explanation/embeddings.md) explains the model and runtime.
 
 ## Pipe search results
 
@@ -40,10 +38,10 @@ JSON is one array on stdout, including `[]` when nothing matches. JSON and CSV u
 
 ```sh
 chatgpt sync
-chatgpt search-index   # only for --semantic and --hybrid
+chatgpt search-index   # optional: wait until every chat is indexed and embedded
 ```
 
-The full-text index follows every sync on its own. Run `search-index` after `sync` to refresh embeddings for semantic and hybrid search. Changed and deleted chats stop appearing as soon as the local conversation index changes, even before rebuilding search.
+Both indexes follow every sync on their own. Changed and deleted chats stop appearing as soon as the local conversation index changes, before their new passages are indexed.
 
 The previous ChatGPT search remains available when you want it:
 
