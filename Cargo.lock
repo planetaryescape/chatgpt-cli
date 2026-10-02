@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "bytes",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "chatgpt-core",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "tempfile",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chatgpt",
  "chatgpt-core",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-launcher"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chatgpt-core",
  "chatgpt-protocol",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "serde",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusqlite",
  "tempfile",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "fake-chatgpt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde_json",
