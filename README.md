@@ -16,6 +16,14 @@ chatgpt list --limit 10
 
 The installer checks the release's SHA-256 before installing, and warns when another `chatgpt` comes earlier on your PATH. To pick a release or a place, pipe into `sh -s -- --version v0.1.5 --prefix <dir>` (installs into `<dir>/bin`).
 
+Or install with Homebrew, and upgrade with `brew upgrade chatgpt`:
+
+```sh
+brew install planetaryescape/chatgpt-cli/chatgpt
+```
+
+Use one or the other: whichever `bin` directory comes first on your PATH wins.
+
 The CLI uses your macOS default browser. To choose another browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync`. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
 
 Every command talks to a background daemon, which the first command starts. It reads your browser session once and keeps the token in memory (no Keychain prompt per command), keeps the local index, the search index and its embeddings fresh, and judges new chats with Jev once you configure a Jev key. `list` and `search` answer from the index without touching the network. `chatgpt daemon status` shows what it's doing, and `chatgpt daemon install` starts it at login. See [how it works](docs/explanation/rust-daemon.md).
