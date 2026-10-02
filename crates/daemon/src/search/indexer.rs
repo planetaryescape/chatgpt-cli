@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use chatgpt_core::ErrorKind;
 use chatgpt_protocol::SearchIndexStatus;
 use chatgpt_store::{ChunkVersions, Unindexed};
 use tokio::sync::Notify;
@@ -146,9 +147,14 @@ pub async fn run(state: Arc<State>) {
         let mut inner = state.indexer.inner();
         inner.in_progress = false;
         inner.last_finished_at = Some(now_unix());
-        if let Err(message) = outcome {
-            tracing::warn!("search indexing stopped: {message}");
-            inner.last_error = Some(message);
+        match outcome {
+            Err(message) => {
+                tracing::warn!("search indexing stopped: {message}");
+                inner.last_error = Some(message);
+            }
+            // Nothing waiting or set aside: an earlier error no longer applies.
+            Ok(()) if inner.waiting.is_none() && inner.failed == 0 => inner.last_error = None,
+            Ok(()) => {}
         }
     }
 }
@@ -221,6 +227,11 @@ async fn index(state: &State) -> Result<(), String> {
         let items = match api.batch(&ids).await {
             Ok(items) => items,
             Err(error) if error.is_rate_limit() => return Err(rate_limited(state, error)),
+            // A timeout or a dropped connection says nothing about these
+            // chats: stop, and the run after the next pass tries again.
+            Err(error) if error.kind == ErrorKind::Network => return Err(error.message),
+            // ChatGPT answered with an error for this batch: set its chats
+            // aside for a while, so they can't hold up the rest.
             Err(error) => {
                 tracing::warn!(
                     chats = ids.len(),
@@ -354,6 +365,7 @@ fn rate_limited(state: &State, error: ApiError) -> String {
             "rate limited; fetching again in {}s",
             wait.as_secs()
         ));
+        inner.last_error = Some(error.message.clone());
     }
     error.message
 }

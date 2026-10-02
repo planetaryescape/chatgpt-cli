@@ -39,7 +39,8 @@ pub struct SearchIndexStatus {
     /// Transcripts fetched from ChatGPT since the daemon started.
     #[serde(default)]
     pub fetched: u64,
-    /// Chats the current or last run couldn't fetch; retried later.
+    /// Chats set aside because ChatGPT left them out of a batch or
+    /// answered it with an error; each is asked for again after an hour.
     #[serde(default)]
     pub failed: u64,
     /// Unix seconds.

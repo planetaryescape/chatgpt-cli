@@ -127,7 +127,7 @@ fn search_index_line(index: &chatgpt_protocol::SearchIndexStatus) -> String {
     }
     parts.push(format!("{} transcript(s) fetched", index.fetched));
     if index.failed > 0 {
-        parts.push(format!("{} not returned by ChatGPT", index.failed));
+        parts.push(format!("{} set aside for an hour", index.failed));
     }
     if let Some(waiting) = &index.waiting {
         parts.push(waiting.clone());
