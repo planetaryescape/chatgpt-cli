@@ -80,7 +80,6 @@ fn radix_integer(digits: &str, radix: u32) -> f64 {
     // (sticky) bit, which rounds the same way as the whole would.
     let bits_per_digit = radix.trailing_zeros();
     let bits: Vec<bool> = digits
-        .trim_start_matches('0')
         .chars()
         .filter_map(|c| c.to_digit(radix))
         .flat_map(|digit| {

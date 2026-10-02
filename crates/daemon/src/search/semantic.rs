@@ -10,6 +10,8 @@ use chatgpt_core::ErrorKind;
 use chatgpt_embed::{DIM, MODEL_VERSION};
 use chatgpt_protocol::{SearchHit, SearchMode, SearchResults};
 use chatgpt_store::ChunkVersions;
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use rusqlite::Connection;
 
@@ -55,7 +57,8 @@ pub fn semantic_hits(
     archived: Option<bool>,
     versions: ChunkVersions,
 ) -> Result<Vec<SearchHit>, Failure> {
-    let mut best: IndexMap<String, Best> = IndexMap::new();
+    // Fully ordered below, so insertion order doesn't matter.
+    let mut best: HashMap<String, Best> = HashMap::new();
     let mut bad = None;
     chatgpt_store::each_vector(db, archived, versions, MODEL_VERSION, |row| {
         if row.embedding.len() != DIM * 4 {

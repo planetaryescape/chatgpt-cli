@@ -114,13 +114,16 @@ pub fn save_vectors(
         let mut clear =
             transaction.prepare_cached("delete from search_vector_failures where chunk_id = ?")?;
         for vector in vectors {
-            saved += insert.execute(params![
+            let inserted = insert.execute(params![
                 vector.chunk_id,
                 model_version,
                 vector.embedding,
                 vector.text
             ])?;
-            clear.execute([vector.chunk_id])?;
+            if inserted > 0 {
+                clear.execute([vector.chunk_id])?;
+            }
+            saved += inserted;
         }
     }
     transaction.commit()?;

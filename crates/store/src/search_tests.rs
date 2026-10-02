@@ -130,19 +130,7 @@ fn chunks_that_may_not_be_utf8_are_dropped_by_the_text_migration() {
     {
         // An index at migration 6, before the text migration.
         let mut db = rusqlite::Connection::open(&path).unwrap();
-        let transaction = db.transaction().unwrap();
-        for sql in [
-            include_str!("../migrations/0001_index.sql"),
-            include_str!("../migrations/0002_search.sql"),
-            include_str!("../migrations/0003_search_follows_transcripts.sql"),
-            include_str!("../migrations/0004_search_vectors.sql"),
-            include_str!("../migrations/0005_native_rows.sql"),
-            include_str!("../migrations/0006_drop_native_rows.sql"),
-        ] {
-            transaction.execute_batch(sql).unwrap();
-        }
-        transaction.pragma_update(None, "user_version", 6).unwrap();
-        transaction.commit().unwrap();
+        crate::schema::migrate_to(&mut db, 6).unwrap();
         let chats = [chat("a", "T", "t", false), chat("b", "T", "t", false)];
         replace_all(&mut db, &chats, "t").unwrap();
         let current = ChunkVersions {

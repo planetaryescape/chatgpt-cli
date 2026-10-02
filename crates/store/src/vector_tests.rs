@@ -229,16 +229,7 @@ fn an_index_from_before_vectors_upgrades_in_place() {
         // 0.1.1's schema, with a chat already chunked (at chunk version 2,
         // which the text migration keeps).
         let mut db = Connection::open(&path).unwrap();
-        let transaction = db.transaction().unwrap();
-        for sql in [
-            include_str!("../migrations/0001_index.sql"),
-            include_str!("../migrations/0002_search.sql"),
-            include_str!("../migrations/0003_search_follows_transcripts.sql"),
-        ] {
-            transaction.execute_batch(sql).unwrap();
-        }
-        transaction.pragma_update(None, "user_version", 3).unwrap();
-        transaction.commit().unwrap();
+        crate::schema::migrate_to(&mut db, 3).unwrap();
         replace_all(&mut db, &[chat("a", "t1", false)], "t").unwrap();
         replace_chunks(&mut db, &target("a", "t1"), V2, &["kept".to_owned()]).unwrap();
     }

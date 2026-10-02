@@ -94,15 +94,12 @@ pub async fn search(
     if !unknown.is_empty() {
         let known = state
             .db(move |db| {
-                let mut known = HashMap::new();
-                for id in unknown {
-                    for chat in chatgpt_store::get(db, &id, profile.local_title_version)? {
-                        if chat.id == id {
-                            known.insert(id.clone(), chat.is_archived);
-                        }
-                    }
-                }
-                Ok(known)
+                Ok(
+                    chatgpt_store::by_ids(db, &unknown, profile.local_title_version)?
+                        .into_iter()
+                        .map(|chat| (chat.id, chat.is_archived))
+                        .collect::<HashMap<_, _>>(),
+                )
             })
             .await?;
         fill_archive_state(&mut found, &known);

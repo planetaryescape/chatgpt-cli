@@ -441,9 +441,8 @@ async fn embed_pending(state: &State) -> Result<(), String> {
                         })
                         .await
                         .map_err(|failure| failure.message)?;
-                    let mut inner = state.embedder.inner();
-                    inner.failed += 1;
-                    inner.last_error = Some(why);
+                    // `failed` comes from the next count.
+                    state.embedder.inner().last_error = Some(why);
                 }
                 Err(WorkerError::Unusable(why)) => {
                     // A damaged file: checked (and fetched again) next run.

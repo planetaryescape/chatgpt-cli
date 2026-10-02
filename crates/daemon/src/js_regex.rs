@@ -22,6 +22,7 @@ use std::borrow::Cow;
 const JS_SPACE: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
 /// JS's `\w` without the `u` flag.
 const WORD: &str = "0-9A-Za-z_";
+const WORD_CLASS: &str = "[0-9A-Za-z_]";
 /// The stand-in for surrogate `0xD800 + n` is `STAND_IN + n`.
 const STAND_IN: u32 = 0xF0000;
 const SURROGATE_FIRST: u32 = 0xD800;
@@ -61,8 +62,11 @@ impl JsRegex {
     /// The first match's text (`text.match(regex)?.[0]`).
     pub fn find(&self, text: &str) -> Option<String> {
         let units = to_units(text);
-        let found = self.0.find(&units).ok()??;
-        Some(from_units(found.as_str()))
+        let found = self.0.find(&units).ok()??.as_str();
+        Some(match &units {
+            Cow::Borrowed(_) => found.to_owned(),
+            Cow::Owned(_) => from_units(found),
+        })
     }
 
     /// `text.replace(regex, () => replacement)`, at most `limit` times (0
@@ -98,7 +102,8 @@ fn surrogate(c: char) -> Option<u16> {
 /// `text` in code units: each astral character as its two surrogates'
 /// stand-ins. Borrowed when there are none.
 fn to_units(text: &str) -> Cow<'_, str> {
-    if text.chars().all(|c| c.len_utf16() == 1) {
+    // Astral characters are exactly UTF-8's four-byte sequences.
+    if !text.bytes().any(|byte| byte >= 0xF0) {
         return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len() * 2);
@@ -162,9 +167,9 @@ fn regex_source(source: &str) -> Result<String, RegexError> {
                     out.push('\\');
                     break;
                 };
-                let word = format!("[{WORD}]");
+                let word = WORD_CLASS;
                 match next {
-                    'w' => out.push_str(&word),
+                    'w' => out.push_str(word),
                     'W' => out.push_str(&format!("[^{WORD}]")),
                     'd' => out.push_str("[0-9]"),
                     'D' => out.push_str("[^0-9]"),
@@ -312,14 +317,13 @@ fn class_atom(chars: &mut Chars<'_>) -> ClassAtom {
     let Some(next) = chars.next() else {
         return ClassAtom::Unit(u32::from('\\'));
     };
-    let set = |text: String| ClassAtom::Set(text);
     match next {
-        'w' => set(WORD.to_owned()),
-        'W' => set(format!("[^{WORD}]")),
-        'd' => set("0-9".to_owned()),
-        'D' => set("[^0-9]".to_owned()),
-        's' => set(JS_SPACE.to_owned()),
-        'S' => set(format!("[^{JS_SPACE}]")),
+        'w' => ClassAtom::Set(WORD.to_owned()),
+        'W' => ClassAtom::Set(format!("[^{WORD}]")),
+        'd' => ClassAtom::Set("0-9".to_owned()),
+        'D' => ClassAtom::Set("[^0-9]".to_owned()),
+        's' => ClassAtom::Set(JS_SPACE.to_owned()),
+        'S' => ClassAtom::Set(format!("[^{JS_SPACE}]")),
         // In a class, `\b` is a backspace and `\B` an identity escape.
         'b' => ClassAtom::Unit(0x08),
         'n' => ClassAtom::Unit(0x0A),
