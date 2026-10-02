@@ -34,6 +34,7 @@ pub struct SearchIndexStatus {
     pub chats: u64,
     #[serde(default)]
     pub indexed: u64,
+    /// Indexing now, or asked to and about to start.
     #[serde(default)]
     pub in_progress: bool,
     /// Transcripts fetched from ChatGPT since the daemon started.

@@ -388,3 +388,65 @@ fn reconcile_skips_a_transcript_replaced_after_it_was_verified() {
         .unwrap();
     assert_eq!(time, "t1", "B stays stale");
 }
+
+#[test]
+fn the_import_never_replaces_a_current_transcript_with_an_older_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("chatgpt.db")).unwrap();
+    let path = dir.path().join("ts.db");
+    let legacy = Connection::open(&path).unwrap();
+    legacy
+        .execute_batch(include_str!("../migrations/0001_index.sql"))
+        .unwrap();
+    store
+        .write(|db| {
+            replace_all(
+                db,
+                &[
+                    chat("newer-render-older-time", "T", "t2", false),
+                    chat("newer-render-current", "T", "t2", false),
+                    chat("both-stale-older", "T", "t3", false),
+                    chat("both-stale-newer", "T", "t3", false),
+                ],
+                "t",
+            )?;
+            db.execute_batch(
+                "insert into transcripts values ('newer-render-older-time', 't2', 2, 'daemon', 1, 1);
+                 insert into transcripts values ('newer-render-current', 't2', 2, 'daemon', 1, 1);
+                 insert into transcripts values ('both-stale-older', 't2', 2, 'daemon', 1, 1);
+                 insert into transcripts values ('both-stale-newer', 't1', 2, 'daemon', 1, 1);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    legacy
+        .execute_batch(
+            "insert into transcripts values ('newer-render-older-time', 't1', 3, 'ts', 1, 1);
+             insert into transcripts values ('newer-render-current', 't2', 3, 'ts', 1, 1);
+             insert into transcripts values ('both-stale-older', 't1', 2, 'ts', 1, 1);
+             insert into transcripts values ('both-stale-newer', 't2', 2, 'ts', 1, 1);",
+        )
+        .unwrap();
+    store.write(|db| import_legacy(db, &path)).unwrap();
+    let rows: Vec<(String, String)> = store
+        .read(|db| {
+            let mut statement = db.prepare("select id, markdown from transcripts order by id")?;
+            Ok(statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .unwrap();
+    let rows: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|(id, markdown)| (id.as_str(), markdown.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("both-stale-newer", "ts"),
+            ("both-stale-older", "daemon"),
+            ("newer-render-current", "ts"),
+            ("newer-render-older-time", "daemon"),
+        ]
+    );
+}

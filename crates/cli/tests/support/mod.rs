@@ -127,6 +127,24 @@ impl Env {
         self.json(&["daemon", "status", "--json"])
     }
 
+    /// Wait until the search indexer has nothing running or pending, so a
+    /// test that counts requests to the fake counts only its own. Returns
+    /// the indexer's status.
+    pub fn wait_for_indexer(&self) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let index = self.status()["search_index"].clone();
+            if index["in_progress"] == false {
+                return index;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the indexer never went idle: {index}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         self.home
             .path()

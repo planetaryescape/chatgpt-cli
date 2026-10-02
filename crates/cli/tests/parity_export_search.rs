@@ -21,7 +21,6 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use fake_chatgpt::Chat;
 use fake_chatgpt::fixtures::{KINDS, rich_chats};
@@ -130,18 +129,8 @@ fn transcripts(db: &Path) -> Vec<(String, String, String, i64, i64)> {
 }
 
 fn wait_indexed(env: &Env, chats: usize) {
-    let deadline = Instant::now() + Duration::from_secs(40);
-    loop {
-        let index = env.status()["search_index"].clone();
-        if index["indexed"] == chats && index["in_progress"] == false {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "indexing never finished: {index}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let index = env.wait_for_indexer();
+    assert_eq!(index["indexed"], chats, "{index}");
 }
 
 fn strings(args: &[&str]) -> Vec<String> {

@@ -6,7 +6,7 @@ After a metadata-only change moves a chat from `t1` to `t2`, the indexer snapsho
 
 ## Why it is not fixed now
 
-- Hitting it needs a TS import to land inside the indexer's window between its snapshot and its preserve. Imports only run after a TS sync, which happens at most every 15 minutes.
+- Hitting it needs a TS import to land inside the indexer's window between its snapshot and its preserve. Imports run after a TS sync, which happens at most every 15 minutes, and whenever someone runs `chatgpt import-legacy`.
 - While the bridge exists, it corrects itself: the TS CLI reconciles its own caches, and the next import brings the advanced judgments across.
 - The TS import is removed at stage 6 (cutover), and the race disappears with it.
 

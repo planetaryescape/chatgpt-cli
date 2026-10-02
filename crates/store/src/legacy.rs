@@ -14,10 +14,11 @@
 //!
 //! Transcripts are a cache both sides fill: the daemon's search indexer
 //! fetches them too. So the TS index never deletes one here, and its copy
-//! replaces the daemon's only while the daemon's isn't current for the
-//! chat's `update_time` (two current renders can differ only in the model
-//! named in the header, which the single-chat endpoint gives and the batch
-//! doesn't).
+//! replaces the daemon's only when it is current for the chat and the
+//! daemon's isn't (or is an older render), or when neither is current and
+//! the TS copy isn't older. Two current renders can differ only in the
+//! model named in the header, which the single-chat endpoint gives and the
+//! batch doesn't, so the daemon's current one stays.
 
 use std::path::Path;
 
@@ -196,10 +197,21 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
         }
         let mut condition = format!("({})", changed.join(" or "));
         if cache {
+            let current = |time: &str| {
+                format!(
+                    "exists (select 1 from main.conversations c \
+                     where c.id = {table}.id and c.update_time = {time})"
+                )
+            };
+            let (ours, theirs) = (
+                current(&format!("{table}.update_time")),
+                current("excluded.update_time"),
+            );
+            // Theirs is current, and ours isn't or is an older render; or
+            // neither is current and theirs isn't older.
             condition.push_str(&format!(
-                " and not exists (select 1 from main.conversations c \
-                 where c.id = {table}.id and c.update_time = {table}.update_time \
-                 and {table}.render_version >= excluded.render_version)"
+                " and (({theirs} and (not {ours} or excluded.render_version > {table}.render_version)) \
+                 or (not {ours} and not {theirs} and excluded.update_time >= {table}.update_time))"
             ));
         }
         // `where true` lets SQLite tell the upsert's ON from a join's.

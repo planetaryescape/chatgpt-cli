@@ -165,6 +165,7 @@ fn a_ts_sync_longer_than_the_stall_timeout_keeps_the_client_waiting() {
 fn a_cold_start_with_a_synced_index_waits_for_the_cadence() {
     let env = Env::with_fake(chats());
     env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
     env.cmd().args(["daemon", "stop"]).assert().success();
     let before = env.fake().calls().len();
     assert_eq!(ids(&env, &["list"]).len(), 3);

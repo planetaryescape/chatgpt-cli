@@ -39,20 +39,12 @@ fn status(env: &Env) -> Value {
     env.status()["search_index"].clone()
 }
 
-/// Wait until every chat is indexed and no run is going.
+/// Wait until the indexer has nothing running or pending, and check it
+/// indexed every chat.
 fn wait_indexed(env: &Env) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let index = status(env);
-        if index["indexed"] == index["chats"] && index["in_progress"] == false {
-            return index;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "indexing never finished: {index}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let index = env.wait_for_indexer();
+    assert_eq!(index["indexed"], index["chats"], "{index}");
+    index
 }
 
 fn synced(chats: Vec<Chat>) -> Env {

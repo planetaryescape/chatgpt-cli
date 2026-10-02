@@ -51,7 +51,12 @@ pub struct Indexer {
 
 #[derive(Default)]
 struct Inner {
-    in_progress: bool,
+    running: bool,
+    /// Runs asked for (each wake), and the last request a finished run
+    /// covered: until they meet, more indexing is coming even if no run
+    /// has started yet, and `daemon status` says so.
+    requested: u64,
+    done: u64,
     fetched: u64,
     /// Every chat in the index, and how many have current chunks, as of
     /// the last count: `daemon status` (asked before every command) reads
@@ -84,6 +89,7 @@ impl Indexer {
 
     /// Start a run (or another one after the current run).
     pub fn wake(&self) {
+        self.inner().requested += 1;
         self.wake.notify_one();
     }
 
@@ -103,7 +109,7 @@ impl Indexer {
         SearchIndexStatus {
             chats: inner.chats,
             indexed: inner.indexed,
-            in_progress: inner.in_progress,
+            in_progress: inner.running || inner.requested > inner.done,
             fetched: inner.fetched,
             failed: u64::try_from(inner.unavailable.len()).unwrap_or(u64::MAX),
             last_finished_at: inner.last_finished_at,
@@ -130,10 +136,15 @@ pub async fn run(state: Arc<State>) {
             }
             None => state.indexer.wake.notified().await,
         }
-        state.indexer.inner().in_progress = true;
+        let generation = {
+            let mut inner = state.indexer.inner();
+            inner.running = true;
+            inner.requested
+        };
         let outcome = index(&state).await;
         let mut inner = state.indexer.inner();
-        inner.in_progress = false;
+        inner.running = false;
+        inner.done = generation;
         inner.last_finished_at = Some(now_unix());
         match outcome {
             Err(message) => {
