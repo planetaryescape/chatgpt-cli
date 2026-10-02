@@ -7,12 +7,14 @@
 //! `archive` and `delete -y`.
 //!
 //! Keys are read from `/dev/tty` in raw mode, so review works when the ids
-//! came in on stdin.
+//! came in on stdin. While a chat is on screen, the next one is fetched on
+//! a thread of its own, so a decision shows the next chat without a wait.
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::process::{ExitCode, Stdio};
+use std::sync::mpsc::Receiver;
 
 use chatgpt_core::js::{clip, utf16_prefix};
 use chatgpt_core::{ErrorKind, Paths};
@@ -60,6 +62,7 @@ pub async fn review(
         pinned: args.pinned,
         exclude_unsure: false,
         allow_unfiltered: true,
+        verdicts: true,
     };
     let mut targets = select(paths, selection).await?;
     if args.oldest_first {
@@ -69,10 +72,9 @@ pub async fn review(
         note("Nothing matched.");
         return Ok(ExitCode::SUCCESS);
     }
-    let verdicts = verdicts(paths).await?;
     let decisions = {
         let mut tty = RawTty::open()?;
-        triage(paths, &session, &targets, &verdicts, &mut tty).await?
+        triage(paths, &session, &targets, &mut tty).await?
     };
 
     clear_screen();
@@ -125,59 +127,55 @@ pub async fn review(
     })
 }
 
-/// Every chat's current verdict and topic, by id (`store.currentJudgments`
-/// and `topicOf`).
-async fn verdicts(paths: &Paths) -> Result<HashMap<String, (Jev, String)>, ClientError> {
-    let request = Request::list_every_chat();
-    let ResponseData::Rows(answer) = chatgpt_launcher::ask(paths, request, |_| {}).await? else {
-        return Err(unexpected());
-    };
-    Ok(answer
-        .rows
-        .into_iter()
-        .filter_map(|row| {
-            let jev = row.jev?;
-            Some((row.id, (jev, row.row_topic.unwrap_or_default())))
-        })
-        .collect())
-}
-
 /// The review loop: a decision per chat, until the last one or `q`.
 async fn triage(
     paths: &Paths,
     session: &SessionChoice,
     targets: &[Row],
-    verdicts: &HashMap<String, (Jev, String)>,
     tty: &mut RawTty,
 ) -> Result<HashMap<String, Decision>, ClientError> {
     // Each chat as fetched, for the chats in the undo window; a failed
     // fetch, or one that fell out of the window, is fetched again when the
     // chat is shown again.
     let mut loaded: HashMap<String, ChatTranscript> = HashMap::new();
+    let mut ahead: Option<Prefetch> = None;
     let mut decisions = HashMap::new();
     let mut at = 0;
     // The chat on screen; `None` redraws it.
     let mut shown = None;
     while let Some(row) = targets.get(at) {
-        let jev = verdicts.get(&row.id);
+        let jev = row
+            .jev
+            .as_ref()
+            .map(|jev| (jev, row.row_topic.as_deref().unwrap_or_default()));
         if shown != Some(at) {
             let kept = undo_window(targets, at);
             loaded.retain(|id, _| kept.contains(&id.as_str()));
             let chat = match loaded.get(&row.id) {
                 Some(chat) => chat.clone(),
-                None => load(paths, session, &row.id).await,
+                None => match take_prefetched(&mut ahead, &row.id) {
+                    Some(chat) => chat,
+                    None => load(paths, session, &row.id).await,
+                },
             };
             show(row, &format!("[{}/{}]", at + 1, targets.len()), jev, &chat);
             if chat.markdown.is_some() {
                 loaded.insert(row.id.clone(), chat);
             }
             shown = Some(at);
+            if let Some(next) = targets.get(at + 1)
+                && !loaded.contains_key(&next.id)
+                && ahead.as_ref().is_none_or(|ahead| ahead.id != next.id)
+            {
+                ahead = Some(Prefetch::start(paths, session, &next.id));
+            }
         }
         let key = tty.read_key()?;
         match key.as_str() {
             "q" | "\u{3}" => break,
-            "u" => {
-                at = at.saturating_sub(1);
+            // On the first chat there's nothing to undo, nor to redraw.
+            "u" if at > 0 => {
+                at -= 1;
                 decisions.remove(&targets[at].id);
                 shown = None;
             }
@@ -215,6 +213,46 @@ async fn triage(
     Ok(decisions)
 }
 
+/// The next chat's transcript, fetched on a thread with its own runtime
+/// while the user reads the current one: this one's blocks on the
+/// keyboard.
+struct Prefetch {
+    id: String,
+    done: Receiver<ChatTranscript>,
+}
+
+impl Prefetch {
+    fn start(paths: &Paths, session: &SessionChoice, id: &str) -> Self {
+        let (sender, done) = std::sync::mpsc::channel();
+        let (paths, session, wanted) = (paths.clone(), session.clone(), id.to_owned());
+        std::thread::spawn(move || {
+            // Without a runtime nothing is sent, and the chat is loaded
+            // when it's shown, as before.
+            if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                let _ = sender.send(runtime.block_on(load(&paths, &session, &wanted)));
+            }
+        });
+        Self {
+            id: id.to_owned(),
+            done,
+        }
+    }
+}
+
+/// Chat `id` as prefetched, waiting for the fetch if it's still out; `None`
+/// if it wasn't the one prefetched or didn't load, so it's loaded again.
+fn take_prefetched(ahead: &mut Option<Prefetch>, id: &str) -> Option<ChatTranscript> {
+    let prefetch = ahead.take_if(|prefetch| prefetch.id == id)?;
+    prefetch
+        .done
+        .recv()
+        .ok()
+        .filter(|chat| chat.markdown.is_some())
+}
+
 /// How many chats back `u` can go without fetching again.
 const UNDO_KEPT: usize = 3;
 
@@ -250,7 +288,7 @@ async fn load(paths: &Paths, session: &SessionChoice, id: &str) -> ChatTranscrip
 
 /// `preview`: the chat's header, verdict and summary, then its turns, or
 /// why it couldn't be loaded.
-fn show(row: &Row, position: &str, jev: Option<&(Jev, String)>, chat: &ChatTranscript) {
+fn show(row: &Row, position: &str, jev: Option<(&Jev, &str)>, chat: &ChatTranscript) {
     clear_screen();
     let mut out = format!("{position}  {}\n", row.display_title);
     out.push_str(&format!(

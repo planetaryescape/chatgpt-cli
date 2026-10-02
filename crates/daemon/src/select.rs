@@ -157,7 +157,8 @@ pub fn plain_row(chat: &IndexedConversation) -> Row {
     }
 }
 
-/// `Select`: the chats, as rows for the preview.
+/// `Select`: the chats, as rows for the preview; with `verdicts`, as
+/// `list` shows them.
 pub fn rows(
     db: &Connection,
     chosen: &Selection,
@@ -165,10 +166,13 @@ pub fn rows(
     now_ms: i64,
 ) -> Result<ListRows, Failure> {
     let (chats, synced_at) = targets(db, chosen, profile, now_ms)?;
-    Ok(ListRows {
-        rows: chats.iter().map(plain_row).collect(),
-        synced_at,
-    })
+    let rows = if chosen.verdicts {
+        let judgments = crate::policy::current_judgments(db, profile).map_err(Failure::store)?;
+        crate::reads::judged_rows(chats, &judgments, profile)?
+    } else {
+        chats.iter().map(plain_row).collect()
+    };
+    Ok(ListRows { rows, synced_at })
 }
 
 #[cfg(test)]

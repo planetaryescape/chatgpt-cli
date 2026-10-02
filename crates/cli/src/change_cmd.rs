@@ -104,6 +104,7 @@ pub async fn change(
         pinned: args.pinned,
         exclude_unsure: applying_suggestions,
         allow_unfiltered: false,
+        verdicts: false,
     };
     let mut rows = select(paths, selection).await?;
     // Explicit ids bypass filters, so the Jev check stays a second guard.

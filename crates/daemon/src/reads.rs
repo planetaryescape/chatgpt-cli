@@ -70,51 +70,71 @@ pub fn list(
         chats,
         judgments,
     } = selected(db, filter, profile, now_ms)?;
-    let mut rows = Vec::with_capacity(chats.len());
-    for chat in chats {
-        let judgment = judgments.get(&chat.id);
-        let (row_topic, jev) = match judgment {
-            Some(row) => {
-                let judged = Judged::new(row, profile).map_err(Failure::policy)?;
-                let verdict = judged.verdict().map_err(Failure::policy)?;
-                let answers = serde_json::from_str(&row.answers).map_err(|error| {
-                    Failure::new(
-                        ErrorKind::Internal,
-                        format!(
-                            "the stored Jev answers for {} are unreadable: {error}",
-                            row.id
-                        ),
-                    )
-                })?;
-                let jev = Jev {
-                    suggestion: verdict.suggestion,
-                    unsure: verdict.unsure,
-                    reason: verdict.reason,
-                    brainstorm: verdict.brainstorm,
-                    deep: verdict.deep,
-                    luna: verdict.luna,
-                    answers,
-                };
-                (judged.topic(), Some(jev))
-            }
-            None => (None, None),
-        };
-        rows.push(Row {
-            display_title: chat.display_title().to_owned(),
-            topic: judgment.and_then(|row| row.topic.clone()),
-            row_topic,
-            jev,
-            id: chat.id,
-            title: chat.title,
-            create_time: chat.create_time,
-            update_time: chat.update_time,
-            is_archived: u8::from(chat.is_archived),
-            pinned: u8::from(chat.pinned),
-            project_id: chat.project_id,
-            local_title: chat.local_title,
-        });
-    }
+    let rows = judged_rows(chats, &judgments, profile)?;
     Ok(ListRows { rows, synced_at })
+}
+
+/// Chats as `list` shows them: each with its current verdict and topic, if
+/// it has a judgment.
+pub fn judged_rows(
+    chats: Vec<IndexedConversation>,
+    judgments: &HashMap<String, JudgmentRow>,
+    profile: &Profile,
+) -> Result<Vec<Row>, Failure> {
+    chats
+        .into_iter()
+        .map(|chat| {
+            let judgment = judgments.get(&chat.id);
+            judged_row(chat, judgment, profile)
+        })
+        .collect()
+}
+
+fn judged_row(
+    chat: IndexedConversation,
+    judgment: Option<&JudgmentRow>,
+    profile: &Profile,
+) -> Result<Row, Failure> {
+    let (row_topic, jev) = match judgment {
+        Some(row) => {
+            let judged = Judged::new(row, profile).map_err(Failure::policy)?;
+            let verdict = judged.verdict().map_err(Failure::policy)?;
+            let answers = serde_json::from_str(&row.answers).map_err(|error| {
+                Failure::new(
+                    ErrorKind::Internal,
+                    format!(
+                        "the stored Jev answers for {} are unreadable: {error}",
+                        row.id
+                    ),
+                )
+            })?;
+            let jev = Jev {
+                suggestion: verdict.suggestion,
+                unsure: verdict.unsure,
+                reason: verdict.reason,
+                brainstorm: verdict.brainstorm,
+                deep: verdict.deep,
+                luna: verdict.luna,
+                answers,
+            };
+            (judged.topic(), Some(jev))
+        }
+        None => (None, None),
+    };
+    Ok(Row {
+        display_title: chat.display_title().to_owned(),
+        topic: judgment.and_then(|row| row.topic.clone()),
+        row_topic,
+        jev,
+        id: chat.id,
+        title: chat.title,
+        create_time: chat.create_time,
+        update_time: chat.update_time,
+        is_archived: u8::from(chat.is_archived),
+        pinned: u8::from(chat.pinned),
+        project_id: chat.project_id,
+        local_title: chat.local_title,
+    })
 }
 
 /// `printStats`'s numbers. The saved-memory part is added by the caller.

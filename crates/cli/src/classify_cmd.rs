@@ -71,6 +71,7 @@ async fn targets(
         pinned,
         exclude_unsure: false,
         allow_unfiltered: true,
+        verdicts: false,
     };
     Ok(select(paths, selection)
         .await?
