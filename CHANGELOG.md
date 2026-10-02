@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.3...v0.1.4) (2026-10-02)
+
+
+### Features
+
+* native classify, titles, memory classify, configure and background Jev ([#12](https://github.com/planetaryescape/chatgpt-cli/issues/12)) ([8c073a6](https://github.com/planetaryescape/chatgpt-cli/commit/8c073a6073d6ffc631625a25940482ba5e05a92b))
+
 ## [0.1.3](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.2...v0.1.3) (2026-10-02)
 
 
