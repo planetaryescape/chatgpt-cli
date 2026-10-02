@@ -128,10 +128,12 @@ pub async fn search(
 pub async fn search_index(
     paths: &chatgpt_core::Paths,
     scope: ScopeArgs,
+    session: SessionChoice,
 ) -> Result<ExitCode, ClientError> {
     let request = Request::SearchIndex {
         archived: scope.archived,
         all: scope.all,
+        session,
     };
     let mut progress = ProgressLines::new();
     let answer = chatgpt_launcher::ask(paths, request, |event| progress.show(event)).await;

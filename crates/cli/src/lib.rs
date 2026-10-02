@@ -84,7 +84,9 @@ fn run(cli: Cli, daemon: DaemonEntry) -> Result<ExitCode, ClientError> {
                 Command::Stats(filters) => reads::stats(&paths, filters, session).await,
                 Command::Export(export) => export_cmd::export(&paths, export, session).await,
                 Command::Search(search) => search_cmd::search(&paths, search, session).await,
-                Command::SearchIndex(scope) => search_cmd::search_index(&paths, scope).await,
+                Command::SearchIndex(scope) => {
+                    search_cmd::search_index(&paths, scope, session).await
+                }
                 Command::Archive(change) => {
                     change_cmd::change(&paths, ChatAction::Archive, change, session).await
                 }

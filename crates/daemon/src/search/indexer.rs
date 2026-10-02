@@ -38,6 +38,8 @@ const BATCH_GAP: Duration = Duration::from_millis(500);
 const LOCAL_GROUP: usize = 20;
 /// How long a chat ChatGPT didn't return waits before it's asked for again.
 const RETRY_UNAVAILABLE: Duration = Duration::from_secs(60 * 60);
+/// Why a chat a batch read left out is set aside.
+const NOT_RETURNED: &str = "not returned by ChatGPT; run sync.";
 /// How often a paused run checks whether the request it yields to is done.
 const YIELD_POLL: Duration = Duration::from_millis(100);
 
@@ -68,8 +70,9 @@ struct Inner {
     waiting: Option<String>,
     may_fetch: bool,
     backoff_until: Option<Instant>,
-    /// Chats a fetch didn't return: their `update_time` then, and when.
-    unavailable: HashMap<String, (String, Instant)>,
+    /// Chats a fetch didn't return: their `update_time` then, when, and
+    /// why (an error kind and path, never a body).
+    unavailable: HashMap<String, (String, Instant, String)>,
 }
 
 /// Marks a user request that reads ChatGPT while it runs; the indexer
@@ -105,11 +108,17 @@ impl Indexer {
         self.pass_succeeded();
     }
 
-    /// Chats set aside because ChatGPT didn't return them.
-    pub fn unavailable_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.inner().unavailable.keys().cloned().collect();
-        ids.sort();
-        ids
+    /// Chats set aside because ChatGPT didn't return them, by id, with
+    /// why.
+    pub fn set_aside(&self) -> Vec<(String, String)> {
+        let mut chats: Vec<(String, String)> = self
+            .inner()
+            .unavailable
+            .iter()
+            .map(|(id, (_, _, why))| (id.clone(), why.clone()))
+            .collect();
+        chats.sort();
+        chats
     }
 
     pub fn foreground(&self) -> Foreground<'_> {
@@ -292,7 +301,10 @@ async fn index(state: &State) -> Result<(), String> {
                     "search transcripts not fetched: {}",
                     error.message
                 );
-                unavailable(state, batch);
+                unavailable(
+                    state,
+                    batch.iter().map(|chat| (chat, error.message.clone())),
+                );
                 state.indexer.inner().last_error = Some(error.message);
                 continue;
             }
@@ -339,7 +351,7 @@ async fn save_batch(
     for chat in batch {
         let Some(item) = items.remove(&chat.id) else {
             tracing::info!(id = %chat.id, "ChatGPT did not return the chat for the search index");
-            failed.push(chat);
+            failed.push((chat, NOT_RETURNED.to_owned()));
             continue;
         };
         if let Some(candidate) = stale.get(&chat.id) {
@@ -354,7 +366,7 @@ async fn save_batch(
                 Ok(false) => {}
                 Err(why) => {
                     tracing::warn!(id = %chat.id, "search transcript not checked: {why}");
-                    failed.push(chat);
+                    failed.push((chat, why));
                     continue;
                 }
             }
@@ -363,11 +375,11 @@ async fn save_batch(
             Ok(transcript) => ready.push((chat, transcript)),
             Err(why) => {
                 tracing::warn!(id = %chat.id, "search transcript not rendered: {why}");
-                failed.push(chat);
+                failed.push((chat, why));
             }
         }
     }
-    unavailable(state, &failed);
+    unavailable(state, failed.iter().map(|(chat, why)| (chat, why.clone())));
     let preserved: Vec<_> = preserved
         .into_iter()
         .map(|(chat, markdown)| {
@@ -450,14 +462,14 @@ fn retryable(state: &State, missing: Vec<Unindexed>) -> Vec<Unindexed> {
 /// changed, got indexed or left the index), so `daemon status` counts only
 /// chats still waiting, then `missing` without the ones that do.
 fn without_set_aside(
-    unavailable: &mut HashMap<String, (String, Instant)>,
+    unavailable: &mut HashMap<String, (String, Instant, String)>,
     missing: Vec<Unindexed>,
 ) -> Vec<Unindexed> {
     let current: HashMap<&str, &str> = missing
         .iter()
         .map(|chat| (chat.id.as_str(), chat.update_time.as_str()))
         .collect();
-    unavailable.retain(|id, (update_time, at)| {
+    unavailable.retain(|id, (update_time, at, _)| {
         at.elapsed() < RETRY_UNAVAILABLE && current.get(id.as_str()) == Some(&update_time.as_str())
     });
     missing
@@ -466,12 +478,13 @@ fn without_set_aside(
         .collect()
 }
 
-fn unavailable(state: &State, chats: &[Unindexed]) {
+fn unavailable<'a>(state: &State, chats: impl IntoIterator<Item = (&'a Unindexed, String)>) {
     let mut inner = state.indexer.inner();
-    for chat in chats {
-        inner
-            .unavailable
-            .insert(chat.id.clone(), (chat.update_time.clone(), Instant::now()));
+    for (chat, why) in chats {
+        inner.unavailable.insert(
+            chat.id.clone(),
+            (chat.update_time.clone(), Instant::now(), why),
+        );
     }
 }
 
@@ -602,10 +615,13 @@ mod tests {
 
     #[test]
     fn a_set_aside_chat_that_changed_or_left_stops_counting_as_failed() {
-        let mut unavailable: HashMap<String, (String, Instant)> =
+        let mut unavailable: HashMap<String, (String, Instant, String)> =
             [("same", "t1"), ("changed", "t1"), ("indexed-since", "t1")]
                 .into_iter()
-                .map(|(id, time)| (id.to_owned(), (time.to_owned(), Instant::now())))
+                .map(|(id, time)| {
+                    let entry = (time.to_owned(), Instant::now(), NOT_RETURNED.to_owned());
+                    (id.to_owned(), entry)
+                })
                 .collect();
         let ready = without_set_aside(
             &mut unavailable,

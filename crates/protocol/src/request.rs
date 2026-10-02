@@ -87,6 +87,10 @@ pub enum Request {
         archived: bool,
         #[serde(default)]
         all: bool,
+        /// The browser to fetch missing transcripts with; it stays the
+        /// daemon's choice, as a `sync`'s does.
+        #[serde(default)]
+        session: SessionChoice,
     },
     /// The chats `archive`, `unarchive`, `delete` or `project add/remove`
     /// would act on, for the client's preview. Never touches the network.

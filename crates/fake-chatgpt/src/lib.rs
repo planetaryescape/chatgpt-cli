@@ -149,7 +149,8 @@ pub struct State {
     pub omit_user_id: bool,
     /// Hold every batch answer this long.
     pub batch_delay_ms: u64,
-    /// The ids of every batch read answered, in order.
+    /// The ids of every batch read answered (the injected 500s included),
+    /// in order.
     pub batch_bodies: Vec<Vec<String>>,
     /// Answer this many next batch reads with a 500.
     pub fail_batch: u32,
@@ -209,6 +210,19 @@ enum Route {
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The `conversation_ids` a batch read asks for.
+fn batch_ids(request: &Request) -> Vec<String> {
+    let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+    body["conversation_ids"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn query(request: &Request, name: &str) -> Option<String> {
@@ -277,6 +291,7 @@ impl Respond for Handler {
         }
         if matches!(self.route, Route::Batch) && state.fail_batch > 0 {
             state.fail_batch -= 1;
+            state.batch_bodies.push(batch_ids(request));
             return ResponseTemplate::new(500).set_body_string("{\"detail\":\"oops\"}");
         }
         if state.expire_token {
@@ -364,15 +379,7 @@ impl Respond for Handler {
                 }
             }
             Route::Batch => {
-                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-                let ids: Vec<String> = body["conversation_ids"]
-                    .as_array()
-                    .map(|ids| {
-                        ids.iter()
-                            .filter_map(|id| id.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let ids = batch_ids(request);
                 let items: Vec<Value> = ids
                     .iter()
                     .filter_map(|id| chats.iter().find(|chat| &chat.id == id))

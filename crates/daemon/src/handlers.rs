@@ -170,11 +170,13 @@ async fn answer(
         } => search::remote::search(state, query, limit, (!all).then_some(archived), session)
             .await
             .map(ResponseData::SearchHits),
-        Request::SearchIndex { archived, all } => {
-            search::catch_up::search_index(state, archived, all, progress)
-                .await
-                .map(ResponseData::SearchIndexed)
-        }
+        Request::SearchIndex {
+            archived,
+            all,
+            session,
+        } => search::catch_up::search_index(state, archived, all, session, progress)
+            .await
+            .map(ResponseData::SearchIndexed),
         Request::Select { selection } => read(state, move |db, profile, now| {
             select::rows(db, &selection, profile, now)
         })

@@ -191,6 +191,11 @@ impl Syncer {
         self.schedule().choice.clone()
     }
 
+    /// Read with `choice` from now on, as a `sync` with it would.
+    pub fn use_choice(&self, choice: SessionChoice) {
+        self.schedule().choice = choice;
+    }
+
     /// Hold off sync passes while a change writes ChatGPT and the index,
     /// after waiting out a running one: a pass whose listing predates the
     /// change would otherwise write the chat's old state back (a deleted
