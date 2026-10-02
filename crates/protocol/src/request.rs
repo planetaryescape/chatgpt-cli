@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ChatAction, Filter, ModelAccess, Project, SearchMode, Secret, Selection, Target};
+use crate::{
+    ChatAction, Filter, ModelAccess, Project, SearchMode, Secret, Selection, Target,
+    TranscriptSource,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
@@ -43,6 +46,15 @@ pub enum Request {
         archived: bool,
         #[serde(default)]
         all: bool,
+        #[serde(default)]
+        session: SessionChoice,
+    },
+    /// The TUI's preview and `review`: chat `id`'s transcript as the cache
+    /// holds it (the batch endpoint's rendering), and its summary.
+    Transcript {
+        id: String,
+        #[serde(default)]
+        source: TranscriptSource,
         #[serde(default)]
         session: SessionChoice,
     },
@@ -214,6 +226,20 @@ pub enum Request {
     },
     #[serde(other)]
     Unknown,
+}
+
+impl Request {
+    /// `List` of every chat, active and archived, pinned ones included: the
+    /// TUI's rows and `review`'s verdicts (`index.query({ includePinned:
+    /// true })`).
+    pub fn list_every_chat() -> Self {
+        Self::List {
+            filter: Box::new(Filter {
+                all: true,
+                ..Filter::default()
+            }),
+        }
+    }
 }
 
 /// `--browser` and `--profile` (or `CHATGPT_BROWSER` and

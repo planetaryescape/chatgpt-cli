@@ -2,18 +2,15 @@
 
 The Rust `chatgpt` (in `crates/`) is replacing the TS CLI one group of commands at a time. Until it covers everything, it hands the rest to the TS CLI unchanged.
 
-## Native commands and the bridge
+## Every command is native
 
-`configure`, `sync`, `list`, `stats`, `export` (and its alias `show`), `search` (full-text, `--semantic`, `--hybrid` and `--remote`), `search-index`, `archive`, `unarchive`, `delete`, `rename`, `title`, `titles`, `classify`, `project` (`create`, `list`, `add`, `remove`), `memory` (`list`, `summary`, `delete`, `classify`), `daemon` and `import-legacy` run in Rust. `review` and `tui`, including their `--help`, run as `bun <cli.ts> <args…>`: the Rust process replaces itself with bun, so arguments, stdin, stdout, stderr, the terminal and the exit code are the TS CLI's. The TS CLI is found by path, never as `chatgpt` on PATH (which may be the Rust binary):
+Every command runs in Rust, `review` and `tui` included: nothing is handed to the TS CLI any more. An unknown command is this CLI's error. The bridge's code (`crates/cli/src/bridge.rs`) is unreachable and goes with the TS CLI. Until then the daemon still runs the TS CLI's own `sync` and imports from its index ([Data from the TS CLI](#data-from-the-ts-cli)), so the TS CLI's index stays current for anyone still running it directly.
 
-1. `CHATGPT_TS_CLI`, the TS CLI's `src/cli.ts`;
-2. `~/.bun/install/global/node_modules/chatgpt-cli/src/cli.ts`, where `bun link` puts it.
-
-Bun comes from PATH, else `~/.bun/bin/bun`. A bridged process carries `CHATGPT_BRIDGED=1`; a Rust `chatgpt` that sees it refuses to bridge again, so a misconfigured `CHATGPT_TS_CLI` can't loop.
+`tui` is its own crate (`crates/tui`, ratatui on crossterm) and, like every other command, a client of the daemon only: the chats come from `List`, transcripts from `Transcript`, local titles go through `SetTitle`, and the marks are applied through `Mutate`, exactly as `archive -y` and `delete -y` apply them (the index's pinned account, the sync pass lock, no resend of a delete). Which keys and states match the TS TUI, and the few that differ, are in [TUI parity](tui-parity.md). `review` is a CLI command over `Select`, `List` (for the verdicts), `Transcript` and `Mutate`.
 
 ## The daemon
 
-Native commands ask a background daemon over a Unix socket. A native command that finds no daemon starts one (bridged commands and `configure` don't need it), detached from the terminal, and waits until it answers. The daemon:
+Native commands ask a background daemon over a Unix socket. A command that finds no daemon starts one (`configure` doesn't need it), detached from the terminal, and waits until it answers. The daemon:
 
 - reads the browser's cookies once per `--browser`/`--profile` choice (the read can raise a Keychain prompt) and keeps the access token in memory only. It reads them again only when ChatGPT rejects the token (401, or a 403 that isn't a Cloudflare challenge);
 - syncs one account per index. A pass pins its browser choice and the session's account from start to finish, so a command choosing another browser meanwhile can't change what it reads. A sync whose session belongs to another account than the one the index was built from is refused: keep each account in its own instance (`CHATGPT_INSTANCE=<name>`);
@@ -21,7 +18,9 @@ Native commands ask a background daemon over a Unix socket. A native command tha
 - backs off for as long as ChatGPT's rate limit asks (at least a minute, at most an hour) and shows it in `chatgpt daemon status`. A rate limit in any step, the cache reconcile included, ends the pass, and the TS sync waits for the next one;
 - logs to `~/Library/Application Support/chatgpt-cli/logs/daemon.log.<date>`, one file a day, seven kept. Logs never hold cookies, tokens or response bodies.
 
-`list` and `search` never touch the network, except `search --remote`, which asks ChatGPT's search because you asked for it. `stats` reads the saved memories live, as the TS CLI does. `export` always fetches the chat from the single-chat endpoint, as the TS CLI does, rather than using a cached transcript: the cache is filled from the batch endpoint, which doesn't name the model, so its header would differ. An export too large for one IPC frame (16 MiB) is handed to the TS CLI with the same arguments until exports are streamed (`docs/issues/export-frame-limit.md`).
+`list` and `search` never touch the network, except `search --remote`, which asks ChatGPT's search because you asked for it. `stats` reads the saved memories live, as the TS CLI does. `export` always fetches the chat from the single-chat endpoint, as the TS CLI does, rather than using a cached transcript: the cache is filled from the batch endpoint, which doesn't name the model, so its header would differ. Any answer too large for one IPC frame (16 MiB), an export of a very long chat say, goes out as numbered `Part` events holding slices of its JSON, then `Parted` with their count and total size; the client refuses a missing, repeated or reordered part or a size that doesn't add up, before it reads anything, then joins them and reads the answer as if it had come whole, so an export of any size is written byte for byte as a small one is. (A client from before 0.1.5 can't read `Parted` and says so.)
+
+`Transcript` gives the TUI's preview and `review` a chat's transcript as the cache holds it (the batch endpoint's rendering): from the cache alone, from the cache else the batch endpoint (the TUI), or always from the batch endpoint (`review`, as the TS CLI's does). A fetched transcript is cached with its search chunks under the sync pass lock, as the index's account fetched it, and only while the index still has the chat at the `update_time` it was fetched for: a fetch a sync overtook is shown but never cached over the newer revision. With it come the summary a long chat's current judgment was made from (also when the fetch fails, which the answer says rather than failing), and for `review` the turn count and the first and last turns.
 
 ## The search index
 
@@ -62,7 +61,7 @@ ChatGPT's quirks are the TS CLI's: a pre-2025 chat's rename answers 500 yet appl
 
 Archiving is idempotent, so it's retried like a read. A delete, a rename, a project move, a new project and a memory delete mustn't happen twice: they're retried only after an answer that shows ChatGPT turned them away (a Cloudflare challenge, a 429). After a gateway error or a dropped connection the write may have applied, and the CLI says exactly that, with the path, and that `chatgpt sync` shows whether it did, rather than sending it again.
 
-`title` writes a manual local title to the daemon's index only. While the bridge exists, the TS import keeps it (see below).
+`title` (and the TUI's `n`) writes a manual local title to the daemon's index only. While the TS import runs, it keeps it (see below).
 
 ### The Jev guard
 
@@ -102,15 +101,15 @@ Debug builds and binaries under `target/` use the `dev` instance (`chatgpt-cli-d
 
 ## Data from the TS CLI
 
-While the bridge exists the TS CLI's `review` and `tui` read `~/.local/share/chatgpt-cli/index.db`, and the TUI can write manual titles there. The daemon imports the TS index's local titles, summaries and cached transcripts into its own index at startup, after every TS sync and on `chatgpt import-legacy`. The import opens the TS index read-only and mirrors local titles by their key (rows the TS index dropped are dropped), keeping a newer `update_time` the daemon's reconcile wrote when nothing else differs. Summaries and transcripts are caches both sides fill, so the import never deletes one and replaces the daemon's copy only when that copy isn't current for the chat.
+Until the TS CLI is deleted, the daemon imports the TS index's local titles, summaries and cached transcripts into its own index at startup, after every TS sync and on `chatgpt import-legacy`. The import opens the TS index read-only and mirrors local titles by their key (rows the TS index dropped are dropped), keeping a newer `update_time` the daemon's reconcile wrote when nothing else differs. Summaries and transcripts are caches both sides fill, so the import never deletes one and replaces the daemon's copy only when that copy isn't current for the chat.
 
-Judgments, follow-ups, Luna reviews and memory classifications are no longer imported: the daemon makes them itself, at this build's versions, and the TS CLI's (made at the installed CLI's own versions) would only ever be stale here. Until stage 6 ports them, the bridged `review` and `tui` show the TS index's own, older verdicts.
+Judgments, follow-ups, Luna reviews and memory classifications are no longer imported: the daemon makes them itself, at this build's versions, and the TS CLI's (made at the installed CLI's own versions) would only ever be stale here. `review` and `tui` show the daemon's verdicts, as `list` does.
 
 The daemon also writes some titles itself: a `title`, and Luna's from `titles` and `classify`. The TS index never has them, so the import would drop them; instead it keeps a row the daemon wrote (listed in `native_rows`) until the TS CLI writes a newer manual one for that chat.
 
 The TS index belongs to one account: whichever the TS CLI's default browser session holds. So the TS sync and the import run only for the installed (or dev) instance on a pass that reads the default browser choice, with no `--browser`, `--profile` or `CHATGPT_BROWSER*`. A named instance, or a pass on another browser, skips both and says so in `daemon status` ("TS sync skipped: …"), because a TS full sync from another account would replace the default account's chats in the shared index.
 
-After a pass that's due for it (every 15 minutes, and on every `chatgpt sync`), the daemon also runs the TS CLI's own `sync`, niced, so the bridged `review` and `tui` see the same chats. Only the TS CLI's own progress and summary lines (counts and durations) reach the daemon's log, `daemon status` or the waiting client; every other line, such as an error that quotes a response body, is counted as withheld. Each line and a 10-second heartbeat keep a waiting `chatgpt sync` from timing out during a long TS sync, which is stopped after 10 minutes. Its failures show in `daemon status` and never fail the Rust sync.
+After a pass that's due for it (every 15 minutes, and on every `chatgpt sync`), the daemon also runs the TS CLI's own `sync`, niced, so the TS CLI's own index, which someone may still read with the TS CLI directly, sees the same chats. Only the TS CLI's own progress and summary lines (counts and durations) reach the daemon's log, `daemon status` or the waiting client; every other line, such as an error that quotes a response body, is counted as withheld. Each line and a 10-second heartbeat keep a waiting `chatgpt sync` from timing out during a long TS sync, which is stopped after 10 minutes. Its failures show in `daemon status` and never fail the Rust sync.
 
 ## Which versions count
 

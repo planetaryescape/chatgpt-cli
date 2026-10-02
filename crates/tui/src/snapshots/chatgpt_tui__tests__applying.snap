@@ -1,0 +1,24 @@
+---
+source: crates/tui/src/tests.rs
+expression: h.screen()
+---
+"chatgpt · 3 of 4 · active · all · all topics                                                        marked: 1 delete, 1 archive (x to apply)"
+"┌Conversations───────────────────────────────────────────────────────┐┌Postgres backup plan────────────────────────────────────────────────┐"
+"│D 2024-05-01 delete   coding_general Empty test chat                ││updated 2024-05-01 · created 2024-05-01 · in a project              │"
+"│A 202┌Applying────────────────────────────────────────┐an           ││Jev: KEEP · coding_general · keep because                           │"
+"│  202│                                                │t            ││                                                                    │"
+"│     │ 1/2 done…                                      │             ││Loading transcript…                                                 │"
+"│     │                                                │             ││                                                                    │"
+"│     └────────────────────────────────────────────────┘             ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+"Not applied: type apply exactly.                                                                                                            "

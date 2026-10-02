@@ -1,0 +1,24 @@
+---
+source: crates/tui/src/tests.rs
+expression: screen
+---
+"chatgpt · 3 of 4 · active · all · all topics                                                        marked: 1 delete, 1 archive (x to apply)"
+"┌Conversations───────────────────────────────────────────────────────┐┌Postgres backup plan────────────────────────────────────────────────┐"
+"│D 2024-05-01 delete   coding_general Empty test chat                ││updated 2024-05-01 · created 2024-05-01 · in a project              │"
+"│A 2024-05-01 keep     coding_general Postgres backup plan           ││Jev: KEEP · coding_general · keep because                           │"
+"│  2024-05-01 ·                       Unjudged third chat            ││                                                                    │"
+"│                                                                    ││Loading transcript…                                                 │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+"Not classified yet; nothing to accept.                                                                                                      "

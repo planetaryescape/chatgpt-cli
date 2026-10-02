@@ -122,6 +122,49 @@ fn the_cli_never_touches_the_index_or_chatgpt_com() {
     );
 }
 
+/// `chatgpt tui` asks the daemon for everything, as the other commands do:
+/// no index, no chatgpt.com, no classification of its own.
+#[test]
+fn the_tui_is_a_daemon_client_only() {
+    let tui = dependencies("crates/tui/Cargo.toml");
+    for forbidden in [
+        "chatgpt",
+        "chatgpt-store",
+        "chatgpt-daemon",
+        "chatgpt-embed",
+        "rusqlite",
+        "impit",
+        "reqwest",
+        "typesafe-client",
+        "model-api",
+    ] {
+        assert!(
+            !tui.iter().any(|dependency| dependency == forbidden),
+            "crates/tui must reach {forbidden} through the daemon: {tui:?}"
+        );
+    }
+    let mut offenders = Vec::new();
+    for file in rust_files(&root().join("crates/tui/src")) {
+        let source = std::fs::read_to_string(&file).unwrap();
+        for name in [
+            "chatgpt_daemon",
+            "chatgpt_store",
+            "chatgpt::",
+            "rusqlite",
+            "typesafe_client",
+            "model_api",
+        ] {
+            if source.contains(name) {
+                offenders.push(format!("{}: {name}", file.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the TUI goes through IPC: {offenders:?}"
+    );
+}
+
 #[test]
 fn only_the_daemon_uses_the_store_and_the_http_client() {
     for manifest in [
@@ -129,6 +172,7 @@ fn only_the_daemon_uses_the_store_and_the_http_client() {
         "crates/protocol/Cargo.toml",
         "crates/launcher/Cargo.toml",
         "crates/cli/Cargo.toml",
+        "crates/tui/Cargo.toml",
     ] {
         let found = dependencies(manifest);
         assert!(
@@ -161,6 +205,7 @@ fn every_crate_stays_unpublished() {
         "crates/fake-chatgpt/Cargo.toml",
         "crates/typesafe/Cargo.toml",
         "crates/model-api/Cargo.toml",
+        "crates/tui/Cargo.toml",
     ] {
         let raw = std::fs::read_to_string(root().join(manifest)).unwrap();
         let manifest_table: toml::Table = toml::from_str(&raw).unwrap();

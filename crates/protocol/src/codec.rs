@@ -35,6 +35,13 @@ impl Codec {
     }
 }
 
+impl Codec {
+    /// The frame cap this codec enforces.
+    pub fn max_frame_bytes(&self) -> usize {
+        self.inner.max_frame_length()
+    }
+}
+
 impl Default for Codec {
     fn default() -> Self {
         Self::new()

@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClassifiedMemories, ClassifyOutcome, DaemonStatus, ExportedChat, ImportReport, ListRows,
-    Outcome, Project, SearchIndexReport, SearchResults, StatsReport, SyncReport,
+    ChatTranscript, ClassifiedMemories, ClassifyOutcome, DaemonStatus, ExportedChat, ImportReport,
+    ListRows, Outcome, Project, SearchIndexReport, SearchResults, StatsReport, SyncReport,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -15,6 +15,14 @@ pub enum Response {
     },
     Error {
         error: ErrorPayload,
+    },
+    /// The answer was too large for one frame and came as `Part` events
+    /// before this: their text, joined, is the `Response` (0.1.5 and
+    /// newer; an older client can't read it). The client checks it got
+    /// exactly `count` parts holding `bytes` bytes before reading them.
+    Parted {
+        count: u64,
+        bytes: u64,
     },
     #[serde(other)]
     Unknown,
@@ -39,10 +47,7 @@ pub enum ResponseData {
     Imported(ImportReport),
     Ack,
     Exported(Box<ExportedChat>),
-    /// The export is too large for one IPC frame ([`crate::MAX_FRAME_BYTES`]):
-    /// the client hands the command to the TS CLI instead, until exports
-    /// are streamed (docs/issues/export-frame-limit.md).
-    ExportTooLarge,
+    Transcript(Box<ChatTranscript>),
     SearchHits(SearchResults),
     SearchIndexed(SearchIndexReport),
     /// `JevCheck`: the ids Jev backs the action for, in the order asked.

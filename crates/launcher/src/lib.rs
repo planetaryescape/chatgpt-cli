@@ -155,6 +155,8 @@ impl DaemonClient {
         mut on_ask: Option<&mut AskUser<'_>>,
     ) -> Result<Response, ClientError> {
         let mut deadline = Instant::now() + stall;
+        // An answer too large for one frame, as it arrives in parts.
+        let mut parts = Parts::default();
         loop {
             let frame = tokio::time::timeout_at(deadline, self.framed.next())
                 .await
@@ -167,6 +169,13 @@ impl DaemonClient {
                 .ok_or_else(|| mismatch("the daemon closed the connection without answering"))?;
             let message = frame.map_err(ipc_error)?;
             match message.payload {
+                Payload::Response(Response::Parted { count, bytes }) if message.id == id => {
+                    return parts.finish(count, bytes);
+                }
+                Payload::Event(Event::Part(part)) if message.id == id => {
+                    deadline = Instant::now() + stall;
+                    parts.push(part)?;
+                }
                 // Id 0 is the daemon rejecting a frame it couldn't read.
                 Payload::Response(response) if message.id == id || message.id == 0 => {
                     return Ok(response);
@@ -211,7 +220,8 @@ fn into_data(response: Response) -> Result<ResponseData, ClientError> {
             ErrorKind::parse(&error.kind).unwrap_or(ErrorKind::Internal),
             error.message,
         )),
-        Response::Unknown => Err(mismatch(
+        // `Parted` only ever closes the parts `reply` joins.
+        Response::Parted { .. } | Response::Unknown => Err(mismatch(
             "the daemon sent an answer this version can't read",
         )),
     }
@@ -673,6 +683,54 @@ fn unavailable(message: String) -> ClientError {
     ClientError::new(ErrorKind::DaemonUnavailable, message)
 }
 
+/// An answer arriving in parts. Each part must be the next one; the end
+/// must name exactly the parts and bytes that came. Anything else is
+/// refused before the text is read, since a lost slice could still decode
+/// (a gap inside a transcript's markdown) and be shown as the chat.
+#[derive(Default)]
+struct Parts {
+    text: String,
+    count: u64,
+}
+
+impl Parts {
+    fn push(&mut self, part: chatgpt_protocol::Part) -> Result<(), ClientError> {
+        if part.index != self.count {
+            return Err(mismatch(&format!(
+                "the daemon's answer came in parts out of order (part {} after {})",
+                part.index, self.count
+            )));
+        }
+        self.count += 1;
+        self.text.push_str(&part.text);
+        Ok(())
+    }
+
+    fn finish(self, count: u64, bytes: u64) -> Result<Response, ClientError> {
+        let got = u64::try_from(self.text.len()).unwrap_or(u64::MAX);
+        if count != self.count || bytes != got {
+            return Err(mismatch(&format!(
+                "the daemon's answer in parts is incomplete ({} of {count} parts, {got} of {bytes} bytes)",
+                self.count
+            )));
+        }
+        serde_json::from_str(&self.text).map_err(|error| {
+            mismatch(&format!(
+                "the daemon's answer in parts didn't decode ({:?} error)",
+                error.classify()
+            ))
+        })
+    }
+}
+
+/// The daemon answered a request with another request's kind of answer.
+pub fn unexpected() -> ClientError {
+    ClientError::new(
+        ErrorKind::DaemonUnavailable,
+        "the daemon answered with something else; run `chatgpt daemon stop` and try again",
+    )
+}
+
 fn mismatch(what: &str) -> ClientError {
     unavailable(format!(
         "{what}; it may be another version. Run `chatgpt daemon stop` and try again"
@@ -698,6 +756,81 @@ fn ipc_error(error: std::io::Error) -> ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transcript answer's JSON, cut into three parts.
+    fn parted() -> (Vec<chatgpt_protocol::Part>, u64) {
+        let response = Response::Ok {
+            data: ResponseData::Exported(Box::new(chatgpt_protocol::ExportedChat {
+                markdown: "# T\n\nfirst slice second slice third slice".into(),
+                title: "T".into(),
+                synced_at: None,
+            })),
+        };
+        let json = serde_json::to_string(&response).expect("encode");
+        let third = json.len() / 3;
+        let pieces = [&json[..third], &json[third..2 * third], &json[2 * third..]];
+        let parts = (0..)
+            .zip(pieces)
+            .map(|(index, text)| chatgpt_protocol::Part {
+                index,
+                text: text.to_owned(),
+            })
+            .collect();
+        (parts, json.len() as u64)
+    }
+
+    fn join(
+        parts: Vec<chatgpt_protocol::Part>,
+        count: u64,
+        bytes: u64,
+    ) -> Result<Response, ClientError> {
+        let mut joined = Parts::default();
+        for part in parts {
+            joined.push(part)?;
+        }
+        joined.finish(count, bytes)
+    }
+
+    #[test]
+    fn parts_in_order_join_into_the_answer() {
+        let (parts, bytes) = parted();
+        let response = join(parts, 3, bytes).expect("joined");
+        assert!(matches!(
+            response,
+            Response::Ok {
+                data: ResponseData::Exported(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn a_missing_repeated_or_reordered_part_is_refused() {
+        let (parts, bytes) = parted();
+        // Only the middle part lost: what's left could still decode.
+        let gap = vec![
+            parts[0].clone(),
+            chatgpt_protocol::Part {
+                index: 2,
+                ..parts[2].clone()
+            },
+        ];
+        assert!(join(gap, 3, bytes).is_err(), "a gap");
+        let repeated = vec![parts[0].clone(), parts[0].clone()];
+        assert!(join(repeated, 3, bytes).is_err(), "a repeat");
+        let swapped = vec![parts[1].clone(), parts[0].clone(), parts[2].clone()];
+        assert!(join(swapped, 3, bytes).is_err(), "out of order");
+        // Numbered right, but the end names another count or size.
+        let renumbered = vec![
+            parts[0].clone(),
+            chatgpt_protocol::Part {
+                index: 1,
+                ..parts[2].clone()
+            },
+        ];
+        let error = join(renumbered, 2, bytes).expect_err("short by a slice");
+        assert!(error.message.contains("incomplete"), "{}", error.message);
+        assert!(join(parts.clone(), 4, bytes).is_err(), "a part never came");
+    }
 
     fn status(protocol_version: u32, version: &str) -> DaemonStatus {
         DaemonStatus {

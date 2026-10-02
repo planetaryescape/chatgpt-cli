@@ -1,0 +1,24 @@
+---
+source: crates/tui/src/tests.rs
+expression: screen
+---
+"chatgpt · 3 of 4 · active · all · all topics                                                        marked: 1 delete, 0 archive (x to apply)"
+"┌Conversations───────────────────────────────────────────────────────┐┌Empty test chat─────────────────────────────────────────────────────┐"
+"│D 2024-05-01 delete   coding_general Empty test chat                ││updated 2024-05-01 · created 2024-05-01                             │"
+"│  2024-05-01 keep     coding_general Postgres backup plan           ││Jev: DELETE · coding_general · delete because                       │"
+"│  2024-05-01 ·                       Unjudged third chat            ││                                                                    │"
+"│                                                                    ││Loading transcript…                                                 │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+"1 unapplied mark(s). Press q again to quit without applying.                                                                                "

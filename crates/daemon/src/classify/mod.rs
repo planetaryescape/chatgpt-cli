@@ -33,6 +33,8 @@ mod summarise;
 mod titles;
 mod tools;
 
+pub use summarise::SUMMARY_PROMPT_VERSION;
+
 use std::sync::Arc;
 use std::time::Instant;
 

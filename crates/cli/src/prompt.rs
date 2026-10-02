@@ -44,6 +44,28 @@ pub fn ask(question: &str) -> Result<String, ClientError> {
     Ok(chatgpt_core::js::trim(&line).to_owned())
 }
 
+/// The raw mode libuv sets for Node's `setRawMode(true)`: keys arrive one
+/// at a time, unechoed, Ctrl-C as a byte; output still turns `\n` into
+/// `\r\n`.
+pub fn node_raw_mode(saved: &nix::sys::termios::Termios) -> nix::sys::termios::Termios {
+    use nix::sys::termios::{
+        ControlFlags, InputFlags, LocalFlags, OutputFlags, SpecialCharacterIndices,
+    };
+    let mut raw = saved.clone();
+    raw.input_flags &= !(InputFlags::BRKINT
+        | InputFlags::ICRNL
+        | InputFlags::INPCK
+        | InputFlags::ISTRIP
+        | InputFlags::IXON);
+    raw.output_flags |= OutputFlags::ONLCR;
+    raw.control_flags |= ControlFlags::CS8;
+    raw.local_flags &=
+        !(LocalFlags::ECHO | LocalFlags::ICANON | LocalFlags::IEXTEN | LocalFlags::ISIG);
+    raw.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+    raw.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+    raw
+}
+
 /// `/^y(es)?$/i`.
 pub fn is_yes(answer: &str) -> bool {
     answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")

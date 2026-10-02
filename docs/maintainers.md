@@ -24,7 +24,8 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `crates/store/` | Rust: the daemon's SQLite index and the import from the TS index |
 | `crates/daemon/` | Rust: the daemon (sync, policy, `list`/`stats` reads, search indexing, embedding and search, classification and the background Jev in `src/classify/`, TS sync while bridged) |
 | `crates/embed/` | Rust: the embedding model's pinned files, the tract embedder, and the worker process the daemon runs it in |
-| `crates/cli/` | Rust: the `chatgpt` binary, its native commands and the bridge to the TS CLI |
+| `crates/cli/` | Rust: the `chatgpt` binary and its commands (`review` in `review_cmd.rs`); the unreachable bridge to the TS CLI until it's deleted |
+| `crates/tui/` | Rust: `chatgpt tui`, a ratatui client of the daemon (`model.rs` filters, `app.rs` keys and state, `ui.rs` drawing, `run.rs` terminal and requests); snapshots in `src/snapshots/` |
 | `crates/typesafe/` | Rust: a small client for TypeSafe's System One API (Jev), used by the daemon's classification |
 | `crates/model-api/` | Rust: small clients for OpenAI's Responses and Anthropic's Messages APIs (summaries and Luna with a configured key) |
 | `crates/fake-chatgpt/` | Rust: a fake chatgpt.com (reads, writes and their quirks), fake TypeSafe, OpenAI and Anthropic APIs, and the answers the debug binary's stand-in `codex` and `claude` give (`model_answers.rs`), for tests |
@@ -46,7 +47,7 @@ bun src/cli.ts export <link>
 bun src/cli.ts classify --title "<a few known chats>"
 ```
 
-Before a change to the TUI, run `bun test src/tui` (which drives it with simulated keys). Then open `bun src/cli.ts tui` yourself.
+Before a change to the TUI, run `cargo nextest run -p chatgpt-tui` (keys and screens against ratatui's `TestBackend`, with insta snapshots: `INSTA_UPDATE=always` rewrites them, then read the diff) and `cargo nextest run -p chatgpt-cli --test tui_cli` (the real binary in a pseudo-terminal against the fake chatgpt.com, read through a vt100 screen). Then open `target/debug/chatgpt tui` yourself. [TUI parity](explanation/tui-parity.md) maps every TS key and state to a test.
 
 For the Rust workspace:
 

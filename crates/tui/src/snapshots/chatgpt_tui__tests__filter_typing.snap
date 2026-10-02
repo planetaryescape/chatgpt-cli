@@ -1,0 +1,24 @@
+---
+source: crates/tui/src/tests.rs
+expression: screen
+---
+"chatgpt · 1 of 4 · active · all · all topics · "POSTGRES"                                                                                   "
+"┌Conversations───────────────────────────────────────────────────────┐┌Postgres backup plan────────────────────────────────────────────────┐"
+"│  2024-05-01 keep     coding_general Postgres backup plan           ││updated 2024-05-01 · created 2024-05-01 · in a project              │"
+"│                                                                    ││Jev: KEEP · coding_general · keep because                           │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││Loading transcript…                                                 │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"│                                                                    ││                                                                    │"
+"└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+"/POSTGRES                                                                                                                                   "

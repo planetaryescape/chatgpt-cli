@@ -79,23 +79,11 @@ pub fn configure(provider: Option<String>, remove: bool) -> Result<ExitCode, Cli
 /// it, Backspace takes the last character back, Ctrl-C cancels. The
 /// terminal is restored whatever happens, and a line ends the prompt.
 fn read_hidden() -> Result<String, ClientError> {
-    use nix::sys::termios::{
-        InputFlags, LocalFlags, SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr,
-    };
+    use nix::sys::termios::{SetArg, tcgetattr, tcsetattr};
     let stdin = std::io::stdin();
     let saved = tcgetattr(&stdin)
         .map_err(|error| internal(format!("can't read the terminal's settings: {error}")))?;
-    let mut raw = saved.clone();
-    // libuv's raw mode, which Node's setRawMode(true) uses.
-    raw.input_flags &= !(InputFlags::BRKINT
-        | InputFlags::ICRNL
-        | InputFlags::INPCK
-        | InputFlags::ISTRIP
-        | InputFlags::IXON);
-    raw.local_flags &=
-        !(LocalFlags::ECHO | LocalFlags::ICANON | LocalFlags::IEXTEN | LocalFlags::ISIG);
-    raw.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
-    raw.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+    let raw = crate::prompt::node_raw_mode(&saved);
     tcsetattr(&stdin, SetArg::TCSANOW, &raw)
         .map_err(|error| internal(format!("can't hide the input: {error}")))?;
     let read = read_until_enter(&mut stdin.lock());

@@ -1,66 +1,16 @@
 //! The native commands' arguments, matching the TS CLI's flags
 //! (`src/cli.ts` @ 1b8c950) for `configure`, `sync`, `list`, `stats`,
 //! `export`, `search`, `search-index`, `archive`, `unarchive`, `delete`,
-//! `rename`, `title`, `titles`, `classify`, `project` and `memory`.
+//! `rename`, `title`, `titles`, `classify`, `project`, `memory`, `review`
+//! and `tui`.
 
 use clap::{Args, Parser, Subcommand};
-
-/// The commands that still run in the TS CLI, with its descriptions, for
-/// the top-level help. Their own `--help` comes from the TS CLI.
-pub const BRIDGED: &[(&str, &str)] = &[
-    (
-        "review",
-        "Triage conversations one by one; changes apply after a final confirmation",
-    ),
-    (
-        "tui",
-        "Browse, filter and triage conversations in a terminal UI",
-    ),
-];
-
-pub const NATIVE: &[&str] = &[
-    "configure",
-    "classify",
-    "titles",
-    "sync",
-    "list",
-    "stats",
-    "export",
-    "show",
-    "search",
-    "search-index",
-    "daemon",
-    "import-legacy",
-    "archive",
-    "unarchive",
-    "delete",
-    "rename",
-    "title",
-    "project",
-    "memory",
-];
-
-fn bridged_help() -> String {
-    let width = BRIDGED
-        .iter()
-        .map(|(name, _)| name.len())
-        .max()
-        .unwrap_or(0);
-    let mut help = String::from(
-        "Commands that run in the TS chatgpt CLI (`chatgpt <command> --help` shows theirs):\n",
-    );
-    for (name, about) in BRIDGED {
-        help.push_str(&format!("  {name:width$}  {about}\n"));
-    }
-    help
-}
 
 #[derive(Parser)]
 #[command(
     name = "chatgpt",
     version,
     about = "Manage your ChatGPT conversations from the terminal (uses your browser login).",
-    after_help = bridged_help(),
     arg_required_else_help = true
 )]
 pub struct Cli {
@@ -130,6 +80,26 @@ pub enum Command {
     /// List and delete saved memories, or read the memory summary
     #[command(subcommand)]
     Memory(MemoryCommand),
+    /// Triage conversations one by one; changes apply after a final confirmation
+    Review(ReviewArgs),
+    /// Browse, filter and triage conversations in a terminal UI
+    Tui,
+}
+
+/// `review`: `withFilters` with `--pinned`.
+#[derive(Args)]
+pub struct ReviewArgs {
+    /// Conversation ids or id prefixes, or `-` to read them from stdin
+    #[arg(value_name = "ids")]
+    pub ids: Vec<String>,
+    #[command(flatten)]
+    pub filters: FilterArgs,
+    /// Include pinned conversations (skipped by default)
+    #[arg(long)]
+    pub pinned: bool,
+    /// Start from the oldest match
+    #[arg(long)]
+    pub oldest_first: bool,
 }
 
 /// `archive`, `unarchive` and `delete`: `withFilters` with `--pinned`.
