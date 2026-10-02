@@ -12,12 +12,13 @@
 //! ([`super::tools`] keeps them away from our keys). Unlike the TS CLI,
 //! a failure never quotes their output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 
 use super::access::Access;
-use super::costs::{GPT_6_LUNA, price_of};
+use super::costs::{GPT_6_LUNA, HAIKU, price_of};
 
 /// Bump when the instructions change, so cached summaries are made again.
 pub const SUMMARY_PROMPT_VERSION: u32 = 9;
@@ -63,10 +64,52 @@ pub fn codex_args() -> Vec<String> {
 }
 
 enum Summariser {
-    OpenAi(model_api::OpenAi),
+    OpenAi(Arc<model_api::OpenAi>),
     Codex(PathBuf),
-    Anthropic(model_api::Anthropic),
+    Anthropic(Arc<model_api::Anthropic>),
     Claude(PathBuf),
+}
+
+/// What `codex exec` left behind: how it ended, its stdout, and the text
+/// of the file it was told to write (`None` when it wrote none).
+pub struct CodexRun {
+    pub finished: super::tools::Finished,
+    pub output: Option<String>,
+}
+
+/// `codex exec` from a fresh scratch directory named `prefix…`: the common
+/// arguments, then `-C <dir>`, then what `rest` adds given that directory,
+/// with the file it names for `-o`. `name` names it in errors.
+pub async fn codex_exec(
+    access: &Access,
+    codex: &Path,
+    name: &str,
+    prefix: &str,
+    stdin: &str,
+    rest: impl FnOnce(&Path) -> Result<(Vec<String>, PathBuf), String>,
+) -> Result<CodexRun, String> {
+    let dir = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .map_err(|error| format!("couldn't make a scratch directory: {error}"))?;
+    let (more, out_file) = rest(dir.path())?;
+    let mut args = codex_args();
+    args.extend(["-C".to_owned(), dir.path().display().to_string()]);
+    args.extend(more);
+    let finished = super::tools::run(
+        name,
+        codex,
+        &args,
+        stdin.as_bytes(),
+        dir.path(),
+        access.path_var().as_deref(),
+    )
+    .await?;
+    if finished.code != Some(0) {
+        return Err(format!("{name} {}", finished.exit()));
+    }
+    let output = std::fs::read_to_string(&out_file).ok();
+    Ok(CodexRun { finished, output })
 }
 
 impl Summariser {
@@ -99,11 +142,6 @@ fn installed(access: &Access) -> Result<Vec<Summariser>, String> {
 /// `summariserNames()`.
 pub fn names(access: &Access) -> Result<Vec<&'static str>, String> {
     Ok(installed(access)?.iter().map(Summariser::name).collect())
-}
-
-/// `summariserAvailable()`.
-pub fn available(access: &Access) -> Result<bool, String> {
-    Ok(!installed(access)?.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,7 +210,7 @@ async fn run(summariser: &Summariser, access: &Access, input: &str) -> Result<Ra
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(Ran {
-                usd: (reply.input_tokens + reply.output_tokens * 5) as f64 / 1e6,
+                usd: price_of(HAIKU, reply.input_tokens, 0, reply.output_tokens),
                 tokens: reply.input_tokens + reply.output_tokens,
                 text: reply.text,
             })
@@ -184,36 +222,21 @@ async fn run(summariser: &Summariser, access: &Access, input: &str) -> Result<Ra
 
 /// `codex exec`, whose `--json` events carry the token usage on
 /// `turn.completed`; the summary is the file it writes.
-async fn run_codex(codex: &std::path::Path, access: &Access, input: &str) -> Result<Ran, String> {
-    let dir = tempfile::Builder::new()
-        .prefix("chatgpt-cli-codex-")
-        .tempdir()
-        .map_err(|error| format!("couldn't make a scratch directory: {error}"))?;
-    let out_file = dir.path().join("summary.txt");
-    let mut args = codex_args();
-    args.extend([
-        "-C".to_owned(),
-        dir.path().display().to_string(),
-        "-o".to_owned(),
-        out_file.display().to_string(),
-        "--json".to_owned(),
-        format!("{INSTRUCTIONS}\n\nThe conversation is in the <stdin> block."),
-    ]);
-    let finished = super::tools::run(
-        "codex",
-        codex,
-        &args,
-        input.as_bytes(),
-        dir.path(),
-        access.path_var().as_deref(),
-    )
+async fn run_codex(codex: &Path, access: &Access, input: &str) -> Result<Ran, String> {
+    let run = codex_exec(access, codex, "codex", "chatgpt-cli-codex-", input, |dir| {
+        let out_file = dir.join("summary.txt");
+        let args = vec![
+            "-o".to_owned(),
+            out_file.display().to_string(),
+            "--json".to_owned(),
+            format!("{INSTRUCTIONS}\n\nThe conversation is in the <stdin> block."),
+        ];
+        Ok((args, out_file))
+    })
     .await?;
-    if finished.code != Some(0) {
-        return Err(format!("codex {}", finished.exit()));
-    }
     // Several turns can complete; the last one's usage counts. A malformed
     // event line only costs us the usage figure.
-    let events = String::from_utf8_lossy(&finished.stdout);
+    let events = String::from_utf8_lossy(&run.finished.stdout);
     let mut usage = Value::Null;
     for line in events
         .lines()
@@ -234,8 +257,7 @@ async fn run_codex(codex: &std::path::Path, access: &Access, input: &str) -> Res
     let input_tokens = count("input_tokens");
     // Reasoning tokens are billed as output.
     let output_tokens = count("output_tokens") + count("reasoning_output_tokens");
-    let text =
-        std::fs::read_to_string(&out_file).map_err(|_| "codex wrote no summary".to_owned())?;
+    let text = run.output.ok_or("codex wrote no summary")?;
     Ok(Ran {
         text,
         usd: price_of(
@@ -249,7 +271,7 @@ async fn run_codex(codex: &std::path::Path, access: &Access, input: &str) -> Res
 }
 
 /// `claude -p`, which reports its own API-equivalent cost.
-async fn run_claude(claude: &std::path::Path, access: &Access, input: &str) -> Result<Ran, String> {
+async fn run_claude(claude: &Path, access: &Access, input: &str) -> Result<Ran, String> {
     // Haiku is plenty for summarising. `--effort low` made it ignore the
     // system prompt (observed 2026-09-27); medium and high behave. Without
     // the setting and MCP flags, every call carries ~33k tokens of context.

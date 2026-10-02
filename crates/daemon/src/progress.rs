@@ -92,6 +92,7 @@ impl Reporter {
             label: label.to_owned(),
             total,
             started: Instant::now(),
+            done: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -102,9 +103,17 @@ pub struct Step {
     label: String,
     total: Option<usize>,
     started: Instant,
+    /// What [`Step::advance`] has counted, for steps whose items finish
+    /// concurrently.
+    done: std::sync::atomic::AtomicUsize,
 }
 
 impl Step {
+    /// Count `n` more items done; the new total.
+    pub fn advance(&self, n: usize) -> usize {
+        self.done.fetch_add(n, std::sync::atomic::Ordering::SeqCst) + n
+    }
+
     pub fn update(&self, done: usize) {
         self.update_with(done, "");
     }

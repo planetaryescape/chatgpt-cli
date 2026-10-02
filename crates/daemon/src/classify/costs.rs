@@ -28,6 +28,13 @@ pub const GPT_6_LUNA: Price = Price {
     output: 0.5,
 };
 
+/// claude-haiku-4-5, as `anthropicText` prices it: $1 in, $5 out.
+pub const HAIKU: Price = Price {
+    input: 1.0,
+    cached_input: 1.0,
+    output: 5.0,
+};
+
 /// `priceOf`: cached input at its own rate, the rest at the input rate.
 pub fn price_of(price: Price, input: u64, cached_input: u64, output: u64) -> f64 {
     let uncached = input.saturating_sub(cached_input) as f64;

@@ -5,7 +5,7 @@
 //! time-expired cases. Only `classify` runs it; never the background Jev.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use chatgpt_store::{IndexedConversation, JudgmentRow, NewLunaJudgment};
 use futures_util::StreamExt;
@@ -58,19 +58,6 @@ fn verdict_json(verdict: &Verdict) -> Value {
         object.insert("deep".to_owned(), Value::Bool(true));
     }
     value
-}
-
-/// The first `units` UTF-16 units of `text` (`slice(0, units)`), never
-/// splitting a character.
-fn utf16_prefix(text: &str, units: usize) -> &str {
-    let mut used = 0;
-    for (at, c) in text.char_indices() {
-        used += c.len_utf16();
-        if used > units {
-            return &text[..at];
-        }
-    }
-    text
 }
 
 /// What one review needs, read before Luna is asked.
@@ -131,6 +118,10 @@ pub async fn review(
                     deep.as_deref().unwrap_or(""),
                     luna_version,
                 )?;
+                if reviewed && !force {
+                    found.push(None);
+                    continue;
+                }
                 let content =
                     match chatgpt_store::transcript(db, &chat.id, &chat.update_time, render)? {
                         None => Err("No cached transcript; rerun classify.".to_owned()),
@@ -146,7 +137,7 @@ pub async fn review(
                         }),
                         Some(transcript) => Ok((transcript.markdown, "transcript")),
                     };
-                found.push((reviewed, content));
+                found.push(Some(content));
             }
             Ok(found)
         })
@@ -154,9 +145,9 @@ pub async fn review(
     let todo: Vec<Review> = candidates
         .into_iter()
         .zip(looked_up)
-        .filter(|(_, (reviewed, _))| force || !reviewed)
+        .filter_map(|(candidate, content)| Some((candidate, content?)))
         .map(
-            |((chat, row, jev, product_review, time_review), (_, content))| Review {
+            |((chat, row, jev, product_review, time_review), content)| Review {
                 chat,
                 row,
                 jev,
@@ -169,19 +160,14 @@ pub async fn review(
     reporter.note(format!("{} chat(s) need Luna's deeper review.", todo.len()));
     let step = reporter.step("Deeper Luna review", Some(todo.len()));
     let total = todo.len();
-    let done = Mutex::new(0usize);
     let today = utc_today();
     let results: Vec<(IndexedConversation, Result<JudgmentRow, String>)> =
         futures_util::stream::iter(todo)
             .map(|review| {
-                let (step, done, today) = (&step, &done, &today);
+                let (step, today) = (&step, &today);
                 async move {
                     let reviewed = review_one(state, reporter, access, &review, today).await;
-                    let count = {
-                        let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
-                        *done += 1;
-                        *done
-                    };
+                    let count = step.advance(1);
                     step.update(count);
                     (review.chat, reviewed)
                 }
@@ -220,7 +206,7 @@ async fn review_one(
     if reporter.client_gone() {
         return Err("not reviewed: the command was interrupted".to_owned());
     }
-    let (content, content_kind) = review.content.clone()?;
+    let (content, content_kind) = review.content.as_ref().map_err(String::clone)?;
     let mut input = json!({
         "title": review.chat.title,
         "as_of": today,
@@ -291,7 +277,7 @@ async fn review_one(
         version: profile().luna_version,
         suggestion: suggestion.to_owned(),
         brainstorm,
-        reason: utf16_prefix(reason, 250).to_owned(),
+        reason: chatgpt_core::js::utf16_prefix(reason, 250).to_owned(),
         classified_at: crate::js::now_iso(),
     };
     let _no_pass = state.syncer.exclusive().await;
@@ -332,12 +318,5 @@ mod tests {
             crate::js::stringify(&verdict_json(&deep)),
             r#"{"suggestion":"keep","unsure":true,"reason":"r","brainstorm":"other","deep":true}"#
         );
-    }
-
-    #[test]
-    fn a_long_reason_is_cut_at_250_utf16_units_without_splitting() {
-        let text = format!("{}😀tail", "a".repeat(249));
-        assert_eq!(utf16_prefix(&text, 250), "a".repeat(249));
-        assert_eq!(utf16_prefix("short", 250), "short");
     }
 }

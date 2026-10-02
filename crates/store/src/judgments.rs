@@ -109,8 +109,6 @@ pub struct NewJudgment {
 
 /// `ClassificationStore.saveJudgment`: the judgment replaces the chat's
 /// earlier one, and its follow-up and Luna review, which no longer apply.
-/// All three are marked as the daemon's, so the TS import neither drops the
-/// judgment nor brings the old reviews back.
 pub fn save_judgment(connection: &mut Connection, judgment: &NewJudgment) -> Result<()> {
     let transaction = connection.transaction()?;
     transaction.execute("delete from deep_judgments where id = ?", [&judgment.id])?;
@@ -127,9 +125,6 @@ pub fn save_judgment(connection: &mut Connection, judgment: &NewJudgment) -> Res
             judgment.classified_at
         ],
     )?;
-    for table in ["judgments", "deep_judgments", "luna_judgments"] {
-        crate::native::mark(&transaction, table, &judgment.id, &judgment.classified_at)?;
-    }
     transaction.commit()?;
     Ok(())
 }
@@ -297,25 +292,46 @@ pub fn save_memory_judgment(connection: &Connection, row: &NewMemoryJudgment) ->
     Ok(())
 }
 
-/// Chats the background Jev may judge: active and unpinned (what a bare
-/// `chatgpt classify` picks), updated at or after `since`, without a
-/// judgment for their `update_time` at `questions_version`. Newest first.
-pub fn unjudged_since(
-    connection: &Connection,
-    since: &str,
-    questions_version: &str,
-) -> Result<Vec<(String, String)>> {
+/// What the background Jev may judge: active, unpinned chats (what a bare
+/// `chatgpt classify` picks) updated after `after`, with no judgment for
+/// their `update_time` at `questions_version`, and not a cached transcript
+/// over `max_tokens` without a summary (those wait for `classify`).
+#[derive(Clone, Copy, Debug)]
+pub struct Unjudged<'a> {
+    pub after: &'a str,
+    pub questions_version: &'a str,
+    pub render_version: u32,
+    pub max_tokens: i64,
+    pub summary_version: u32,
+    pub limit: usize,
+}
+
+/// [`Unjudged`]'s chats, newest first: `(id, update_time)`.
+pub fn unjudged(connection: &Connection, query: Unjudged<'_>) -> Result<Vec<(String, String)>> {
     let mut statement = connection.prepare_cached(
         "select c.id, c.update_time from conversations c
-         where c.is_archived = 0 and c.pinned = 0 and c.update_time >= ?
+         where c.is_archived = 0 and c.pinned = 0 and c.update_time > ?
          and not exists (select 1 from judgments j
             where j.id = c.id and j.update_time = c.update_time and j.version = ?)
-         order by c.update_time desc",
+         and not exists (select 1 from transcripts t
+            where t.id = c.id and t.update_time = c.update_time and t.render_version = ?
+            and t.approx_tokens > ?
+            and not exists (select 1 from summaries s
+               where s.id = c.id and s.update_time = c.update_time and s.prompt_version = ?))
+         order by c.update_time desc limit ?",
     )?;
     let rows = statement
-        .query_map(params![since, questions_version], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?
+        .query_map(
+            params![
+                query.after,
+                query.questions_version,
+                query.render_version,
+                query.max_tokens,
+                query.summary_version,
+                i64::try_from(query.limit).unwrap_or(i64::MAX)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }

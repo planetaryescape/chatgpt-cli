@@ -83,8 +83,7 @@ pub struct Classifier<'a> {
 /// The policy judgments are made and read with: this repository's
 /// versions (D9).
 pub fn profile() -> &'static Profile {
-    static PROFILE: std::sync::LazyLock<Profile> = std::sync::LazyLock::new(Profile::builtin);
-    &PROFILE
+    Profile::current()
 }
 
 pub fn utc_today() -> String {
@@ -125,24 +124,18 @@ impl Classifier<'_> {
             .map(|chat| (chat.id.clone(), chat.update_time.clone()))
             .collect();
         let questions_version = profile().questions_version.clone();
-        let (cached, transcripts) = self
+        let cached = self
             .state
             .db(move |db| {
                 let mut judgments = HashMap::new();
-                let mut transcripts = HashMap::new();
                 for (id, update_time) in &lookups {
                     if let Some(row) =
                         chatgpt_store::judgment(db, id, update_time, &questions_version)?
                     {
                         judgments.insert(id.clone(), row);
                     }
-                    if let Some(transcript) =
-                        chatgpt_store::transcript(db, id, update_time, render)?
-                    {
-                        transcripts.insert(id.clone(), transcript);
-                    }
                 }
-                Ok((judgments, transcripts))
+                Ok(judgments)
             })
             .await?;
         let mut judgments = HashMap::new();
@@ -184,14 +177,26 @@ impl Classifier<'_> {
             "Steps: [1/3] download transcripts → [2/3] judge short chats → [3/3] summarise and judge long chats"
                 .to_owned(),
         );
-        let mut transcripts: HashMap<String, Transcript> = todo
+        // Only the chats to judge: a re-run over everything reads no
+        // transcript it doesn't need.
+        let wanted: Vec<(String, String)> = todo
             .iter()
-            .filter_map(|chat| {
-                transcripts
-                    .get(&chat.id)
-                    .map(|transcript| (chat.id.clone(), transcript.clone()))
-            })
+            .map(|chat| (chat.id.clone(), chat.update_time.clone()))
             .collect();
+        let mut transcripts: HashMap<String, Transcript> = self
+            .state
+            .db(move |db| {
+                let mut found = HashMap::new();
+                for (id, update_time) in wanted {
+                    if let Some(transcript) =
+                        chatgpt_store::transcript(db, &id, &update_time, render)?
+                    {
+                        found.insert(id, transcript);
+                    }
+                }
+                Ok(found)
+            })
+            .await?;
         let to_fetch: Vec<&IndexedConversation> = todo
             .iter()
             .copied()
@@ -255,10 +260,15 @@ impl Classifier<'_> {
             held_back.extend(need_summary.iter().map(|chat| chat.id.clone()));
             long.retain(|chat| summaries.contains_key(&chat.id));
         };
+        let names = if need_summary.is_empty() || !options.summarise {
+            Vec::new()
+        } else {
+            summarise::names(self.access).map_err(invalid)?
+        };
         if !need_summary.is_empty() {
             if !options.summarise {
                 hold(&mut long, &mut held_back);
-            } else if !summarise::available(self.access).map_err(invalid)? {
+            } else if names.is_empty() {
                 hold(&mut long, &mut held_back);
                 self.reporter.note(format!(
                     "{} long chat(s) need a summary but neither codex nor claude is on PATH; skipping them in step 3.",
@@ -273,7 +283,6 @@ impl Classifier<'_> {
                 let calls = i64::try_from(need_summary.len()).unwrap_or(i64::MAX);
                 let estimate =
                     (tokens + calls * CODEX_OVERHEAD_TOKENS) as f64 * GPT_6_LUNA.input / 1e6;
-                let names = summarise::names(self.access).map_err(invalid)?;
                 self.reporter.note(format!(
                     "{} long chat(s) for step 3; {} need a new summary ({}), ~{}k tokens, about {} API-equivalent on your subscription.",
                     long.len(),
@@ -390,7 +399,7 @@ pub async fn download(
     // Pinned to the index's account, as every read that feeds it is.
     let api = crate::sync::pinned_api(state, session.clone()).await?;
     let _foreground = state.indexer.foreground();
-    let versions = crate::search::versions(&state.profile());
+    let versions = crate::search::versions(state.profile());
     let step = reporter.step(label, Some(to_fetch.len()));
     let mut downloaded = 0;
     for (number, batch) in to_fetch.chunks(BATCH_MAX).enumerate() {
@@ -500,6 +509,44 @@ pub async fn ensure_summary(
     Ok(made.summary)
 }
 
+/// How Jev is told a long chat's content is a summary.
+pub fn summary_kind(transcript: &Transcript) -> String {
+    format!(
+        "summary of a long conversation ({} turns), written by another model",
+        transcript.turns
+    )
+}
+
+/// The state Jev reads about a chat: its facts (`as_of` only for the first
+/// pass, as the TS CLI sends it), what its content is, and the content.
+pub fn jev_state(
+    chat: &IndexedConversation,
+    transcript: &Transcript,
+    as_of: Option<&str>,
+    content_kind: &str,
+    content: &str,
+) -> serde_json::Value {
+    let day = |time: &str| time.chars().take(10).collect::<String>();
+    let mut conversation = serde_json::Map::new();
+    conversation.insert("title".into(), json!(chat.title));
+    if let Some(as_of) = as_of {
+        conversation.insert("as_of".into(), json!(as_of));
+    }
+    conversation.insert("created".into(), json!(day(&chat.create_time)));
+    conversation.insert("last_updated".into(), json!(day(&chat.update_time)));
+    conversation.insert("turns".into(), json!(transcript.turns));
+    conversation.insert(
+        "in_a_project".into(),
+        json!(chat.project_id.as_deref().is_some_and(|id| !id.is_empty())),
+    );
+    conversation.insert("pinned".into(), json!(chat.pinned));
+    json!({
+        "conversation": conversation,
+        "content_kind": content_kind,
+        "content": content,
+    })
+}
+
 struct Judge<'a> {
     state: &'a Arc<State>,
     reporter: &'a Reporter,
@@ -523,19 +570,13 @@ impl Judge<'_> {
             return;
         }
         let step = self.reporter.step(label, Some(items.len()));
-        let done = Mutex::new(0usize);
         let results: Vec<(IndexedConversation, Result<JudgmentRow, String>)> =
             futures_util::stream::iter(items)
                 .map(|(chat, transcript, summary)| {
                     let step = &step;
-                    let done = &done;
                     async move {
                         let judged = self.judge(&chat, &transcript, summary.as_deref()).await;
-                        let count = {
-                            let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
-                            *done += 1;
-                            *done
-                        };
+                        let count = step.advance(1);
                         let cost = format_usd(self.total());
                         step.update_with(count, &cost);
                         (chat, judged)
@@ -597,14 +638,7 @@ impl Judge<'_> {
                 summary,
             )
             .await?;
-            (
-                summary,
-                "summary",
-                format!(
-                    "summary of a long conversation ({} turns), written by another model",
-                    transcript.turns
-                ),
-            )
+            (summary, "summary", summary_kind(transcript))
         } else {
             (
                 transcript.markdown.clone(),
@@ -613,20 +647,7 @@ impl Judge<'_> {
             )
         };
         let client = self.client.as_ref().map_err(String::clone)?;
-        let day = |time: &str| time.chars().take(10).collect::<String>();
-        let state = json!({
-            "conversation": {
-                "title": chat.title,
-                "as_of": self.today,
-                "created": day(&chat.create_time),
-                "last_updated": day(&chat.update_time),
-                "turns": transcript.turns,
-                "in_a_project": chat.project_id.as_deref().is_some_and(|id| !id.is_empty()),
-                "pinned": chat.pinned,
-            },
-            "content_kind": kind_label,
-            "content": content,
-        });
+        let state = jev_state(chat, transcript, Some(self.today), &kind_label, &content);
         let result = client
             .system_one(&state, super::questions::chats())
             .await

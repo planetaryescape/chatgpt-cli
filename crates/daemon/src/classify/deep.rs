@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use chatgpt_protocol::SessionChoice;
 use chatgpt_store::{IndexedConversation, JudgmentRow, NewDeepJudgment, Transcript};
 use futures_util::StreamExt;
-use serde_json::json;
 
 use super::access::Access;
 use super::costs::{CostMeter, format_usd};
 use super::pipeline::{
-    CONCURRENCY, cached_summaries, download, ensure_summary, failure_line, is_long, profile,
+    CONCURRENCY, cached_summaries, download, ensure_summary, failure_line, is_long, jev_state,
+    profile, summary_kind,
 };
 use super::summarise;
 use crate::handlers::Failure;
@@ -160,12 +160,11 @@ impl DeepClassifier<'_> {
         let meter = Mutex::new(CostMeter::default());
         let client = self.access.jev();
         let step = self.reporter.step("Deep-classifying", Some(ready.len()));
-        let done = Mutex::new(0usize);
         let ready: Vec<IndexedConversation> = ready.into_iter().cloned().collect();
         let results: Vec<(IndexedConversation, Result<JudgmentRow, String>)> =
             futures_util::stream::iter(ready)
                 .map(|chat| {
-                    let (step, done, meter, client) = (&step, &done, &meter, &client);
+                    let (step, meter, client) = (&step, &meter, &client);
                     let transcript = transcripts.get(&chat.id);
                     let summary = summaries.get(&chat.id).map(String::as_str);
                     async move {
@@ -175,11 +174,7 @@ impl DeepClassifier<'_> {
                             }
                             None => Err("no transcript".to_owned()),
                         };
-                        let count = {
-                            let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
-                            *done += 1;
-                            *done
-                        };
+                        let count = step.advance(1);
                         let total = meter.lock().unwrap_or_else(PoisonError::into_inner).total();
                         step.update_with(count, &format_usd(total));
                         (chat, judged)
@@ -228,38 +223,20 @@ impl DeepClassifier<'_> {
             return Err("not judged: the command was interrupted".to_owned());
         }
         let (content, content_kind) = if is_long(transcript) {
-            if summary.is_none() && !summarise::available(self.access)? {
+            if summary.is_none() && summarise::names(self.access)?.is_empty() {
                 return Err(
                     "Long chat needs a summary, but neither codex nor claude is on PATH.".into(),
                 );
             }
             let summary =
                 ensure_summary(self.state, self.access, meter, chat, transcript, summary).await?;
-            (
-                summary,
-                format!(
-                    "summary of a long conversation ({} turns), written by another model",
-                    transcript.turns
-                ),
-            )
+            (summary, summary_kind(transcript))
         } else {
             (transcript.markdown.clone(), "full transcript".to_owned())
         };
         let client = client.as_ref().map_err(String::clone)?;
-        let day = |time: &str| time.chars().take(10).collect::<String>();
         // No `as_of` here, as in the TS CLI's follow-up.
-        let state = json!({
-            "conversation": {
-                "title": chat.title,
-                "created": day(&chat.create_time),
-                "last_updated": day(&chat.update_time),
-                "turns": transcript.turns,
-                "in_a_project": chat.project_id.as_deref().is_some_and(|id| !id.is_empty()),
-                "pinned": chat.pinned,
-            },
-            "content_kind": content_kind,
-            "content": content,
-        });
+        let state = jev_state(chat, transcript, None, &content_kind, &content);
         let result = client
             .system_one(&state, super::questions::deep())
             .await

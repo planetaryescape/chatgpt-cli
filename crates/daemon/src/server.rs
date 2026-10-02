@@ -209,9 +209,11 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
         // Progress of a sync goes back as events with the request's ID,
         // each resetting the client's stall deadline.
         let (progress, mut updates) = mpsc::unbounded_channel();
-        // The client's answers to what the request asks it (`Ask`).
+        // The client's answers to what the request asks it (`Ask`); only
+        // a request that can ask reads any.
+        let asks = matches!(request, Request::Classify { .. } | Request::JevCheck { .. });
         let (answer, answers) = mpsc::unbounded_channel();
-        let mut answer = Some(answer);
+        let mut answer = asks.then_some(answer);
         let work = handle(&state, request, Some(progress), answers);
         tokio::pin!(work);
         let mut heartbeat = tokio::time::interval(crate::progress::HEARTBEAT);

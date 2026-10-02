@@ -63,11 +63,6 @@ fn batches(items: Vec<Item>) -> Vec<Vec<Item>> {
     result
 }
 
-/// JS `String.length`.
-fn js_length(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 struct Run<'a> {
     state: &'a Arc<State>,
     reporter: &'a Reporter,
@@ -87,13 +82,18 @@ pub async fn generate(
     let version = super::pipeline::profile().local_title_version;
     let render = state.profile().render_version;
     let chats = targets.to_vec();
-    // Each target's title source, transcript and (long) summary.
+    // Whether each target keeps its title (a manual one, or without
+    // `redo` a current Luna one); else its transcript and (long) summary.
     let looked_up = state
         .db(move |db| {
             let mut found = Vec::new();
-            for chat in &chats {
+            for chat in chats {
                 let source =
                     chatgpt_store::local_title_source(db, &chat.id, &chat.update_time, version)?;
+                if source.as_deref() == Some("manual") || (!redo && source.is_some()) {
+                    found.push((chat, true, None, None));
+                    continue;
+                }
                 let transcript =
                     chatgpt_store::transcript(db, &chat.id, &chat.update_time, render)?;
                 let summary = match &transcript {
@@ -105,7 +105,7 @@ pub async fn generate(
                     )?,
                     _ => None,
                 };
-                found.push((chat.clone(), source, transcript, summary));
+                found.push((chat, false, transcript, summary));
             }
             Ok(found)
         })
@@ -113,8 +113,8 @@ pub async fn generate(
     let mut failures = Vec::new();
     let mut ready = Vec::new();
     let mut pending = 0;
-    for (chat, source, transcript, summary) in looked_up {
-        if source.as_deref() == Some("manual") || (!redo && source.is_some()) {
+    for (chat, kept, transcript, summary) in looked_up {
+        if kept {
             continue;
         }
         pending += 1;
@@ -139,7 +139,7 @@ pub async fn generate(
             continue;
         };
         let tokens = if long {
-            i64::try_from(js_length(&content).div_ceil(3)).unwrap_or(i64::MAX)
+            i64::try_from(chatgpt_core::js::utf16_len(&content).div_ceil(3)).unwrap_or(i64::MAX)
         } else {
             transcript.approx_tokens
         };
@@ -171,18 +171,13 @@ pub async fn generate(
         generated: Mutex::new(0),
         failures: Mutex::new(failures),
     };
-    let done = Mutex::new(0usize);
     futures_util::stream::iter(groups)
         .for_each_concurrent(CONCURRENCY, |group| {
-            let (run, step, done) = (&run, &step, &done);
+            let (run, step) = (&run, &step);
             async move {
                 let size = group.len();
                 run.process(group).await;
-                let count = {
-                    let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
-                    *done += size;
-                    *done
-                };
+                let count = step.advance(size);
                 step.update(count);
             }
         })
@@ -267,7 +262,9 @@ impl Run<'_> {
         };
         if items.iter().any(|item| {
             let title = field(item, "title");
-            title.is_empty() || field(item, "theme").is_empty() || js_length(&title) > 100
+            title.is_empty()
+                || field(item, "theme").is_empty()
+                || chatgpt_core::js::utf16_len(&title) > 100
         }) {
             return Err("Luna returned an invalid title or theme.".to_owned());
         }
@@ -280,12 +277,9 @@ impl Run<'_> {
                 .map(|candidate| candidate.chat.clone())
                 .ok_or("Luna returned an unknown id.")?;
             // `setLocalTitle`'s cleaning and check, then the theme's.
-            let title = chatgpt_core::js::collapse_spaces(&field(item, "title"));
-            if title.is_empty() || js_length(&title) > 100 {
-                return Err("Local title must be 1–100 characters.".to_owned());
-            }
+            let title = crate::mutate::clean_local_title(&field(item, "title"))?;
             let theme = chatgpt_core::js::collapse_spaces(&field(item, "theme"));
-            let theme = take_utf16(&theme, 80).to_owned();
+            let theme = chatgpt_core::js::utf16_prefix(&theme, 80).to_owned();
             let updated_at = crate::js::now_iso();
             let _no_pass = self.state.syncer.exclusive().await;
             self.state
@@ -308,18 +302,6 @@ impl Run<'_> {
             .unwrap_or_else(PoisonError::into_inner) += items.len();
         Ok(())
     }
-}
-
-/// The first `units` UTF-16 units of `text`, never splitting a character.
-fn take_utf16(text: &str, units: usize) -> &str {
-    let mut used = 0;
-    for (at, c) in text.char_indices() {
-        used += c.len_utf16();
-        if used > units {
-            return &text[..at];
-        }
-    }
-    text
 }
 
 #[cfg(test)]

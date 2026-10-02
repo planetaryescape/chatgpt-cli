@@ -11,6 +11,7 @@
 //! Keys are never stored, logged or echoed.
 
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use chatgpt_core::user_config::{self, Provider, UserConfig};
 use chatgpt_protocol::ModelAccess;
@@ -20,43 +21,46 @@ const TYPESAFE_URL_ENV: &str = "TYPESAFE_BASE_URL";
 const OPENAI_URL_ENV: &str = "CHATGPT_TEST_OPENAI_URL";
 const ANTHROPIC_URL_ENV: &str = "CHATGPT_TEST_ANTHROPIC_URL";
 
-/// Where a run's keys and tools come from.
+/// Where a run's keys and tools come from. The config file is read, and
+/// each API client built, once per run (an `Access` lives for one request).
 #[derive(Clone, Debug, Default)]
 pub struct Access {
     forwarded: ModelAccess,
     /// The background Jev: never a forwarded key.
     config_only: bool,
+    config: OnceLock<Result<UserConfig, String>>,
+    openai: OnceLock<Result<Option<Arc<model_api::OpenAi>>, String>>,
+    anthropic: OnceLock<Result<Option<Arc<model_api::Anthropic>>, String>>,
 }
 
 /// A debug-build override of `default`, from `env`.
 fn base_url(env: &str, default: &str) -> String {
-    std::env::var(env)
-        .ok()
-        .filter(|base| cfg!(debug_assertions) && !base.is_empty())
-        .unwrap_or_else(|| default.to_owned())
+    chatgpt_core::debug_env(env).unwrap_or_else(|| default.to_owned())
 }
 
 impl Access {
     pub fn for_client(forwarded: ModelAccess) -> Self {
         Self {
             forwarded,
-            config_only: false,
+            ..Self::default()
         }
     }
 
     /// The user config's keys only, and the daemon's own `PATH`.
     pub fn config_only() -> Self {
         Self {
-            forwarded: ModelAccess::default(),
             config_only: true,
+            ..Self::default()
         }
     }
 
     pub fn config(&self) -> Result<UserConfig, String> {
-        match user_config::config_path() {
-            Some(path) => user_config::read_config(&path),
-            None => Ok(UserConfig::default()),
-        }
+        self.config
+            .get_or_init(|| match user_config::config_path() {
+                Some(path) => user_config::read_config(&path),
+                None => Ok(UserConfig::default()),
+            })
+            .clone()
     }
 
     fn forwarded(&self, provider: Provider) -> Option<&str> {
@@ -72,7 +76,7 @@ impl Access {
     }
 
     /// `findSecret`: the client's environment, then the config file (read
-    /// only when the environment has none, as `||` does).
+    /// only when the environment has none, as `||` does). Never blank.
     pub fn find(&self, provider: Provider) -> Result<Option<String>, String> {
         if let Some(key) = self.forwarded(provider) {
             return Ok(Some(key.to_owned()));
@@ -95,41 +99,52 @@ impl Access {
 
     /// The Jev client (`new TypeSafeClient({ apiKey: requireSecret(…) })`).
     pub fn jev(&self) -> Result<typesafe_client::Client, String> {
+        // `find` never gives a blank key, so there's always one here.
         let key = typesafe_client::ApiKey::new(&self.require(Provider::Jev)?)
             .map_err(|error| error.to_string())?
-            .ok_or("TYPESAFE_API_KEY is not configured. Run `chatgpt configure jev` or set TYPESAFE_API_KEY.")?;
+            .ok_or("the Jev API key is blank")?;
         let base = base_url(TYPESAFE_URL_ENV, typesafe_client::DEFAULT_BASE_URL);
         typesafe_client::Client::new(&base, key, typesafe_client::RetryPolicy::default())
             .map_err(|error| error.to_string())
     }
 
+    /// The model API for `provider`, when a key is configured, built once.
+    fn api<T>(
+        &self,
+        cell: &OnceLock<Result<Option<Arc<T>>, String>>,
+        provider: Provider,
+        label: &'static str,
+        build: impl FnOnce(model_api::ApiKey) -> Result<T, model_api::Error>,
+    ) -> Result<Option<Arc<T>>, String> {
+        cell.get_or_init(|| {
+            let Some(key) = self.find(provider)? else {
+                return Ok(None);
+            };
+            match model_api::ApiKey::new(&key, label).map_err(|error| error.to_string())? {
+                Some(key) => build(key)
+                    .map(|api| Some(Arc::new(api)))
+                    .map_err(|e| e.to_string()),
+                None => Ok(None),
+            }
+        })
+        .clone()
+    }
+
     /// OpenAI's API, when a key is configured.
-    pub fn openai(&self) -> Result<Option<model_api::OpenAi>, String> {
-        let Some(key) = self.find(Provider::OpenAi)? else {
-            return Ok(None);
-        };
-        let Some(key) = model_api::ApiKey::new(&key, "OpenAI").map_err(|e| e.to_string())? else {
-            return Ok(None);
-        };
-        let base = base_url(OPENAI_URL_ENV, model_api::OPENAI_BASE_URL);
-        model_api::OpenAi::new(&base, key)
-            .map(Some)
-            .map_err(|error| error.to_string())
+    pub fn openai(&self) -> Result<Option<Arc<model_api::OpenAi>>, String> {
+        self.api(&self.openai, Provider::OpenAi, "OpenAI", |key| {
+            model_api::OpenAi::new(&base_url(OPENAI_URL_ENV, model_api::OPENAI_BASE_URL), key)
+        })
     }
 
     /// Anthropic's API, when a key is configured.
-    pub fn anthropic(&self) -> Result<Option<model_api::Anthropic>, String> {
-        let Some(key) = self.find(Provider::Anthropic)? else {
-            return Ok(None);
-        };
-        let Some(key) = model_api::ApiKey::new(&key, "Anthropic").map_err(|e| e.to_string())?
-        else {
-            return Ok(None);
-        };
-        let base = base_url(ANTHROPIC_URL_ENV, model_api::ANTHROPIC_BASE_URL);
-        model_api::Anthropic::new(&base, key)
-            .map(Some)
-            .map_err(|error| error.to_string())
+    pub fn anthropic(&self) -> Result<Option<Arc<model_api::Anthropic>>, String> {
+        self.api(&self.anthropic, Provider::Anthropic, "Anthropic", |key| {
+            model_api::Anthropic::new(
+                &base_url(ANTHROPIC_URL_ENV, model_api::ANTHROPIC_BASE_URL),
+                key,
+            )
+        })
     }
 
     /// The `PATH` tools are looked for on and run with: the client's, else
@@ -173,7 +188,7 @@ mod tests {
         assert_eq!(access.forwarded(Provider::Anthropic), None);
         let background = Access {
             config_only: true,
-            ..access
+            ..access.clone()
         };
         assert_eq!(background.forwarded(Provider::OpenAi), None);
     }

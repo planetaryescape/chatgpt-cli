@@ -26,7 +26,7 @@ use rusqlite::Connection;
 pub use conversations::{IndexFilter, IndexedConversation, NewConversation};
 pub use judgments::{
     JudgmentRow, MemoryJudgmentRow, NewDeepJudgment, NewJudgment, NewLunaJudgment,
-    NewMemoryJudgment,
+    NewMemoryJudgment, Unjudged,
 };
 pub use legacy::{ImportCounts, LEGACY_TABLES, TableCounts};
 pub use local_titles::{ManualTitle, local_title_source, set_local_title, set_luna_title};
@@ -114,7 +114,7 @@ pub use conversations::{
 pub use judgments::{
     current_judgments, has_deep_judgment, has_luna_judgment, judgment, memory_judgment,
     save_deep_judgment, save_judgment, save_luna_judgment, save_memory_judgment, save_summary,
-    summary, unjudged_since,
+    summary, unjudged,
 };
 pub use legacy::import_legacy;
 pub use meta::{account, bind_account, get_meta, set_meta};

@@ -285,7 +285,7 @@ async fn read<T: Send + 'static>(
 ) -> Result<T, Failure> {
     let profile = state.profile();
     let now_ms = chrono::Utc::now().timestamp_millis();
-    state.db(move |db| Ok(work(db, &profile, now_ms))).await?
+    state.db(move |db| Ok(work(db, profile, now_ms))).await?
 }
 
 /// `stats`: the chat counts from the index, then the saved memories, read

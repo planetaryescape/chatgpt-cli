@@ -26,7 +26,6 @@ pub(crate) fn forget(connection: &Connection, table: &str, id: &str) -> Result<(
 pub(crate) fn stamp(table: &str) -> Option<&'static str> {
     match table {
         "local_titles" => Some("updated_at"),
-        "judgments" | "deep_judgments" | "luna_judgments" => Some("classified_at"),
         _ => None,
     }
 }

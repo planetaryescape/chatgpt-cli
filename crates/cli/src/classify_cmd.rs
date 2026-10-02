@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 
 use chatgpt_core::Paths;
+use chatgpt_core::user_config::Provider;
 use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{ModelAccess, Request, ResponseData, Secret, Selection, SessionChoice};
 use serde_json::Value;
@@ -26,11 +27,11 @@ use crate::reads::{filter, invalid};
 
 /// The keys and `PATH` this command lends the daemon.
 pub fn model_access() -> ModelAccess {
-    let env = |name: &str| std::env::var(name).ok().map(Secret::new);
+    let env = |provider: Provider| std::env::var(provider.env_name()).ok().map(Secret::new);
     ModelAccess {
-        typesafe: env("TYPESAFE_API_KEY"),
-        openai: env("OPENAI_API_KEY"),
-        anthropic: env("ANTHROPIC_API_KEY"),
+        typesafe: env(Provider::Jev),
+        openai: env(Provider::OpenAi),
+        anthropic: env(Provider::Anthropic),
         path: std::env::var("PATH").ok(),
     }
 }

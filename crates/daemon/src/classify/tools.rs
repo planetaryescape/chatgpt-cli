@@ -58,9 +58,7 @@ impl Finished {
 }
 
 fn timeout() -> Duration {
-    std::env::var(TIMEOUT_ENV)
-        .ok()
-        .filter(|_| cfg!(debug_assertions))
+    chatgpt_core::debug_env(TIMEOUT_ENV)
         .and_then(|millis| millis.parse().ok())
         .map_or(TIMEOUT, Duration::from_millis)
 }
@@ -125,13 +123,12 @@ pub async fn run(
     };
     let mut input = child.stdin.take();
     let mut output = child.stdout.take();
-    let body = stdin.to_vec();
     let exchange = async {
         let write = async {
             if let Some(mut input) = input.take() {
                 // A child that exits without reading all of it is judged by
                 // its exit, not by the broken pipe.
-                let _ = input.write_all(&body).await;
+                let _ = input.write_all(stdin).await;
                 let _ = input.shutdown().await;
             }
         };
@@ -146,13 +143,14 @@ pub async fn run(
         let status = child.wait().await;
         (status, stdout)
     };
-    let (status, stdout) = match tokio::time::timeout(timeout(), exchange).await {
+    let limit = timeout();
+    let (status, stdout) = match tokio::time::timeout(limit, exchange).await {
         Ok(done) => done,
         Err(_) => {
             guard.kill();
             return Err(format!(
                 "{name} didn't finish within {} seconds",
-                timeout().as_secs()
+                limit.as_secs()
             ));
         }
     };

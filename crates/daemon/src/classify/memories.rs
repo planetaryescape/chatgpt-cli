@@ -41,7 +41,8 @@ struct Row {
     hash: String,
     system_one: String,
     system_two: Option<String>,
-    classified_at: String,
+    /// `None` for a cached row: saving it again stamps it now.
+    classified_at: Option<String>,
 }
 
 /// `validateDeepAnswers`: one decision per id, in order.
@@ -119,7 +120,7 @@ pub async fn classify(
                                 hash: hash.clone(),
                                 system_one: row.system_one,
                                 system_two: row.system_two,
-                                classified_at: String::new(),
+                                classified_at: None,
                             },
                         );
                     }
@@ -128,15 +129,10 @@ pub async fn classify(
             })
             .await?
     };
-    let results = Mutex::new(cached);
     let todo: Vec<usize> = (0..memories.len())
-        .filter(|&at| {
-            !results
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains_key(&memories[at].id)
-        })
+        .filter(|&at| !cached.contains_key(&memories[at].id))
         .collect();
+    let results = Mutex::new(cached);
     reporter.note(format!(
         "{} saved memories: {} cached, {} new or changed.",
         memories.len(),
@@ -154,11 +150,10 @@ pub async fn classify(
     };
     let client = access.jev();
     let step = reporter.step("Quick memory classification", Some(todo.len()));
-    let done = Mutex::new(0usize);
     futures_util::stream::iter(todo.iter().copied())
         .for_each_concurrent(CONCURRENCY, |at| {
-            let (step, done, client, results, failures, hashes, as_of) =
-                (&step, &done, &client, &results, &failures, &hashes, &as_of);
+            let (step, client, results, failures, hashes, as_of) =
+                (&step, &client, &results, &failures, &hashes, &as_of);
             let memory = &memories[at];
             let related = related_json(at);
             async move {
@@ -167,15 +162,9 @@ pub async fn classify(
                         return Err("not classified: the command was interrupted".to_owned());
                     }
                     let client = client.as_ref().map_err(String::clone)?;
-                    let mut entry = json!({ "id": memory.id, "content": memory.content });
-                    if let (Some(updated), Some(object)) =
-                        (&memory.updated_at, entry.as_object_mut())
-                    {
-                        object.insert("updated_at".to_owned(), Value::String(updated.clone()));
-                    }
                     let quick_state = json!({
                         "as_of": as_of,
-                        "memory": entry,
+                        "memory": entry(memory),
                         "related_memories": related,
                     });
                     let answer = client
@@ -187,7 +176,7 @@ pub async fn classify(
                         hash: hashes[at].clone(),
                         system_one: crate::js::stringify(&answer.answers),
                         system_two: None,
-                        classified_at: crate::js::now_iso(),
+                        classified_at: Some(crate::js::now_iso()),
                     };
                     save(state, &memory.id, &row).await?;
                     Ok(row)
@@ -204,11 +193,7 @@ pub async fn classify(
                         .unwrap_or_else(PoisonError::into_inner)
                         .push(format!("{}: {why}", memory.id)),
                 }
-                let count = {
-                    let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
-                    *done += 1;
-                    *done
-                };
+                let count = step.advance(1);
                 step.update(count);
             }
         })
@@ -247,10 +232,7 @@ pub async fn classify(
                     .get(&memory.id)
                     .and_then(|row| serde_json::from_str::<Value>(&row.system_one).ok())
                     .unwrap_or(Value::Null);
-                let mut entry = json!({ "id": memory.id, "content": memory.content });
-                if let (Some(updated), Some(object)) = (&memory.updated_at, entry.as_object_mut()) {
-                    object.insert("updated_at".to_owned(), Value::String(updated.clone()));
-                }
+                let mut entry = entry(memory);
                 if let Some(object) = entry.as_object_mut() {
                     object.insert("related_memories".to_owned(), related_json(at));
                     object.insert("quick_answers".to_owned(), quick);
@@ -259,22 +241,21 @@ pub async fn classify(
             }).collect::<Vec<_>>(),
         })
     };
-    for (number, batch) in review.chunks(DEEP_BATCH).enumerate() {
-        let ids: Vec<&str> = batch.iter().map(|&at| memories[at].id.as_str()).collect();
-        let answered = async {
+    // Luna's decisions for `batch`, one per memory in order.
+    let ask_deep = |batch: &[usize], results: &HashMap<String, Row>| {
+        let ids: Vec<String> = batch.iter().map(|&at| memories[at].id.clone()).collect();
+        let input = deep_input(batch, results);
+        async move {
             if reporter.client_gone() {
                 return Err("not reviewed: the command was interrupted".to_owned());
             }
-            let result = super::luna::ask(
-                access,
-                DEEP_PROMPT,
-                &deep_input(batch, &results),
-                &deep_schema(),
-            )
-            .await?;
+            let result = super::luna::ask(access, DEEP_PROMPT, &input, &deep_schema()).await?;
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
             validate_deep(&ids, &result)
         }
-        .await;
+    };
+    for (number, batch) in review.chunks(DEEP_BATCH).enumerate() {
+        let answered = ask_deep(batch, &results).await;
         match answered {
             Ok(decisions) => {
                 save_deep(state, &mut results, &decisions).await?;
@@ -293,21 +274,7 @@ pub async fn classify(
                 }
                 for &at in batch {
                     let id = memories[at].id.as_str();
-                    let retried = async {
-                        if reporter.client_gone() {
-                            return Err("not reviewed: the command was interrupted".to_owned());
-                        }
-                        let result = super::luna::ask(
-                            access,
-                            DEEP_PROMPT,
-                            &deep_input(&[at], &results),
-                            &deep_schema(),
-                        )
-                        .await?;
-                        validate_deep(&[id], &result)
-                    }
-                    .await;
-                    match retried {
+                    match ask_deep(&[at], &results).await {
                         Ok(decisions) => save_deep(state, &mut results, &decisions).await?,
                         Err(why) => failures.push(format!("{id}: {why}")),
                     }
@@ -346,6 +313,16 @@ pub async fn classify(
     Ok(ClassifiedMemories { rows, failures })
 }
 
+/// A memory as Jev and Luna see it: `updated_at` only when ChatGPT gave
+/// one, as `JSON.stringify` leaves an undefined property out.
+fn entry(memory: &SavedMemory) -> Value {
+    let mut entry = json!({ "id": memory.id, "content": memory.content });
+    if let (Some(updated), Some(object)) = (&memory.updated_at, entry.as_object_mut()) {
+        object.insert("updated_at".to_owned(), Value::String(updated.clone()));
+    }
+    entry
+}
+
 async fn save(state: &State, id: &str, row: &Row) -> Result<(), String> {
     let new = NewMemoryJudgment {
         id: id.to_owned(),
@@ -353,11 +330,7 @@ async fn save(state: &State, id: &str, row: &Row) -> Result<(), String> {
         version: profile().memory_version.clone(),
         system_one: row.system_one.clone(),
         system_two: row.system_two.clone(),
-        classified_at: if row.classified_at.is_empty() {
-            crate::js::now_iso()
-        } else {
-            row.classified_at.clone()
-        },
+        classified_at: row.classified_at.clone().unwrap_or_else(crate::js::now_iso),
     };
     state
         .db_write(move |db| chatgpt_store::save_memory_judgment(db, &new))

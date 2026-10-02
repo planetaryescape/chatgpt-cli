@@ -78,7 +78,7 @@ pub async fn search(
     let hits = hits(found, limit, archived)?;
     let profile = state.profile();
     let hits = state
-        .db(move |db| Ok(with_display_titles(db, hits, &profile)))
+        .db(move |db| Ok(with_display_titles(db, hits, profile)))
         .await??;
     Ok(SearchResults {
         hits,

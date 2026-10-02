@@ -26,14 +26,6 @@ pub struct TsCli {
     pub entry: PathBuf,
 }
 
-impl TsCli {
-    /// The TS sources' root (`src/`), whose classification constants the
-    /// daemon reads.
-    pub fn source_dir(&self) -> Option<&Path> {
-        self.entry.parent()
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum TsCliError {
     #[error("{TS_CLI_ENV} is {0}, which doesn't exist")]

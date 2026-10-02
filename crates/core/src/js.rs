@@ -65,9 +65,35 @@ pub fn collapse_spaces(text: &str) -> String {
     out
 }
 
+/// `text.length`: UTF-16 code units, as JS counts them.
+pub fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// The longest prefix of `text` within `units` UTF-16 units (`slice(0,
+/// units)`) that doesn't split a character.
+pub fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut used = 0;
+    for (at, c) in text.char_indices() {
+        used += c.len_utf16();
+        if used > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf16_prefixes_never_split_a_character() {
+        let text = format!("{}😀tail", "a".repeat(249));
+        assert_eq!(utf16_prefix(&text, 250), "a".repeat(249));
+        assert_eq!(utf16_prefix("short", 250), "short");
+        assert_eq!(utf16_len("😀a"), 3);
+    }
 
     #[test]
     fn number_reads_what_js_reads() {

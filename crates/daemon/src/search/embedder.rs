@@ -373,7 +373,7 @@ async fn model_ready(state: &State, model: &WorkerModel) -> bool {
 }
 
 async fn embed_pending(state: &State) -> Result<(), String> {
-    let versions = super::versions(&state.profile());
+    let versions = super::versions(state.profile());
     let model = worker_model()?;
     // Queries need the model even when every chunk has its vector, so every
     // run checks it is still there (and fetches it again if not).

@@ -15,6 +15,14 @@ pub mod ts_cli;
 pub mod user_config;
 
 pub use duration::format_duration;
+
+/// A test-only setting from the environment: in debug builds, `name`'s
+/// value when set and not empty; never in a release build.
+pub fn debug_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| cfg!(debug_assertions) && !value.is_empty())
+}
 pub use error::ErrorKind;
 pub use js_number::js_number_string;
 pub use paths::{

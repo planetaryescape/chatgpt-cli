@@ -243,10 +243,13 @@ fn normalize(stderr: &str) -> String {
                         && !word.ends_with("/s")
                 })
                 .unwrap_or("");
+            // The running cost isn't compared: which concurrent calls have
+            // finished when the first count is drawn varies run to run. The
+            // step's summary line still carries the cost.
             let detail = line
                 .rsplit(" · ")
                 .next()
-                .filter(|last| last.starts_with('$') || last.ends_with("failed"))
+                .filter(|last| last.ends_with("failed"))
                 .unwrap_or("");
             out.push_str(&format!("{label}  {count} {detail}\n"));
             continue;

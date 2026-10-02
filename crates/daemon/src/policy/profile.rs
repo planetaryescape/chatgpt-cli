@@ -19,13 +19,15 @@ pub struct Profile {
     pub topics: Vec<String>,
     /// The topic policy.ts treats as the user's employer's work.
     pub employer_topic: String,
-    /// Always `builtin` (`daemon status` shows it).
-    pub source: String,
-    /// Always `None`; kept in `daemon status` for older clients.
-    pub problem: Option<String>,
 }
 
 impl Profile {
+    /// [`Profile::builtin`], built once: what every verdict is read with.
+    pub fn current() -> &'static Self {
+        static CURRENT: std::sync::LazyLock<Profile> = std::sync::LazyLock::new(Profile::builtin);
+        &CURRENT
+    }
+
     /// This repository's TS sources @ 1b8c950.
     pub fn builtin() -> Self {
         Self {
@@ -52,21 +54,19 @@ impl Profile {
             .map(str::to_owned)
             .to_vec(),
             employer_topic: "employer_work".into(),
-            source: "builtin".into(),
-            problem: None,
         }
     }
 
     pub fn info(&self) -> ClassificationInfo {
         ClassificationInfo {
-            source: self.source.clone(),
+            source: "builtin".into(),
             questions_version: self.questions_version.clone(),
             deep_questions_version: self.deep_questions_version.clone(),
             luna_version: u32::try_from(self.luna_version).unwrap_or(0),
             local_title_version: self.local_title_version,
             memory_version: self.memory_version.clone(),
             topics: self.topics.clone(),
-            problem: self.problem.clone(),
+            problem: None,
         }
     }
 }

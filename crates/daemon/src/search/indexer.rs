@@ -174,7 +174,7 @@ pub async fn run(state: Arc<State>) {
 }
 
 async fn index(state: &State) -> Result<(), String> {
-    let versions = super::versions(&state.profile());
+    let versions = super::versions(state.profile());
     let pruned = state
         .db_write(chatgpt_store::prune_search)
         .await

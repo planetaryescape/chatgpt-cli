@@ -32,7 +32,6 @@ pub struct State {
     pub auto_jev: AutoJev,
     pub started_at: i64,
     pub version: String,
-    profile: Arc<Profile>,
     ts_sync: Mutex<TsSyncStatus>,
     import: Mutex<ImportStatus>,
 }
@@ -84,7 +83,6 @@ impl State {
             auto_jev: AutoJev::default(),
             started_at: now_unix(),
             version,
-            profile: Arc::new(Profile::builtin()),
             ts_sync: Mutex::new(ts_sync),
             import: Mutex::new(ImportStatus::default()),
         }
@@ -116,8 +114,8 @@ impl State {
 
     /// The classification versions verdicts are read with: this build's
     /// (D9), whatever the bridged TS CLI's are.
-    pub fn profile(&self) -> Arc<Profile> {
-        Arc::clone(&self.profile)
+    pub fn profile(&self) -> &'static Profile {
+        Profile::current()
     }
 
     pub fn record_ts_sync(&self, ts: Option<&TsCli>, outcome: &TsSyncOutcome) {

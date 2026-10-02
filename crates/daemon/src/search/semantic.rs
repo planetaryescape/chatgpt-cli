@@ -177,7 +177,7 @@ pub async fn search(
     mode: SearchMode,
 ) -> Result<SearchResults, Failure> {
     let profile = state.profile();
-    let versions = super::versions(&profile);
+    let versions = super::versions(profile);
     // The query's vector doesn't depend on the counts: make both at once.
     let read = state.db(move |db| {
         let synced_at = require_synced(db);
@@ -208,7 +208,7 @@ pub async fn search(
                         "not a semantic search mode",
                     )),
                 }
-                .and_then(|hits| with_display_titles(db, hits, &profile))
+                .and_then(|hits| with_display_titles(db, hits, profile))
             }))
         })
         .await??;

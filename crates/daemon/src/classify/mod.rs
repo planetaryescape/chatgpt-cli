@@ -51,14 +51,9 @@ use crate::state::State;
 /// out (the client resolved them a moment ago).
 pub async fn chats(state: &State, ids: Vec<String>) -> Result<Vec<IndexedConversation>, Failure> {
     let display = profile().local_title_version;
-    let wanted = ids.clone();
-    let found = state
-        .db(move |db| chatgpt_store::by_ids(db, &wanted, display))
-        .await?;
-    Ok(ids
-        .iter()
-        .filter_map(|id| found.iter().find(|chat| &chat.id == id).cloned())
-        .collect())
+    state
+        .db(move |db| chatgpt_store::by_ids(db, &ids, display))
+        .await
 }
 
 /// `classify`: Jev, its follow-up for the unsure, Luna's review, then the
@@ -109,7 +104,7 @@ pub async fn classify(
         let deep = if unsure.is_empty() {
             None
         } else {
-            let deep = deep::DeepClassifier {
+            let mut deep = deep::DeepClassifier {
                 state: &state,
                 reporter: &reporter,
                 session,
@@ -117,7 +112,7 @@ pub async fn classify(
             }
             .classify(&unsure, redo)
             .await?;
-            judgments.extend(deep.judgments.clone());
+            judgments.extend(std::mem::take(&mut deep.judgments));
             Some(deep)
         };
         let luna_failures =
@@ -137,7 +132,9 @@ pub async fn classify(
                 still_unsure += 1;
             }
         }
-        let deep_failures = deep.as_ref().map(|deep| deep.failures.clone()).unwrap_or_default();
+        let (deep_failures, deep_held_back) = deep
+            .map(|deep| (deep.failures, deep.held_back))
+            .unwrap_or_default();
         let all_failures = [
             &classified.failures,
             &deep_failures,
@@ -159,10 +156,9 @@ pub async fn classify(
                 classified.held_back.len()
             ));
         }
-        if let Some(deep) = deep.as_ref().filter(|deep| deep.held_back > 0) {
+        if deep_held_back > 0 {
             done.push_str(&format!(
-                " {} deep classification(s) held back.",
-                deep.held_back
+                " {deep_held_back} deep classification(s) held back."
             ));
         }
         reporter.note(done);

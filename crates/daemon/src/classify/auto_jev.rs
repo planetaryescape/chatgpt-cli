@@ -20,7 +20,7 @@ use chatgpt_core::user_config::Provider;
 use chatgpt_protocol::AutoJevStatus;
 
 use super::access::Access;
-use super::pipeline::{Classifier, Options, is_long, profile, utc_today};
+use super::pipeline::{Classifier, FULL_TRANSCRIPT_MAX_TOKENS, Options, profile, utc_today};
 use crate::progress::Reporter;
 use crate::state::{State, now_unix};
 
@@ -28,8 +28,8 @@ use crate::state::{State, now_unix};
 const PER_PASS: usize = 50;
 /// A chat Jev failed on waits this long before it's tried again.
 const RETRY_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
-/// In debug builds: another per-pass bound, and the time chats count as
-/// new from (an ISO date), for tests and demos.
+/// In debug builds: another per-pass bound, and the time after which chats
+/// count as new (an ISO date), for tests and demos.
 const LIMIT_ENV: &str = "CHATGPT_TEST_AUTO_JEV_LIMIT";
 const SINCE_ENV: &str = "CHATGPT_TEST_AUTO_JEV_SINCE";
 /// The `meta` keys: when it was first enabled, and today's tally.
@@ -53,14 +53,8 @@ struct Inner {
     loaded: bool,
 }
 
-fn debug_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| cfg!(debug_assertions) && !value.is_empty())
-}
-
 fn per_pass() -> usize {
-    debug_env(LIMIT_ENV)
+    chatgpt_core::debug_env(LIMIT_ENV)
         .and_then(|limit| limit.parse().ok())
         .unwrap_or(PER_PASS)
 }
@@ -85,12 +79,18 @@ impl AutoJev {
             }
         }
         status.in_progress = self.running.load(Ordering::SeqCst);
-        if status.day.as_deref() != Some(utc_today().as_str()) {
-            status.day = Some(utc_today());
-            status.judged_today = 0;
-            status.cost_today_usd = 0.0;
-        }
+        roll_day(&mut status);
         status
+    }
+}
+
+/// A new UTC day starts a new tally.
+fn roll_day(status: &mut AutoJevStatus) {
+    let today = utc_today();
+    if status.day.as_deref() != Some(today.as_str()) {
+        status.day = Some(today);
+        status.judged_today = 0;
+        status.cost_today_usd = 0.0;
     }
 }
 
@@ -141,53 +141,44 @@ pub fn after_pass(state: &Arc<State>) {
 async fn run(state: &Arc<State>) -> Result<Option<String>, String> {
     load_tally(state).await?;
     let since = baseline(state).await?;
-    let version = profile().questions_version.clone();
-    let render = state.profile().render_version;
-    let candidates = state
-        .db(move |db| {
-            let unjudged = chatgpt_store::unjudged_since(db, &since, &version)?;
-            // Long chats without a summary wait for `classify`; they'd
-            // otherwise fill every pass.
-            let mut usable = Vec::new();
-            for (id, update_time) in unjudged {
-                let waits = match chatgpt_store::transcript(db, &id, &update_time, render)? {
-                    Some(transcript) if is_long(&transcript) => chatgpt_store::summary(
-                        db,
-                        &id,
-                        &update_time,
-                        super::summarise::SUMMARY_PROMPT_VERSION,
-                    )?
-                    .is_none(),
-                    _ => false,
-                };
-                if !waits {
-                    usable.push((id, update_time));
-                }
-            }
-            Ok(usable)
-        })
-        .await
-        .map_err(|failure| failure.message)?;
     let now = Instant::now();
-    let chosen: Vec<String> = {
+    let failed_before = {
         let mut inner = state.auto_jev.inner();
         inner
             .failed
             .retain(|_, at| now.duration_since(*at) < RETRY_AFTER);
-        candidates
-            .into_iter()
-            .filter(|key| !inner.failed.contains_key(key))
-            .take(per_pass())
-            .map(|(id, _)| id)
-            .collect()
+        inner.failed.clone()
     };
+    let version = profile().questions_version.clone();
+    let render = state.profile().render_version;
+    // Enough to fill a pass after leaving out the ones that failed lately.
+    let limit = per_pass() + failed_before.len();
+    let candidates = state
+        .db(move |db| {
+            chatgpt_store::unjudged(
+                db,
+                chatgpt_store::Unjudged {
+                    after: &since,
+                    questions_version: &version,
+                    render_version: render,
+                    max_tokens: FULL_TRANSCRIPT_MAX_TOKENS,
+                    summary_version: super::summarise::SUMMARY_PROMPT_VERSION,
+                    limit,
+                },
+            )
+        })
+        .await
+        .map_err(|failure| failure.message)?;
+    let chosen: Vec<String> = candidates
+        .into_iter()
+        .filter(|key| !failed_before.contains_key(key))
+        .take(per_pass())
+        .map(|(id, _)| id)
+        .collect();
     if chosen.is_empty() {
         return Ok(None);
     }
-    let display = profile().local_title_version;
-    let wanted = chosen.clone();
-    let chats = state
-        .db(move |db| chatgpt_store::by_ids(db, &wanted, display))
+    let chats = super::chats(state, chosen)
         .await
         .map_err(|failure| failure.message)?;
     let reporter = Reporter::for_client(None);
@@ -224,13 +215,7 @@ async fn run(state: &Arc<State>) -> Result<Option<String>, String> {
         inner
             .failed
             .extend(failed.iter().cloned().map(|key| (key, now)));
-        // A new UTC day starts a new tally.
-        let today = utc_today();
-        if inner.status.day.as_deref() != Some(today.as_str()) {
-            inner.status.day = Some(today);
-            inner.status.judged_today = 0;
-            inner.status.cost_today_usd = 0.0;
-        }
+        roll_day(&mut inner.status);
         inner.status.judged_today += u64::try_from(judged).unwrap_or(0);
         inner.status.cost_today_usd += classified.cost;
     }
@@ -255,7 +240,7 @@ async fn run(state: &Arc<State>) -> Result<Option<String>, String> {
 /// When chats count as new from: set to the index's newest chat the first
 /// time it runs, so enabling it never judges the whole history.
 async fn baseline(state: &State) -> Result<String, String> {
-    if let Some(since) = debug_env(SINCE_ENV) {
+    if let Some(since) = chatgpt_core::debug_env(SINCE_ENV) {
         return Ok(since);
     }
     state
@@ -263,10 +248,9 @@ async fn baseline(state: &State) -> Result<String, String> {
             if let Some(since) = chatgpt_store::get_meta(db, SINCE_KEY)? {
                 return Ok(since);
             }
-            let newest = chatgpt_store::active_watermark(db)?.unwrap_or_default();
             // Only chats updated after it count: the newest one already
             // existed when it was enabled.
-            let since = format!("{newest}\u{1}");
+            let since = chatgpt_store::active_watermark(db)?.unwrap_or_default();
             chatgpt_store::set_meta(db, SINCE_KEY, &since)?;
             Ok(since)
         })

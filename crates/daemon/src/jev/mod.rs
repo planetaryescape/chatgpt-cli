@@ -57,17 +57,11 @@ pub async fn check(
         let reporter = Reporter::for_client(progress);
         let asker = Asker::new(reporter.clone(), answers);
         let access = Access::for_client(access);
-        let display = profile().local_title_version;
-        let wanted = ids.clone();
-        let found = state
-            .db(move |db| chatgpt_store::by_ids(db, &wanted, display))
-            .await?;
-        let chats: HashMap<String, IndexedConversation> = found
-            .into_iter()
-            .map(|chat| (chat.id.clone(), chat))
+        let targets = crate::classify::chats(&state, ids.clone()).await?;
+        let chats: HashMap<String, IndexedConversation> = targets
+            .iter()
+            .map(|chat| (chat.id.clone(), chat.clone()))
             .collect();
-        let targets: Vec<IndexedConversation> =
-            ids.iter().filter_map(|id| chats.get(id).cloned()).collect();
         let classifier = Classifier {
             state: &state,
             reporter: &reporter,
@@ -83,10 +77,7 @@ pub async fn check(
         let classified = classifier.classify(&targets, options).await?;
         // A pass that changed a chat after it was judged leaves the
         // verdict resting on old content.
-        let wanted = ids.clone();
-        let now = state
-            .db(move |db| chatgpt_store::by_ids(db, &wanted, display))
-            .await?;
+        let now = crate::classify::chats(&state, ids.clone()).await?;
         let changed = |id: &str, judged_at: &str| {
             now.iter()
                 .find(|chat| chat.id == id)

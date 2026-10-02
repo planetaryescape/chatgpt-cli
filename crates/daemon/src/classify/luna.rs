@@ -27,37 +27,28 @@ pub async fn ask(
     let codex = access
         .which("codex")
         .ok_or("codex is required for gpt-6-luna.")?;
-    let dir = tempfile::Builder::new()
-        .prefix("chatgpt-cli-luna-")
-        .tempdir()
-        .map_err(|error| format!("couldn't make a scratch directory: {error}"))?;
-    let schema_file = dir.path().join("schema.json");
-    let output_file = dir.path().join("response.json");
-    std::fs::write(&schema_file, crate::js::stringify(schema))
-        .map_err(|error| format!("couldn't write the schema: {error}"))?;
-    let mut args = super::summarise::codex_args();
-    args.extend([
-        "-C".to_owned(),
-        dir.path().display().to_string(),
-        "--output-schema".to_owned(),
-        schema_file.display().to_string(),
-        "-o".to_owned(),
-        output_file.display().to_string(),
-        instructions.to_owned(),
-    ]);
-    let finished = super::tools::run(
-        "gpt-6-luna",
+    let run = super::summarise::codex_exec(
+        access,
         &codex,
-        &args,
-        input.as_bytes(),
-        dir.path(),
-        access.path_var().as_deref(),
+        "gpt-6-luna",
+        "chatgpt-cli-luna-",
+        &input,
+        |dir| {
+            let schema_file = dir.join("schema.json");
+            let output_file = dir.join("response.json");
+            std::fs::write(&schema_file, crate::js::stringify(schema))
+                .map_err(|error| format!("couldn't write the schema: {error}"))?;
+            let args = vec![
+                "--output-schema".to_owned(),
+                schema_file.display().to_string(),
+                "-o".to_owned(),
+                output_file.display().to_string(),
+                instructions.to_owned(),
+            ];
+            Ok((args, output_file))
+        },
     )
     .await?;
-    if finished.code != Some(0) {
-        return Err(format!("gpt-6-luna {}", finished.exit()));
-    }
-    let text = std::fs::read_to_string(&output_file)
-        .map_err(|_| "gpt-6-luna wrote no answer".to_owned())?;
+    let text = run.output.ok_or("gpt-6-luna wrote no answer")?;
     serde_json::from_str(&text).map_err(|_| "gpt-6-luna returned invalid JSON".to_owned())
 }
