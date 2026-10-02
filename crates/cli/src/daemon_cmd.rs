@@ -212,6 +212,39 @@ fn newest_log(dir: &Path) -> Option<PathBuf> {
     logs.pop()
 }
 
+/// The last `lines` lines of `file`, each ending in a newline, and the
+/// file's length. Reads backwards a block at a time, so only about as much
+/// as those lines take is read, however large the day's log is.
+fn tail_lines(file: &mut std::fs::File, lines: usize) -> std::io::Result<(String, u64)> {
+    const BLOCK: u64 = 64 * 1024;
+    let length = file.metadata()?.len();
+    let mut start = length;
+    let mut bytes: Vec<u8> = Vec::new();
+    // A last line without its newline counts as a line too.
+    let wanted = |bytes: &[u8]| {
+        let newlines = bytes.iter().filter(|&&byte| byte == b'\n').count();
+        let unterminated = usize::from(bytes.last().is_some_and(|&byte| byte != b'\n'));
+        newlines + unterminated > lines
+    };
+    while start > 0 && !wanted(&bytes) {
+        let from = start.saturating_sub(BLOCK);
+        let mut block = vec![0; usize::try_from(start - from).unwrap_or(0)];
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(&mut block)?;
+        block.extend_from_slice(&bytes);
+        bytes = block;
+        start = from;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let tail: Vec<&str> = text.lines().rev().take(lines).collect();
+    let tail = tail
+        .into_iter()
+        .rev()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    Ok((tail, length))
+}
+
 /// Print the last `lines` lines of the daemon's log; with `follow`, keep
 /// printing what's appended, moving to the next day's file when it appears.
 pub fn logs(paths: &Paths, lines: usize, follow: bool) -> Result<ExitCode, ClientError> {
@@ -219,16 +252,11 @@ pub fn logs(paths: &Paths, lines: usize, follow: bool) -> Result<ExitCode, Clien
     let mut current: Option<(PathBuf, u64)> = None;
     match newest_log(&dir) {
         Some(path) => {
-            let text = std::fs::read_to_string(&path).map_err(|error| io_error(&path, &error))?;
-            let tail: Vec<&str> = text.lines().rev().take(lines).collect();
-            data(
-                &tail
-                    .into_iter()
-                    .rev()
-                    .map(|line| format!("{line}\n"))
-                    .collect::<String>(),
-            );
-            current = Some((path, text.len() as u64));
+            let (tail, length) = std::fs::File::open(&path)
+                .and_then(|mut file| tail_lines(&mut file, lines))
+                .map_err(|error| io_error(&path, &error))?;
+            data(&tail);
+            current = Some((path, length));
         }
         None => note(&format!("No daemon log yet in {}.", dir.display())),
     }
@@ -259,5 +287,33 @@ pub fn logs(paths: &Paths, lines: usize, follow: bool) -> Result<ExitCode, Clien
         let read = file.read_to_string(&mut appended).unwrap_or(0);
         *offset += read as u64;
         data(&appended);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tail_of(contents: &str, lines: usize) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("log");
+        std::fs::write(&path, contents).expect("write");
+        let mut file = std::fs::File::open(&path).expect("open");
+        let (tail, length) = tail_lines(&mut file, lines).expect("tail");
+        assert_eq!(length, contents.len() as u64);
+        tail
+    }
+
+    #[test]
+    fn the_tail_is_the_last_lines_across_blocks() {
+        // Lines of 100 bytes, so the tail spans several 64 KiB blocks.
+        let log: String = (0..5_000).map(|n| format!("{n:099}\n")).collect();
+        let tail = tail_of(&log, 700);
+        let expected: String = (4_300..5_000).map(|n| format!("{n:099}\n")).collect();
+        assert_eq!(tail, expected);
+        assert_eq!(tail_of("a\nb\nc", 2), "b\nc\n", "an unfinished last line");
+        assert_eq!(tail_of("a\nb\n", 5), "a\nb\n");
+        assert_eq!(tail_of("", 5), "");
+        assert_eq!(tail_of("a\nb\n", 0), "");
     }
 }
