@@ -190,7 +190,7 @@ impl JevFilter<'_> {
     }
 
     /// Whether any Jev filter is set; without one, unjudged chats count.
-    fn narrows(&self) -> bool {
+    pub fn narrows(&self) -> bool {
         self.suggest.is_some() || self.topic.is_some() || self.brainstorm.is_some()
     }
 

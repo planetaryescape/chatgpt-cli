@@ -28,7 +28,7 @@ pub fn filter(args: FilterArgs) -> Filter {
     }
 }
 
-pub fn invalid(message: &str) -> ClientError {
+pub fn invalid(message: impl Into<String>) -> ClientError {
     ClientError::new(ErrorKind::InvalidInput, message)
 }
 

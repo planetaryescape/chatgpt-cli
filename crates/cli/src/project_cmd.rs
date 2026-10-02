@@ -3,7 +3,7 @@
 
 use std::process::ExitCode;
 
-use chatgpt_core::{ErrorKind, Paths};
+use chatgpt_core::Paths;
 use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{Filter, Project, Request, ResponseData, Row, Selection, SessionChoice};
 
@@ -11,6 +11,7 @@ use crate::args::{ProjectCommand, ProjectMoveArgs};
 use crate::change_cmd::{ask_showing_progress, finish, given_ids, preview, select, targets};
 use crate::output::{data, json, note, unexpected};
 use crate::prompt;
+use crate::reads::invalid;
 
 pub async fn run(
     paths: &Paths,
@@ -84,15 +85,8 @@ pub fn positive_limit(raw: Option<&str>) -> Result<Option<usize>, ClientError> {
     let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
         return Ok(None);
     };
-    let limit = chatgpt_core::js::number(raw);
-    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-    if !(limit.fract() == 0.0 && (1.0..=MAX_SAFE_INTEGER).contains(&limit)) {
-        return Err(ClientError::new(
-            ErrorKind::InvalidInput,
-            "--limit must be a positive integer.",
-        ));
-    }
-    Ok(Some(usize::try_from(limit as u64).unwrap_or(usize::MAX)))
+    let limit = crate::search_cmd::limit(raw)?;
+    Ok(Some(usize::try_from(limit).unwrap_or(usize::MAX)))
 }
 
 /// `resolveProject`: an exact id or name (ignoring case), else a unique id
@@ -109,7 +103,6 @@ fn resolve_project(projects: Vec<Project>, reference: &str) -> Result<Project, C
     } else {
         exact
     };
-    let invalid = |message: String| ClientError::new(ErrorKind::InvalidInput, message);
     match matches.len() {
         0 => Err(invalid(format!(
             "No project matching \"{reference}\". Run `chatgpt project list` to see names and ids."
@@ -142,13 +135,10 @@ async fn move_chats(
     let rows = select(paths, selection).await?;
     let project = resolve_project(projects(paths, session.clone()).await?, &args.project)?;
     if !project.can_write {
-        return Err(ClientError::new(
-            ErrorKind::InvalidInput,
-            format!(
-                "You do not have write access to project \"{}\".",
-                project.name
-            ),
-        ));
+        return Err(invalid(format!(
+            "You do not have write access to project \"{}\".",
+            project.name
+        )));
     }
     // One per chat, in the order first given.
     let mut unique: Vec<Row> = Vec::new();

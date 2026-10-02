@@ -377,3 +377,30 @@ fn suggest_applies_jev_suggestions_but_leaves_unsure_chats_out() {
         "{stderr}"
     );
 }
+
+#[test]
+fn another_accounts_session_changes_nothing() {
+    // The daemon reads test cookies from its own environment.
+    let mut env = Env::with_fake(chats());
+    env.extra_env.push((
+        "CHATGPT_TEST_COOKIE_CHROME".into(),
+        fake_chatgpt::OTHER_COOKIE.into(),
+    ));
+    env.cmd().arg("sync").assert().success();
+    for args in [
+        &["--browser", "chrome", "delete", "b-old", "c-old", "-y"][..],
+        &["--browser", "chrome", "rename", "b-old", "x"][..],
+    ] {
+        let (code, _, stderr) = run(&env, args);
+        assert_ne!(code, Some(0), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("another ChatGPT account") || stderr.contains("account"),
+            "{stderr}"
+        );
+    }
+    assert!(writes(&env).is_empty());
+    assert_eq!(
+        ids(&env, &["list"]),
+        ["a-new", "p-pinned", "b-old", "c-old"]
+    );
+}

@@ -17,7 +17,7 @@ fn invalid(message: String) -> Failure {
     Failure::new(ErrorKind::InvalidInput, message)
 }
 
-fn wrong_scope(archived: bool) -> &'static str {
+pub(crate) fn wrong_scope(archived: bool) -> &'static str {
     if archived {
         "archived; pass --archived or --all to include it"
     } else {
@@ -65,8 +65,12 @@ pub fn targets(
         let jev = jev_filter(filter, profile)
             .map_err(Failure::invalid)?
             .excluding_unsure(chosen.exclude_unsure);
-        let judgments = chatgpt_store::current_judgments(db, &profile.questions_version)
-            .map_err(Failure::store)?;
+        let judgments = if jev.narrows() {
+            chatgpt_store::current_judgments(db, &profile.questions_version)
+                .map_err(Failure::store)?
+        } else {
+            std::collections::HashMap::new()
+        };
         let chats = jev
             .apply(rows, |chat| judgments.get(&chat.id), profile)
             .map_err(Failure::policy)?;

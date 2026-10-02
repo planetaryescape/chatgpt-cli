@@ -18,9 +18,8 @@ pub struct CostMeter {
 impl CostMeter {
     /// One Jev call (`meter.add("Jev", "api", priceOf("jev", …), tokens)`).
     pub fn add_jev(&mut self, input_tokens: u64) {
-        let tokens = input_tokens as f64;
-        // priceOf: (uncached × input + cached × cachedInput + output × 0) / 1e6.
-        self.usd += (tokens * JEV_INPUT_PER_MILLION + 0.0 * JEV_INPUT_PER_MILLION + 0.0) / 1e6;
+        // priceOf with no cached input and free output.
+        self.usd += input_tokens as f64 * JEV_INPUT_PER_MILLION / 1e6;
         self.calls += 1;
         self.tokens += input_tokens;
     }

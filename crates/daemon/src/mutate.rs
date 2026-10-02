@@ -26,8 +26,6 @@ use crate::state::State;
 pub const DELAY: Duration = Duration::from_millis(250);
 const DELETE_WORKERS: usize = 3;
 
-const RENAME_500: &str = "ChatGPT returned a server error. On older chats the rename usually applies anyway; run `chatgpt sync` and `chatgpt list --title` to check.";
-
 /// Set when the request's handler is dropped (its client went away), so a
 /// bulk task stops before its next item.
 pub struct StopOnDrop(pub Arc<AtomicBool>);
@@ -120,9 +118,11 @@ pub async fn apply(
     };
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
+    // Pinned to the index's account: another account's session would
+    // answer 404 for every chat, and the index would drop them all.
+    let api = crate::sync::pinned_api(state, session).await?;
     let state = Arc::clone(state);
     let reporter = Reporter::for_client(progress);
-    let api = Api::new(Arc::clone(&state.sessions), session);
     let task = tokio::spawn(async move {
         let _foreground = state.indexer.foreground();
         let step = reporter.step(doing, Some(targets.len()));
@@ -209,15 +209,8 @@ pub async fn rename(
         let (chat, synced_at) = state
             .db(move |db| Ok(select::one(db, &reference, archived, all, &profile)))
             .await??;
-        let api = Api::new(Arc::clone(&state.sessions), session);
-        if let Err(error) = api.rename(&chat.id, &title).await {
-            // Observed 2026-09-27: legacy (pre-2025) chats answer 500 yet
-            // the sidebar title changes, and only the full list reads it back.
-            if error.status == Some(500) {
-                return Err(Failure::new(ErrorKind::Api, RENAME_500));
-            }
-            return Err(error.into());
-        }
+        let api = crate::sync::pinned_api(&state, session).await?;
+        api.rename(&chat.id, &title).await?;
         let id = chat.id.clone();
         state
             .db_write(move |db| chatgpt_store::rename(db, &id, &title))

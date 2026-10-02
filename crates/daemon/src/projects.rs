@@ -26,9 +26,9 @@ pub async fn move_chats(
 ) -> Result<Outcome, Failure> {
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
+    let api = crate::sync::pinned_api(state, session).await?;
     let state = Arc::clone(state);
     let reporter = Reporter::for_client(progress);
-    let api = Api::new(Arc::clone(&state.sessions), session);
     // Its own task, so a client that goes away never leaves a chat moved in
     // ChatGPT but not in the index.
     let task = tokio::spawn(async move {

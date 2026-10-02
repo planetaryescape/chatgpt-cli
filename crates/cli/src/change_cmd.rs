@@ -122,7 +122,8 @@ pub async fn change(
         let ResponseData::Approved { ids } = ask_showing_progress(paths, request).await? else {
             return Err(unexpected());
         };
-        rows.retain(|row| ids.contains(&row.id));
+        let approved: std::collections::HashSet<String> = ids.into_iter().collect();
+        rows.retain(|row| approved.contains(&row.id));
     }
     apply(paths, action, &rows, args.dry_run, args.yes, session).await
 }

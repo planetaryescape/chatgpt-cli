@@ -35,14 +35,6 @@ fn invalid(message: String) -> Failure {
     Failure::new(ErrorKind::InvalidInput, message)
 }
 
-fn wrong_scope(archived: bool) -> &'static str {
-    if archived {
-        "archived; pass --archived or --all to include it"
-    } else {
-        "active; omit --archived or pass --all to include it"
-    }
-}
-
 pub async fn export(
     state: &State,
     reference: String,
@@ -63,7 +55,7 @@ pub async fn export(
     if !all && is_archived != archived {
         return Err(invalid(format!(
             "Conversation is {}.",
-            wrong_scope(is_archived)
+            crate::select::wrong_scope(is_archived)
         )));
     }
     let (markdown, title) = render(&value)?;

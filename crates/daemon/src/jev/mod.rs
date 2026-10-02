@@ -26,10 +26,10 @@ use chatgpt_core::ErrorKind;
 use chatgpt_protocol::{ChatAction, Progress, Secret, SessionChoice};
 use chatgpt_store::{IndexedConversation, JudgmentRow, NewJudgment, Transcript, Unindexed};
 use futures_util::StreamExt;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::api::{Api, BATCH_MAX};
+use crate::api::BATCH_MAX;
 use crate::handlers::Failure;
 use crate::policy::{Judged, Profile};
 use crate::progress::Reporter;
@@ -60,8 +60,7 @@ pub async fn check(
     progress: Option<UnboundedSender<Progress>>,
 ) -> Result<Vec<String>, Failure> {
     let action = match action {
-        ChatAction::Archive => "archive",
-        ChatAction::Delete => "delete",
+        ChatAction::Archive | ChatAction::Delete => action.as_str(),
         _ => {
             return Err(Failure::new(
                 ErrorKind::InvalidInput,
@@ -87,7 +86,7 @@ pub async fn check(
         let classifier = Classifier {
             state: &state,
             reporter: &reporter,
-            api: Api::new(Arc::clone(&state.sessions), session),
+            session,
             api_key,
         };
         let classified = classifier.classify(&targets).await?;
@@ -105,15 +104,7 @@ pub async fn check(
             let verdict = Judged::new(row, &GUARD_PROFILE)
                 .and_then(|judged| judged.verdict())
                 .map_err(Failure::policy)?;
-            // `approves`: a delete needs a confident delete; an archive,
-            // anything Jev wouldn't keep.
-            let backs = !verdict.unsure
-                && if action == "delete" {
-                    verdict.suggestion == "delete"
-                } else {
-                    verdict.suggestion != "keep"
-                };
-            if backs {
+            if verdict.backs(action == "delete") {
                 approved.push(id.clone());
             } else {
                 let suggestion = format!(
@@ -163,7 +154,7 @@ struct Classified {
 struct Classifier<'a> {
     state: &'a Arc<State>,
     reporter: &'a Reporter,
-    api: Api,
+    session: SessionChoice,
     api_key: Option<Secret>,
 }
 
@@ -359,6 +350,8 @@ impl Classifier<'_> {
             ));
             return Ok(());
         }
+        // Pinned to the index's account, as every read that feeds it is.
+        let api = crate::sync::pinned_api(self.state, self.session.clone()).await?;
         let _foreground = self.state.indexer.foreground();
         let versions = crate::search::versions(&self.state.profile());
         let step = self
@@ -367,7 +360,7 @@ impl Classifier<'_> {
         let mut downloaded = 0;
         for (number, batch) in to_fetch.chunks(BATCH_MAX).enumerate() {
             let ids: Vec<String> = batch.iter().map(|chat| chat.id.clone()).collect();
-            match self.api.batch(&ids).await {
+            match api.batch(&ids).await {
                 Ok(items) => {
                     let mut items: HashMap<String, _> = items
                         .into_iter()
@@ -591,23 +584,14 @@ impl Judge<'_> {
             answers: crate::js::stringify(&result.answers),
             classified_at: crate::js::now_iso(),
         };
-        let row = JudgmentRow {
-            id: judgment.id.clone(),
-            update_time: judgment.update_time.clone(),
-            version: judgment.version.clone(),
-            content_kind: judgment.content_kind.clone(),
-            answers: judgment.answers.clone(),
-            classified_at: judgment.classified_at.clone(),
-            topic: result
-                .answers
-                .pointer("/topic/choice")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            ..JudgmentRow::default()
-        };
+        // Read back as every other judgment is read (the topic column
+        // included).
         let saved = self
             .state
-            .db_write(move |db| chatgpt_store::save_judgment(db, &judgment))
+            .db_write(move |db| {
+                chatgpt_store::save_judgment(db, &judgment)?;
+                chatgpt_store::judgment(db, &judgment.id, &judgment.update_time, &judgment.version)
+            })
             .await;
         // Counted after the save, with no await before the step's update,
         // so the running cost there includes this call and the ones before
@@ -616,7 +600,8 @@ impl Judge<'_> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .add_jev(result.input_tokens);
-        saved.map_err(|failure| failure.message)?;
-        Ok(row)
+        saved
+            .map_err(|failure| failure.message)?
+            .ok_or_else(|| "the judgment wasn't saved".to_owned())
     }
 }

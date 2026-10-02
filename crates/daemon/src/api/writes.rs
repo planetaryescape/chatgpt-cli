@@ -23,6 +23,8 @@ use serde_json::{Value, json};
 
 use super::{Api, ApiError, SendError, decode_error};
 
+const RENAME_500: &str = "ChatGPT returned a server error. On older chats the rename usually applies anyway; run `chatgpt sync` and `chatgpt list --title` to check.";
+
 /// `/backend-api/conversation/{id}`.
 fn conversation_path(id: &str) -> String {
     format!("/backend-api/conversation/{id}")
@@ -101,9 +103,19 @@ impl Api {
     pub async fn rename(&self, id: &str, title: &str) -> Result<(), ApiError> {
         let path = format!("/backend-api/conversation/id/{id}/rename");
         let body = json!({ "title": title });
-        self.write(HttpMethod::Post, &path, Some(&body), Resend::OnlyIfRefused)
+        match self
+            .write(HttpMethod::Post, &path, Some(&body), Resend::OnlyIfRefused)
             .await
-            .map(drop)
+        {
+            Ok(_) => Ok(()),
+            // Observed 2026-09-27: legacy (pre-2025) chats answer 500 yet
+            // the sidebar title changes, and only the full list reads it back.
+            Err(error) if error.status == Some(500) => Err(ApiError {
+                status: Some(500),
+                ..ApiError::new(ErrorKind::Api, RENAME_500)
+            }),
+            Err(error) => Err(error),
+        }
     }
 
     /// `setConversationProject`: `project_id` is `""` to take the chat out

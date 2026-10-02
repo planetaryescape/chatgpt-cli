@@ -27,7 +27,7 @@ enum Format {
 }
 
 /// `Number(limit)`, a safe integer of at least 1.
-fn limit(raw: &str) -> Result<u64, ClientError> {
+pub fn limit(raw: &str) -> Result<u64, ClientError> {
     let limit = number(raw);
     const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
     if limit.fract() != 0.0 || !(1.0..=MAX_SAFE).contains(&limit) {
@@ -59,7 +59,7 @@ pub async fn search(
         ));
     }
     if args.remote && limit > REMOTE_SEARCH_MAX {
-        return Err(invalid(&format!(
+        return Err(invalid(format!(
             "--remote supports --limit up to {REMOTE_SEARCH_MAX} (ChatGPT's search API limit)."
         )));
     }

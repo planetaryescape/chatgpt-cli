@@ -26,6 +26,19 @@ fn in_band(p: f64) -> bool {
     p > UNSURE_BAND.0 && p < UNSURE_BAND.1
 }
 
+impl Verdict {
+    /// `approves`: whether Jev backs `delete` (a confident delete) or
+    /// `archive` (anything it wouldn't keep, confidently).
+    pub fn backs(&self, delete: bool) -> bool {
+        !self.unsure
+            && if delete {
+                self.suggestion == "delete"
+            } else {
+                self.suggestion != "keep"
+            }
+    }
+}
+
 /// A verdict as `verdictOf` returns it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {

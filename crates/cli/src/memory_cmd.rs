@@ -4,8 +4,8 @@
 
 use std::process::ExitCode;
 
+use chatgpt_core::Paths;
 use chatgpt_core::js::{collapse_spaces, trim};
-use chatgpt_core::{ErrorKind, Paths};
 use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{Request, ResponseData, SessionChoice};
 use serde_json::Value;
@@ -15,10 +15,7 @@ use crate::change_cmd::{finish, given_ids, preview};
 use crate::output::{data, json, note, unexpected};
 use crate::project_cmd::positive_limit;
 use crate::prompt;
-
-fn invalid(message: impl Into<String>) -> ClientError {
-    ClientError::new(ErrorKind::InvalidInput, message)
-}
+use crate::reads::invalid;
 
 pub async fn run(
     paths: &Paths,
