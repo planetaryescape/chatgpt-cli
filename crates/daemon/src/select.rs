@@ -76,19 +76,22 @@ pub fn targets(
         return Ok((chats, synced_at));
     };
     // Explicit ids bypass the filters (and `--pinned`): each must be found
-    // once and be in scope.
-    let chats = ids
-        .iter()
-        .map(|id| {
-            target(
-                db,
-                id,
-                filter.archived,
-                filter.all,
-                profile.local_title_version,
-            )
-        })
-        .collect::<Result<_, _>>()?;
+    // once and be in scope. A chat named twice (`delete a a`, or a prefix
+    // and its full id) is acted on once, where it first appears; the TS
+    // CLI would act on it twice.
+    let mut chats: Vec<IndexedConversation> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let chat = target(
+            db,
+            id,
+            filter.archived,
+            filter.all,
+            profile.local_title_version,
+        )?;
+        if !chats.iter().any(|seen| seen.id == chat.id) {
+            chats.push(chat);
+        }
+    }
     Ok((chats, synced_at))
 }
 

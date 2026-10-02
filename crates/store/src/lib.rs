@@ -110,7 +110,7 @@ pub use conversations::{
 };
 pub use judgments::{current_judgments, judgment, memory_judgment, save_judgment, summary};
 pub use legacy::import_legacy;
-pub use meta::{account, get_meta, set_account, set_meta};
+pub use meta::{account, bind_account, get_meta, set_meta};
 pub use reconcile::{candidates, preserve};
 pub use search::{
     coverage, lexical, prune_search, replace_chunks, save_indexed, transcript, unindexed,

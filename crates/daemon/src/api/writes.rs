@@ -138,7 +138,10 @@ impl Api {
             Ok(text) => text,
             // Older chats can answer 500 after the move has applied.
             Err(error) if error.status == Some(500) => {
-                let chat: Chat = self.json(HttpMethod::Get, &path, None).await?;
+                // Unconfirmed either way if the check itself fails.
+                let chat: Chat = self.json(HttpMethod::Get, &path, None).await.map_err(|_| {
+                    unknown_outcome(&path, "ChatGPT answered 500 and the check failed for")
+                })?;
                 if chat.gizmo_id.unwrap_or_default() == project_id {
                     return Ok(());
                 }

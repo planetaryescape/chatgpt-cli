@@ -11,9 +11,16 @@ use chatgpt_launcher::ClientError;
 /// Ask `question` and return the answer, trimmed. End of input is an empty
 /// answer.
 pub fn ask(question: &str) -> Result<String, ClientError> {
+    // Never take an answer to a question that wasn't shown.
     let mut stderr = std::io::stderr().lock();
-    let _ = write!(stderr, "{question}");
-    let _ = stderr.flush();
+    write!(stderr, "{question}")
+        .and_then(|()| stderr.flush())
+        .map_err(|error| {
+            ClientError::new(
+                ErrorKind::InvalidInput,
+                format!("can't show the confirmation prompt ({error}); pass -y to skip it"),
+            )
+        })?;
     drop(stderr);
     let mut line = String::new();
     let stdin = std::io::stdin();

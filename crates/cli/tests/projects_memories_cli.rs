@@ -390,3 +390,19 @@ fn projects_and_memories_are_refused_for_another_accounts_session() {
         "{calls:?}"
     );
 }
+
+#[test]
+fn a_move_whose_500_cant_be_checked_may_have_applied() {
+    let env = synced();
+    {
+        let mut state = env.fake().state();
+        state.project_500.insert("a-loose".into());
+        state.fail_detail = 1;
+    }
+    let (code, _, stderr) = run(&env, &["project", "add", "Writing", "a-loose", "-y"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.contains("failed: a-loose Loose chat: ChatGPT answered 500 and the check failed for /backend-api/conversation/a-loose, so it may have applied; run `chatgpt sync` and check before trying again\n"),
+        "{stderr}"
+    );
+}

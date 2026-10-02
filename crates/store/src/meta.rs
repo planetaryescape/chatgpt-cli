@@ -25,6 +25,17 @@ pub fn account(connection: &Connection) -> Result<Option<String>> {
     get_meta(connection, "account_id")
 }
 
-pub fn set_account(connection: &Connection, account: &str) -> Result<()> {
-    set_meta(connection, "account_id", account)
+/// Bind the index to `account` unless it's bound already, in one
+/// statement, and return the account it's bound to: two requests that both
+/// found it unbound can't both win.
+pub fn bind_account(connection: &Connection, account: &str) -> Result<String> {
+    connection.execute(
+        "insert into meta values ('account_id', ?) on conflict (key) do nothing",
+        [account],
+    )?;
+    Ok(connection.query_row(
+        "select value from meta where key = 'account_id'",
+        [],
+        |row| row.get(0),
+    )?)
 }

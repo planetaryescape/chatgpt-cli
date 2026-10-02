@@ -214,3 +214,19 @@ fn renames_project_moves_and_exact_lookups_write_the_index() {
     );
     assert_eq!(store.read(|db| summary(db, "abc", "t1", 9)).unwrap(), None);
 }
+
+#[test]
+fn the_first_account_to_bind_the_index_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    assert_eq!(
+        store.write(|db| bind_account(db, "user-a")).unwrap(),
+        "user-a"
+    );
+    assert_eq!(
+        store.write(|db| bind_account(db, "user-b")).unwrap(),
+        "user-a",
+        "a later binder sees the winner"
+    );
+    assert_eq!(store.read(account).unwrap().as_deref(), Some("user-a"));
+}

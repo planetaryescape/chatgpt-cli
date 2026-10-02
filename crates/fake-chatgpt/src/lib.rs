@@ -170,6 +170,8 @@ pub struct State {
     pub unconfirmed_memories: HashSet<String>,
     /// How the next writes are answered instead, in order.
     pub fail_writes: VecDeque<WriteFailure>,
+    /// Answer this many next single-chat reads with a 500.
+    pub fail_detail: u32,
 }
 
 pub struct FakeChatGpt {
@@ -328,6 +330,10 @@ impl Respond for Handler {
                 ResponseTemplate::new(200)
                     .set_body_json(json!({ "items": items, "total": total }))
                     .set_delay(delay)
+            }
+            Route::Detail if state.fail_detail > 0 => {
+                state.fail_detail -= 1;
+                ResponseTemplate::new(500)
             }
             Route::Detail => {
                 let id = request.url.path().rsplit('/').next().unwrap_or("");

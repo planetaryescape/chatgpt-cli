@@ -442,3 +442,17 @@ fn a_sync_running_during_a_change_never_undoes_it() {
         "deleted stays deleted; archived stays archived"
     );
 }
+
+#[test]
+fn a_chat_named_twice_is_changed_once() {
+    let env = synced();
+    let (code, _, stderr) = run(&env, &["delete", "b-old", "b-o", "b-old", "-n"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stderr,
+        "b-old  2024-01-01       Old taxes\ndry run: would delete 1 conversation(s).\n"
+    );
+    let (code, _, stderr) = run(&env, &["archive", "c-old", "c-old", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(writes(&env), ["PATCH /backend-api/conversation/c-old"]);
+}
