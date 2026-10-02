@@ -643,3 +643,21 @@ fn an_export_larger_than_a_frame_streams_byte_identical() {
         "-o"
     );
 }
+
+#[test]
+fn a_session_refused_mid_indexing_ends_the_run_without_setting_chats_aside() {
+    let env = Env::with_fake(chats());
+    env.fake().state().reject_batch = 100;
+    env.cmd().arg("sync").assert().success();
+    let index = env.wait_for_indexer();
+    assert_eq!(index["failed"], 0, "{index}");
+    assert!(
+        index["last_error"].as_str().is_some_and(|error| error.contains("401")),
+        "{index}"
+    );
+    // Once ChatGPT takes the session again, every chat is fetched at once:
+    // none waits out an hour.
+    env.fake().state().reject_batch = 0;
+    env.cmd().arg("search-index").assert().success();
+    wait_indexed(&env);
+}

@@ -152,6 +152,9 @@ pub struct State {
     pub batch_bodies: Vec<Vec<String>>,
     /// Answer this many next batch reads with a 500.
     pub fail_batch: u32,
+    /// Answer this many next batch reads with a 401, as for a session
+    /// ChatGPT no longer accepts.
+    pub reject_batch: u32,
     /// `global/search` items, served in order (at most the asked `limit`).
     pub search_items: Vec<Value>,
     /// The body of every `global/search` request, in order.
@@ -263,6 +266,10 @@ impl Respond for Handler {
             state.rate_limit_batch = (left > 1).then_some((left - 1, retry_after));
             return ResponseTemplate::new(429)
                 .insert_header("retry-after", retry_after.to_string());
+        }
+        if matches!(self.route, Route::Batch) && state.reject_batch > 0 {
+            state.reject_batch -= 1;
+            return ResponseTemplate::new(401);
         }
         if matches!(self.route, Route::Batch) && state.fail_batch > 0 {
             state.fail_batch -= 1;

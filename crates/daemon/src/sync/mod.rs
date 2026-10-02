@@ -140,6 +140,11 @@ impl Syncer {
         self.running.lock().await
     }
 
+    /// [`Syncer::exclusive`] if no pass runs now, without waiting.
+    pub fn try_exclusive(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.running.try_lock().ok()
+    }
+
     /// Whether a pass is running now.
     pub fn is_running(&self) -> bool {
         self.running.try_lock().is_err()
