@@ -350,7 +350,21 @@ fn an_interrupted_indexer_resumes_without_fetching_again() {
         std::thread::sleep(Duration::from_millis(50));
     }
     env.cmd().args(["daemon", "stop"]).assert().success();
-    let asked_before: Vec<String> = batch_ids(&env);
+    // What the stopped daemon saved, rather than what it asked for: the
+    // batch in flight at the stop was asked for but never saved.
+    let saved: Vec<String> = {
+        let db = env.index_db();
+        let mut statement = db
+            .prepare("select conversation_id from search_indexed")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(saved.len() >= 10, "{saved:?}");
+    let asked_before = batch_ids(&env).len();
     env.fake().state().batch_delay_ms = 0;
 
     // A new daemon chunks nothing it has and fetches only the rest, after
@@ -358,9 +372,9 @@ fn an_interrupted_indexer_resumes_without_fetching_again() {
     env.cmd().arg("sync").assert().success();
     wait_indexed(&env);
     let asked = batch_ids(&env);
-    let again: Vec<&String> = asked[asked_before.len()..]
+    let again: Vec<&String> = asked[asked_before..]
         .iter()
-        .filter(|id| asked_before[..asked_before.len().saturating_sub(10)].contains(id))
+        .filter(|id| saved.contains(id))
         .collect();
     assert!(again.is_empty(), "fetched again: {again:?}");
     assert_eq!(status(&env)["indexed"], 35);
