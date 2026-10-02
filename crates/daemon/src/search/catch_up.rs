@@ -8,27 +8,23 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chatgpt_embed::MODEL_VERSION;
 use chatgpt_protocol::{Progress, SearchIndexReport};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::Coverage;
 use crate::handlers::Failure;
 use crate::progress::{Reporter, Step};
 use crate::reads::require_synced;
 use crate::state::State;
 
-const POLL: Duration = Duration::from_millis(500);
+/// Each poll counts the scope's chunks and vectors (tens of ms on BK's
+/// 47,000 chunks), so not too often.
+const POLL: Duration = Duration::from_secs(1);
 
-/// Chats, indexed chats, chunks and embedded chunks in scope.
-async fn counts(state: &State, archived: Option<bool>) -> Result<[u64; 4], Failure> {
+async fn counts(state: &State, archived: Option<bool>) -> Result<Coverage, Failure> {
     let versions = super::versions(&state.profile());
     state
-        .db(move |db| {
-            let (chats, indexed) = chatgpt_store::coverage(db, archived, versions)?;
-            let (chunks, embedded) =
-                chatgpt_store::vector_coverage(db, archived, versions, MODEL_VERSION)?;
-            Ok([chats, indexed, chunks, embedded])
-        })
+        .db(move |db| super::coverage(db, archived, versions))
         .await
 }
 
@@ -48,17 +44,28 @@ pub async fn search_index(
 
     // Each step counts what was left when it began, as the TS CLI's
     // counts the chats it downloads and the chunks it embeds.
-    let [chats, indexed_before, ..] = counts(state, scope).await?;
+    let start = counts(state, scope).await?;
+    let indexed_before = start.indexed;
     let mut indexing = Some(reporter.step(
         "Indexing search transcripts",
-        Some(chats.saturating_sub(indexed_before) as usize),
+        Some(start.chats.saturating_sub(indexed_before) as usize),
     ));
     let mut embedding: Option<(Step, u64)> = None;
-    let [chats, indexed, chunks, embedded] = loop {
+    let Coverage {
+        chats,
+        indexed,
+        chunks,
+        embedded,
+    } = loop {
         let indexer_busy = state.indexer.status().in_progress;
         let embedder_busy = state.embedder.status().in_progress;
         let now = counts(state, scope).await?;
-        let [_, indexed, chunks, embedded] = now;
+        let Coverage {
+            indexed,
+            chunks,
+            embedded,
+            ..
+        } = now;
         let indexed_now = indexed.saturating_sub(indexed_before);
         if let Some(step) = &indexing {
             step.update(indexed_now as usize);

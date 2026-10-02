@@ -277,10 +277,7 @@ pub fn lexical(
                     updated: row.get(2)?,
                     archived: row.get::<_, i64>(3)? != 0,
                     bm25: row.get(4)?,
-                    snippet: match row.get_ref(5)? {
-                        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.to_vec(),
-                        _ => Vec::new(),
-                    },
+                    snippet: crate::vectors::text_bytes(row.get_ref(5)?),
                 })
             },
         )?

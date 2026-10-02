@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use chatgpt_core::ErrorKind;
 use chatgpt_core::js::collapse_spaces;
-use chatgpt_protocol::{SearchHit, SearchResults, SessionChoice};
+use chatgpt_protocol::{REMOTE_SEARCH_MAX, SearchHit, SearchResults, SessionChoice};
 
 use super::{slice_units, with_display_titles};
 use crate::api::{Api, GlobalSearchHit};
@@ -16,8 +16,6 @@ use crate::handlers::Failure;
 use crate::js::iso_from_seconds;
 use crate::state::State;
 
-/// ChatGPT's search returns at most this many.
-const MAX_REMOTE: u64 = 40;
 const SNIPPET_UNITS: usize = 160;
 
 /// How many results to ask ChatGPT for: more than `limit` when some will
@@ -26,7 +24,7 @@ fn requested(limit: u64, all: bool) -> u64 {
     if all {
         limit
     } else {
-        MAX_REMOTE.min(limit.saturating_mul(5))
+        REMOTE_SEARCH_MAX.min(limit.saturating_mul(5))
     }
 }
 

@@ -13,7 +13,7 @@ use chatgpt_store::ChunkVersions;
 use indexmap::IndexMap;
 use rusqlite::Connection;
 
-use super::{bun_text, excerpt, query::lexical_hits, with_display_titles};
+use super::{Coverage, bun_text, coverage, excerpt, query::lexical_hits, with_display_titles};
 use crate::handlers::Failure;
 use crate::reads::require_synced;
 use crate::state::State;
@@ -61,30 +61,24 @@ pub fn semantic_hits(
             return Ok(());
         }
         let score = dot(query, row.embedding);
-        match best.get_mut(row.conversation_id) {
-            Some(previous) if score <= previous.score => {}
-            Some(previous) => {
-                *previous = Best {
-                    chunk_id: row.chunk_id,
-                    title: row.title.to_owned(),
-                    updated: row.updated.to_owned(),
-                    archived: row.archived,
-                    score,
-                };
-            }
-            None => {
-                best.insert(
-                    row.conversation_id.to_owned(),
-                    Best {
-                        chunk_id: row.chunk_id,
-                        title: row.title.to_owned(),
-                        updated: row.updated.to_owned(),
-                        archived: row.archived,
-                        score,
-                    },
-                );
-            }
+        // A later chunk replaces an earlier one only with a higher score;
+        // `insert` keeps the chat where it was first seen.
+        if best
+            .get(row.conversation_id)
+            .is_some_and(|previous| score <= previous.score)
+        {
+            return Ok(());
         }
+        best.insert(
+            row.conversation_id.to_owned(),
+            Best {
+                chunk_id: row.chunk_id,
+                title: row.title.to_owned(),
+                updated: row.updated.to_owned(),
+                archived: row.archived,
+                score,
+            },
+        );
         Ok(())
     })
     .map_err(Failure::store)?;
@@ -145,15 +139,6 @@ pub fn fuse(lexical: Vec<SearchHit>, semantic: Vec<SearchHit>, limit: u64) -> Ve
         .collect()
 }
 
-/// The search's coverage of its scope.
-struct Coverage {
-    synced_at: String,
-    chats: u64,
-    indexed: u64,
-    chunks: u64,
-    embedded: u64,
-}
-
 /// Why there's nothing to rank by meaning yet.
 fn not_ready(state: &State, coverage: &Coverage) -> Failure {
     let message = match state.embedder.status().waiting {
@@ -166,6 +151,21 @@ fn not_ready(state: &State, coverage: &Coverage) -> Failure {
     Failure::new(ErrorKind::NotSynced, message)
 }
 
+/// `searchLocal`'s hybrid: `limit * 4` from each ranking, fused.
+fn hybrid_hits(
+    db: &Connection,
+    query: &str,
+    vector: &[f32],
+    limit: u64,
+    archived: Option<bool>,
+    versions: ChunkVersions,
+) -> Result<Vec<SearchHit>, Failure> {
+    let wider = limit.saturating_mul(4);
+    let lexical = lexical_hits(db, query, wider, archived, versions)?;
+    let semantic = semantic_hits(db, vector, wider, archived, versions)?;
+    Ok(fuse(lexical, semantic, limit))
+}
+
 /// `search <query> --semantic` or `--hybrid`. `archived`: `None` for `--all`.
 pub async fn search(
     state: &State,
@@ -176,25 +176,18 @@ pub async fn search(
 ) -> Result<SearchResults, Failure> {
     let profile = state.profile();
     let versions = super::versions(&profile);
-    let coverage = state
-        .db(move |db| {
-            let synced_at = require_synced(db);
-            let (chats, indexed) = chatgpt_store::coverage(db, archived, versions)?;
-            let (chunks, embedded) =
-                chatgpt_store::vector_coverage(db, archived, versions, MODEL_VERSION)?;
-            Ok(synced_at.map(|synced_at| Coverage {
-                synced_at,
-                chats,
-                indexed,
-                chunks,
-                embedded,
-            }))
-        })
-        .await??;
+    // The query's vector doesn't depend on the counts: make both at once.
+    let read = state.db(move |db| {
+        let synced_at = require_synced(db);
+        let coverage = coverage(db, archived, versions)?;
+        Ok(synced_at.map(|synced_at| (synced_at, coverage)))
+    });
+    let (read, vector) = tokio::join!(read, state.embedder.embed_query(&query));
+    let (synced_at, coverage) = read??;
     if coverage.embedded == 0 {
         return Err(not_ready(state, &coverage));
     }
-    let vector = state.embedder.embed_query(&query).await.map_err(|why| {
+    let vector = vector.map_err(|why| {
         Failure::new(
             ErrorKind::Internal,
             format!("Couldn't embed the query: {why}"),
@@ -203,20 +196,19 @@ pub async fn search(
     let hits = state
         .db(move |db| {
             Ok(match mode {
-                SearchMode::Hybrid => (|| {
-                    let wider = limit.saturating_mul(4);
-                    let lexical = lexical_hits(db, &query, wider, archived, versions)?;
-                    let semantic = semantic_hits(db, &vector, wider, archived, versions)?;
-                    with_display_titles(db, fuse(lexical, semantic, limit), &profile)
-                })(),
-                _ => semantic_hits(db, &vector, limit, archived, versions)
-                    .and_then(|hits| with_display_titles(db, hits, &profile)),
-            })
+                SearchMode::Hybrid => hybrid_hits(db, &query, &vector, limit, archived, versions),
+                SearchMode::Semantic => semantic_hits(db, &vector, limit, archived, versions),
+                SearchMode::Lexical | SearchMode::Unknown => Err(Failure::new(
+                    ErrorKind::Internal,
+                    "not a semantic search mode",
+                )),
+            }
+            .and_then(|hits| with_display_titles(db, hits, &profile)))
         })
         .await??;
     Ok(SearchResults {
         hits,
-        synced_at: coverage.synced_at,
+        synced_at,
         chats: coverage.chats,
         indexed: coverage.indexed,
         chunks: coverage.chunks,

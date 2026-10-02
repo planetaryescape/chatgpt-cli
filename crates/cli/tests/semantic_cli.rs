@@ -137,7 +137,7 @@ fn search_index_waits_for_the_daemon_and_reports_the_scope() {
     let last = stderr.lines().last().unwrap();
     assert!(last.starts_with("Search index in "), "{stderr}");
     assert!(last.contains(": 2/2 chats, "), "{last}");
-    let embeddings = env.status()["search_index"]["embeddings"].clone();
+    let embeddings = env.status()["embeddings"].clone();
     assert_eq!(embeddings["embedded"], embeddings["chunks"]);
     let (_, _, stderr) = run(&env, &["search-index", "--all"]);
     assert!(
@@ -182,11 +182,7 @@ fn embedding_steps_aside_for_a_sync_and_a_query() {
         .push(("CHATGPT_TEST_EMBED_DELAY_MS".into(), "100".into()));
     synced(&env);
     env.wait_for_indexer();
-    let embedded = |env: &Env| {
-        env.status()["search_index"]["embeddings"]["embedded"]
-            .as_u64()
-            .unwrap()
-    };
+    let embedded = |env: &Env| env.status()["embeddings"]["embedded"].as_u64().unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     while embedded(&env) == 0 {
         assert!(Instant::now() < deadline, "nothing embedded");

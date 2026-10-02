@@ -153,7 +153,7 @@ fn mean_normalized(hidden: &[f32], tokens: usize) -> Vec<f32> {
 /// A stand-in for tests that need vectors but not the model: a hashed bag
 /// of ASCII words, so texts sharing words point the same way. It's simple
 /// enough to compute bit for bit in JS too, which the parity harness does
-/// (`crates/cli/tests/parity_semantic.rs`).
+/// (`crates/cli/tests/parity_export_search.rs`).
 pub struct FakeEmbedder {
     /// How long each text takes, to stand in for the model's speed.
     pub delay: std::time::Duration,

@@ -8,7 +8,9 @@ use std::process::ExitCode;
 use chatgpt_core::js::{collapse_spaces, number, trim};
 use chatgpt_core::{format_duration, js_number_string};
 use chatgpt_launcher::ClientError;
-use chatgpt_protocol::{Request, ResponseData, SearchHit, SearchMode, SessionChoice};
+use chatgpt_protocol::{
+    REMOTE_SEARCH_MAX, Request, ResponseData, SearchHit, SearchMode, SessionChoice,
+};
 use unicode_width::UnicodeWidthStr;
 
 use crate::args::{ScopeArgs, SearchArgs};
@@ -45,9 +47,6 @@ fn format(raw: Option<&str>) -> Result<Format, ClientError> {
     }
 }
 
-/// ChatGPT's search API returns at most this many.
-const REMOTE_MAX: u64 = 40;
-
 pub async fn search(
     paths: &chatgpt_core::Paths,
     args: SearchArgs,
@@ -59,10 +58,10 @@ pub async fn search(
             "Choose only one of --semantic, --hybrid, or --remote.",
         ));
     }
-    if args.remote && limit > REMOTE_MAX {
-        return Err(invalid(
-            "--remote supports --limit up to 40 (ChatGPT's search API limit).",
-        ));
+    if args.remote && limit > REMOTE_SEARCH_MAX {
+        return Err(invalid(&format!(
+            "--remote supports --limit up to {REMOTE_SEARCH_MAX} (ChatGPT's search API limit)."
+        )));
     }
     let format = format(args.format.as_deref())?;
     let mode = if args.hybrid {

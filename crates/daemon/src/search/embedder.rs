@@ -44,6 +44,7 @@ const UNLOAD_CHECK: Duration = Duration::from_secs(60);
 /// but not the model (and no download).
 const TEST_EMBEDDER_ENV: &str = "CHATGPT_TEST_EMBEDDER";
 
+#[derive(Default)]
 pub struct Embedder {
     wake: Notify,
     inner: Mutex<Inner>,
@@ -60,6 +61,9 @@ struct Inner {
     done: u64,
     chunks: u64,
     embedded: u64,
+    /// The request generation `chunks` was counted for: a later wake means
+    /// the indexer wrote chunks since.
+    counted_for: u64,
     /// Chunks the model failed on, skipped until the daemon restarts.
     failed: HashSet<i64>,
     waiting: Option<String>,
@@ -69,16 +73,6 @@ struct Inner {
     model_ready: bool,
     download_failed_at: Option<Instant>,
     last_used: Option<Instant>,
-}
-
-impl Default for Embedder {
-    fn default() -> Self {
-        Self {
-            wake: Notify::new(),
-            inner: Mutex::new(Inner::default()),
-            worker: tokio::sync::Mutex::new(None),
-        }
-    }
 }
 
 /// The worker's embedder: the model in the cache, or the fake in tests.
@@ -209,17 +203,19 @@ pub async fn run(state: std::sync::Arc<State>) {
 
 /// Count the chunks and their vectors, for `daemon status`.
 async fn count(state: &State, versions: ChunkVersions) -> Result<(u64, u64), String> {
+    let generation = state.embedder.inner().requested;
     let counted = state
         .db_write(move |db| chatgpt_store::vector_coverage(db, None, versions, MODEL_VERSION))
         .await
         .map_err(|failure| failure.message)?;
     let mut inner = state.embedder.inner();
     (inner.chunks, inner.embedded) = counted;
+    inner.counted_for = generation;
     Ok(counted)
 }
 
-/// Have the model files ready, downloading them if need be. `Ok(false)`:
-/// not now, and `waiting` says why.
+/// Have the model files ready, downloading them if need be. `false`: not
+/// now, and `waiting` says why.
 async fn model_ready(state: &State, model: &WorkerModel) -> bool {
     let WorkerModel::Files(dir) = model else {
         return true;
@@ -272,8 +268,13 @@ async fn embed_pending(state: &State) -> Result<(), String> {
     let mut batch = Vec::with_capacity(SAVE_EVERY);
     let mut made = 0usize;
     let result = loop {
-        // The indexer adds chunks while a run goes on: keep the total true.
-        if after > 0 {
+        // The indexer adds chunks while a run goes on (and wakes the
+        // embedder when it does): keep the total true.
+        let stale = {
+            let inner = state.embedder.inner();
+            inner.requested != inner.counted_for
+        };
+        if stale {
             count(state, versions).await?;
         }
         let page = state
@@ -341,6 +342,8 @@ async fn save(state: &State, batch: &mut Vec<NewVector>) -> Result<usize, String
         .map_err(|failure| failure.message)?;
     let mut inner = state.embedder.inner();
     inner.embedded += saved as u64;
+    // A page can hold chunks written after the last count; the next page
+    // recounts.
     inner.chunks = inner.chunks.max(inner.embedded);
     Ok(saved)
 }

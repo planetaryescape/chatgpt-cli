@@ -147,6 +147,9 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
     // is answered, so `daemon status` shows indexing as pending from the
     // start.
     state.indexer.wake();
+    // Chunks from an earlier run (or an index from before vectors) may
+    // still need vectors.
+    state.embedder.wake();
     let background = Arc::clone(&state);
     tasks.spawn(async move {
         // The TS CLI's judgments and titles show from the first `list`.

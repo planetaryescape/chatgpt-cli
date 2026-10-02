@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The most results ChatGPT's search (`--remote`) returns per request.
+pub const REMOTE_SEARCH_MAX: u64 = 40;
+
 /// How a local `search` ranks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,6 +123,4 @@ pub struct SearchIndexStatus {
     /// Why fetching waits, e.g. for the first sync or a rate limit.
     #[serde(default)]
     pub waiting: Option<String>,
-    #[serde(default)]
-    pub embeddings: EmbeddingStatus,
 }

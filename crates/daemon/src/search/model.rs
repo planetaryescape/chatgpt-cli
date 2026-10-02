@@ -59,10 +59,15 @@ async fn download(dir: &Path, file: &ModelFile) -> Result<(), String> {
     }
     let target = dir.join(file.path);
     let partial = target.with_extension(format!("partial-{}", std::process::id()));
+    // On disk in full before it takes the real name.
     let written = target
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&partial, &bytes))
+        .and_then(|()| std::fs::File::create(&partial))
+        .and_then(|mut file| {
+            std::io::Write::write_all(&mut file, &bytes)?;
+            file.sync_all()
+        })
         .and_then(|()| std::fs::rename(&partial, &target));
     if let Err(error) = written {
         let _ = std::fs::remove_file(&partial);

@@ -8,7 +8,7 @@
 //! how to read it.
 
 use rusqlite::types::{Type, ValueRef};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::Result;
 use crate::search::ChunkVersions;
@@ -49,7 +49,8 @@ fn text<'a>(row: &'a rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'a st
     })
 }
 
-fn text_bytes(value: ValueRef<'_>) -> Vec<u8> {
+/// Stored chunk text as bytes, which may not be UTF-8.
+pub(crate) fn text_bytes(value: ValueRef<'_>) -> Vec<u8> {
     match value {
         ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.to_vec(),
         _ => Vec::new(),
@@ -198,10 +199,8 @@ pub fn each_vector(
 
 /// A chunk's body as stored, for its excerpt.
 pub fn chunk_body(connection: &Connection, chunk_id: i64) -> Result<Option<Vec<u8>>> {
-    let mut statement = connection.prepare_cached("select body from search_chunks where id = ?")?;
-    let mut rows = statement.query([chunk_id])?;
-    Ok(match rows.next()? {
-        Some(row) => Some(text_bytes(row.get_ref(0)?)),
-        None => None,
-    })
+    Ok(connection
+        .prepare_cached("select body from search_chunks where id = ?")?
+        .query_row([chunk_id], |row| Ok(text_bytes(row.get_ref(0)?)))
+        .optional()?)
 }

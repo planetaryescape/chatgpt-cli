@@ -119,15 +119,13 @@ fn load<'a>(
     embedder: &'a mut Option<Box<dyn Embedder>>,
     model: &Model,
 ) -> Result<&'a mut Box<dyn Embedder>, EmbedError> {
-    if embedder.is_none() {
-        *embedder = Some(match model {
+    Ok(match embedder {
+        Some(loaded) => loaded,
+        None => embedder.insert(match model {
             Model::Files(dir) => Box::new(TractEmbedder::load(dir)?),
             Model::Fake { delay } => Box::new(FakeEmbedder { delay: *delay }),
-        });
-    }
-    embedder
-        .as_mut()
-        .ok_or_else(|| EmbedError::Load("no embedder".to_owned()))
+        }),
+    })
 }
 
 #[cfg(test)]

@@ -28,7 +28,8 @@ pub use reads::{Filter, Jev, ListRows, MemoryCounts, Row, StatsReport, TopicCoun
 pub use request::{Request, SessionChoice};
 pub use response::{ErrorPayload, Response, ResponseData};
 pub use search::{
-    EmbeddingStatus, SearchHit, SearchIndexReport, SearchIndexStatus, SearchMode, SearchResults,
+    EmbeddingStatus, REMOTE_SEARCH_MAX, SearchHit, SearchIndexReport, SearchIndexStatus,
+    SearchMode, SearchResults,
 };
 use serde::{Deserialize, Serialize};
 pub use status::{
@@ -148,7 +149,10 @@ mod tests {
         assert_eq!(results.hits[0].score, Some(1.5));
         assert_eq!(results.hits[0].snippet_cut, None);
         assert_eq!(results.embedded, 0);
-        let status: SearchIndexStatus = serde_json::from_str(r#"{"chats":3}"#).expect("decode");
+        let status: DaemonStatus = serde_json::from_str(
+            r#"{"protocol_version":1,"version":"0.1.1","pid":4,"instance":"dev","started_at":0}"#,
+        )
+        .expect("decode");
         assert_eq!(status.embeddings, EmbeddingStatus::default());
     }
 

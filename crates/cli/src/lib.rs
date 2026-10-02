@@ -123,19 +123,21 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
 /// of debug builds only; `CHATGPT_TEST_EMBED_DELAY_MS` slows it down.
 fn embed_worker(model_dir: Option<std::path::PathBuf>, fake: bool) -> ExitCode {
     use chatgpt_embed::worker::{Model, serve};
-    match (model_dir, fake && cfg!(debug_assertions)) {
-        (_, true) => {
-            let delay = std::env::var("CHATGPT_TEST_EMBED_DELAY_MS")
-                .ok()
-                .and_then(|ms| ms.parse().ok())
-                .map_or(std::time::Duration::ZERO, std::time::Duration::from_millis);
-            serve(Model::Fake { delay })
-        }
-        (Some(dir), false) => serve(Model::Files(dir)),
-        (None, false) => {
+    if fake {
+        if !cfg!(debug_assertions) {
             output::error_line("--fake is only for debug builds");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
+        let delay = std::env::var("CHATGPT_TEST_EMBED_DELAY_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .map_or(std::time::Duration::ZERO, std::time::Duration::from_millis);
+        return serve(Model::Fake { delay });
+    }
+    match model_dir {
+        Some(dir) => serve(Model::Files(dir)),
+        // clap requires --model-dir without --fake.
+        None => ExitCode::FAILURE,
     }
 }
 

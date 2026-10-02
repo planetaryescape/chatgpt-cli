@@ -233,9 +233,7 @@ async fn status(state: &State) -> DaemonStatus {
         ts_sync: state.ts_sync_status(),
         legacy_import: state.import_status(),
         classification: state.profile().info(),
-        search_index: chatgpt_protocol::SearchIndexStatus {
-            embeddings: state.embedder.status(),
-            ..state.indexer.status()
-        },
+        search_index: state.indexer.status(),
+        embeddings: state.embedder.status(),
     }
 }

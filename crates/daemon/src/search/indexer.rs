@@ -128,8 +128,6 @@ impl Indexer {
             last_finished_at: inner.last_finished_at,
             last_error: inner.last_error.clone(),
             waiting: inner.waiting.clone(),
-            // The embedder's own status; `daemon status` fills it in.
-            embeddings: Default::default(),
         }
     }
 
@@ -211,6 +209,10 @@ async fn index(state: &State) -> Result<(), String> {
             .map_err(|failure| failure.message)?;
     }
     count(state, versions).await?;
+    if pruned + cached.len() > 0 {
+        // Chunks to embed, or vectors gone with their chunks.
+        state.embedder.wake();
+    }
     let missing = retryable(state, missing);
     if pruned + cached.len() + missing.len() > 0 {
         tracing::info!(
@@ -267,6 +269,9 @@ async fn index(state: &State) -> Result<(), String> {
         fetched += saved;
         state.indexer.inner().fetched += saved;
         count(state, versions).await?;
+        if saved > 0 {
+            state.embedder.wake();
+        }
     }
     tracing::info!(fetched, "search indexing done");
     Ok(())
@@ -364,13 +369,9 @@ async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
         .db_write(move |db| chatgpt_store::coverage(db, None, versions))
         .await
         .map_err(|failure| failure.message)?;
-    {
-        let mut inner = state.indexer.inner();
-        inner.chats = chats;
-        inner.indexed = indexed;
-    }
-    // New chunks to embed.
-    state.embedder.wake();
+    let mut inner = state.indexer.inner();
+    inner.chats = chats;
+    inner.indexed = indexed;
     Ok(())
 }
 

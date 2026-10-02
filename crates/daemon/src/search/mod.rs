@@ -32,6 +32,32 @@ pub fn versions(profile: &Profile) -> ChunkVersions {
     }
 }
 
+/// A scope's search coverage. `archived`: `None` for both.
+pub struct Coverage {
+    pub chats: u64,
+    /// Chats with current chunks.
+    pub indexed: u64,
+    /// Current chunks, and how many have vectors from this model.
+    pub chunks: u64,
+    pub embedded: u64,
+}
+
+pub fn coverage(
+    db: &Connection,
+    archived: Option<bool>,
+    versions: ChunkVersions,
+) -> chatgpt_store::Result<Coverage> {
+    let (chats, indexed) = chatgpt_store::coverage(db, archived, versions)?;
+    let (chunks, embedded) =
+        chatgpt_store::vector_coverage(db, archived, versions, chatgpt_embed::MODEL_VERSION)?;
+    Ok(Coverage {
+        chats,
+        indexed,
+        chunks,
+        embedded,
+    })
+}
+
 /// Bun reads text that isn't UTF-8 (a chunk holding half an emoji; see
 /// `chunks.rs`) as `""` under this many bytes, and with each invalid
 /// sequence as U+FFFD from this many on. Observed with Bun 1.3.14.

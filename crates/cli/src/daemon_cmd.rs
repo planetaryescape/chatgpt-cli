@@ -113,7 +113,7 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
     if let Some(error) = &status.search_index.last_error {
         lines.push(format!("search index error: {error}"));
     }
-    let embeddings = &status.search_index.embeddings;
+    let embeddings = &status.embeddings;
     lines.push(embeddings_line(embeddings));
     if let Some(error) = &embeddings.last_error {
         lines.push(format!("embedding error: {error}"));

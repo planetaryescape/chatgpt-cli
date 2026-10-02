@@ -12,7 +12,7 @@ pub mod embedder;
 pub mod model;
 pub mod worker;
 
-pub use embedder::{DIM, EmbedError, Embedder, FakeEmbedder, TractEmbedder, fake_vector};
+pub use embedder::DIM;
 
 /// What the vectors in the daemon's index were made with. A vector made any
 /// other way doesn't count and is made again. It differs from the TS CLI's

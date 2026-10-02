@@ -156,8 +156,9 @@ impl Env {
     pub fn wait_for_embedder(&self) -> Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
         loop {
-            let index = self.status()["search_index"].clone();
-            let embeddings = index["embeddings"].clone();
+            let status = self.status();
+            let index = status["search_index"].clone();
+            let embeddings = status["embeddings"].clone();
             assert!(
                 embeddings["embedded"].as_u64() <= embeddings["chunks"].as_u64(),
                 "more chunks embedded than there are: {embeddings}"
