@@ -272,6 +272,10 @@ async fn embed_pending(state: &State) -> Result<(), String> {
     let mut batch = Vec::with_capacity(SAVE_EVERY);
     let mut made = 0usize;
     let result = loop {
+        // The indexer adds chunks while a run goes on: keep the total true.
+        if after > 0 {
+            count(state, versions).await?;
+        }
         let page = state
             .db_write(move |db| {
                 chatgpt_store::pending_vectors(db, versions, MODEL_VERSION, after, PAGE)
@@ -335,6 +339,8 @@ async fn save(state: &State, batch: &mut Vec<NewVector>) -> Result<usize, String
         .db_write(move |db| chatgpt_store::save_vectors(db, &vectors, MODEL_VERSION))
         .await
         .map_err(|failure| failure.message)?;
-    state.embedder.inner().embedded += saved as u64;
+    let mut inner = state.embedder.inner();
+    inner.embedded += saved as u64;
+    inner.chunks = inner.chunks.max(inner.embedded);
     Ok(saved)
 }

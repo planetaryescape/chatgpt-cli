@@ -158,6 +158,10 @@ impl Env {
         loop {
             let index = self.status()["search_index"].clone();
             let embeddings = index["embeddings"].clone();
+            assert!(
+                embeddings["embedded"].as_u64() <= embeddings["chunks"].as_u64(),
+                "more chunks embedded than there are: {embeddings}"
+            );
             if index["in_progress"] == false && embeddings["in_progress"] == false {
                 return embeddings;
             }

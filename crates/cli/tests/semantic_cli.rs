@@ -227,7 +227,12 @@ fn embedding_steps_aside_for_a_sync_and_a_query() {
 
 #[test]
 fn embedding_resumes_where_it_stopped() {
-    let env = Env::with_fake(many_chats());
+    let mut env = Env::with_fake(many_chats());
+    // Slow fetches and embeddings, so one embedding run sees the indexer
+    // add chunks (the status must count them).
+    env.fake().state().batch_delay_ms = 600;
+    env.extra_env
+        .push(("CHATGPT_TEST_EMBED_DELAY_MS".into(), "30".into()));
     synced(&env);
     let embeddings = env.wait_for_embedder();
     let chunks = embeddings["chunks"].as_i64().unwrap();
