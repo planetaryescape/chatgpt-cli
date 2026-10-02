@@ -85,6 +85,23 @@ impl Drop for GroupGuard {
     }
 }
 
+/// Wait until `pid`, a child not yet reaped, has exited: it shows as a
+/// zombie. Without a `ps` to ask, it returns at once (the caller then kills
+/// the group as soon as its output ended, as before).
+async fn exited_unreaped(pid: u32) {
+    const POLL: Duration = Duration::from_millis(20);
+    loop {
+        let state = tokio::task::spawn_blocking(move || chatgpt_core::ps_field(pid, "state"))
+            .await
+            .ok()
+            .flatten();
+        match state {
+            Some(state) if !state.starts_with('Z') => tokio::time::sleep(POLL).await,
+            _ => return,
+        }
+    }
+}
+
 /// Run `program` with `args` in `cwd`, `stdin` written to it, and wait.
 /// `name` names it in errors (`codex`, `claude -p`).
 pub async fn run(
@@ -118,8 +135,9 @@ pub async fn run(
     let mut child = command
         .spawn()
         .map_err(|error| format!("couldn't start {name}: {error}"))?;
+    let leader = child.id();
     let mut guard = GroupGuard {
-        pgid: child.id().and_then(|pid| i32::try_from(pid).ok()),
+        pgid: leader.and_then(|pid| i32::try_from(pid).ok()),
     };
     let mut input = child.stdin.take();
     let mut output = child.stdout.take();
@@ -140,6 +158,13 @@ pub async fn run(
             stdout
         };
         let ((), stdout) = tokio::join!(write, read);
+        // Kill what it left in its group before reaping it: until the
+        // leader is reaped its PID, and so the group's ID, can't go to
+        // another process, so the signal can only reach this run's.
+        if let Some(pid) = leader {
+            exited_unreaped(pid).await;
+        }
+        guard.kill();
         let status = child.wait().await;
         (status, stdout)
     };
@@ -155,8 +180,6 @@ pub async fn run(
         }
     };
     let status = status.map_err(|error| format!("{name} failed to run: {error}"))?;
-    // It exited; its group may still hold children it left behind.
-    guard.kill();
     Ok(Finished {
         code: status.code(),
         signal: status.signal(),
@@ -201,6 +224,30 @@ mod tests {
             );
         }
         assert_eq!(finished.code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn what_a_run_leaves_in_its_group_is_killed_and_its_exit_kept() {
+        let dir = tempfile::tempdir().expect("dir");
+        // A child that outlives it, holding none of its output.
+        let (program, args) = sh("sleep 30 >/dev/null 2>&1 & echo $!; exit 4");
+        let finished = run("sh", &program, &args, b"", dir.path(), None)
+            .await
+            .expect("ran");
+        assert_eq!(finished.exit(), "exited 4", "its own exit, not the kill");
+        let left: i32 = String::from_utf8(finished.stdout)
+            .expect("utf8")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while nix::sys::signal::kill(nix::unistd::Pid::from_raw(left), None).is_ok()
+            && chatgpt_core::ps_field(u32::try_from(left).expect("pid"), "state")
+                .is_some_and(|state| !state.starts_with('Z'))
+        {
+            assert!(std::time::Instant::now() < deadline, "pid {left} outlived the run");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[tokio::test]
