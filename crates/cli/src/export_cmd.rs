@@ -77,7 +77,7 @@ pub async fn export(
     Ok(ExitCode::SUCCESS)
 }
 
-fn read_stdin() -> Result<String, ClientError> {
+pub fn read_stdin() -> Result<String, ClientError> {
     let mut text = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|error| {
         ClientError::new(ErrorKind::Internal, format!("reading stdin: {error}"))
@@ -87,7 +87,7 @@ fn read_stdin() -> Result<String, ClientError> {
 
 /// `readStdinIds`: the first word of each line, so `list` output can be
 /// piped in.
-fn stdin_ids(text: &str) -> Vec<String> {
+pub fn stdin_ids(text: &str) -> Vec<String> {
     text.split('\n')
         .filter_map(|line| trim(line).split(is_space).next())
         .filter(|id| !id.is_empty())

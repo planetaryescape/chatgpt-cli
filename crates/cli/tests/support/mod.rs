@@ -80,7 +80,10 @@ impl Env {
             .env_remove("CHATGPT_BRIDGED")
             .env_remove("CHATGPT_DAEMON_VERSION")
             .env_remove("CHATGPT_REQUEST_TIMEOUT_MS")
-            .env_remove("CHATGPT_TS_SYNC");
+            .env_remove("CHATGPT_TS_SYNC")
+            // Jev: never the developer's key or TypeSafe itself.
+            .env_remove("TYPESAFE_API_KEY")
+            .env("TYPESAFE_BASE_URL", "http://127.0.0.1:9");
         match &self.fake {
             Some(fake) => {
                 command
@@ -201,6 +204,89 @@ impl Env {
         self.ts_cli = Some(script.clone());
         script
     }
+}
+
+/// Run `args` in a pseudo-terminal (through `script`), as a person at a
+/// terminal would: once `prompt` shows, type `answer`. With `stdin_ids`,
+/// the command reads them from a pipe and the answer from `/dev/tty`, as
+/// `… | chatgpt archive -` does. Returns the exit status and everything the
+/// terminal showed, with `\r\n` as `\n`.
+pub fn in_terminal(
+    env: &Env,
+    args: &[&str],
+    stdin_ids: Option<&str>,
+    prompt: &str,
+    answer: &str,
+) -> (Option<i32>, String) {
+    use std::io::{Read, Write};
+    let template = env.std_cmd();
+    let binary = template.get_program().to_owned();
+    let mut command = std::process::Command::new("script");
+    command.arg("-q").arg("/dev/null");
+    match stdin_ids {
+        Some(ids) => {
+            let quoted: Vec<String> = std::iter::once(binary.to_string_lossy().into_owned())
+                .chain(args.iter().map(|arg| (*arg).to_owned()))
+                .map(|word| format!("'{}'", word.replace('\'', "'\\''")))
+                .collect();
+            command.args([
+                "/bin/sh",
+                "-c",
+                &format!("printf '%s\\n' '{ids}' | exec {}", quoted.join(" ")),
+            ]);
+        }
+        None => {
+            command.arg(&binary).args(args);
+        }
+    }
+    for (name, value) in template.get_envs() {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = {
+        let shown = std::sync::Arc::clone(&shown);
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            while let Ok(read) = stdout.read(&mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                shown.lock().unwrap().extend_from_slice(&buffer[..read]);
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let text = String::from_utf8_lossy(&shown.lock().unwrap()).into_owned();
+        if text.contains(prompt) {
+            break;
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never prompted {prompt:?}: {text}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut stdin = child.stdin.take().unwrap();
+    let _ = stdin.write_all(format!("{answer}\n").as_bytes());
+    let status = child.wait().unwrap();
+    drop(stdin);
+    reader.join().unwrap();
+    let text = String::from_utf8_lossy(&shown.lock().unwrap()).replace("\r\n", "\n");
+    (status.code(), text)
 }
 
 impl Drop for Env {

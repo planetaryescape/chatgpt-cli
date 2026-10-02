@@ -393,6 +393,30 @@ impl<'a> Judged<'a> {
         Ok(a.overtaken < 0.8 || a.personal >= 0.6 || a.unfinished >= 0.6 || a.worth >= 2.0)
     }
 
+    /// `needsTimeRefresh`: a still-current time-bound chat is judged again
+    /// after seven UTC days, or with strong evidence of a lasting record,
+    /// in a later UTC month. `as_of` is `YYYY-MM-DD`.
+    pub fn needs_time_refresh(&self, as_of: &str) -> bool {
+        let a = &self.answers;
+        if a.time_bound < 0.7 || a.overtaken >= 0.8 {
+            return false;
+        }
+        let classified = self.row.classified_at.as_str();
+        let durable_evidence = a.personal >= 0.8 && a.worth >= 2.0;
+        if durable_evidence {
+            return classified.get(..7).unwrap_or(classified) != as_of.get(..7).unwrap_or(as_of);
+        }
+        const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+        // `Date.parse` of either one failing makes the difference NaN: false.
+        match (
+            crate::js::parse_date(as_of),
+            crate::js::parse_date(classified.get(..10).unwrap_or(classified)),
+        ) {
+            (Some(now), Some(then)) => now - then >= WEEK_MS,
+            _ => false,
+        }
+    }
+
     /// `verdictOf`: Jev's verdict, settled or adjusted by a current Luna
     /// review.
     pub fn verdict(&self) -> Result<Verdict, PolicyError> {

@@ -375,7 +375,7 @@ async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
     Ok(())
 }
 
-fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
+pub(crate) fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
     transcript_chunks(markdown)
         .iter()
         .map(|chunk| bun_sqlite_text(chunk))

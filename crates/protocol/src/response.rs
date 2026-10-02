@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DaemonStatus, ExportedChat, ImportReport, ListRows, SearchIndexReport, SearchResults,
-    StatsReport, SyncReport,
+    DaemonStatus, ExportedChat, ImportReport, ListRows, Outcome, Project, SearchIndexReport,
+    SearchResults, StatsReport, SyncReport,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -45,6 +45,34 @@ pub enum ResponseData {
     ExportTooLarge,
     SearchHits(SearchResults),
     SearchIndexed(SearchIndexReport),
+    /// `JevCheck`: the ids Jev backs the action for, in the order asked.
+    Approved {
+        ids: Vec<String>,
+    },
+    /// `Mutate`, `MoveToProject`, `DeleteMemories`.
+    Outcome(Outcome),
+    Renamed {
+        id: String,
+        /// The ChatGPT title before the rename.
+        old_title: String,
+        /// When the index last synced, for the stale-index note.
+        synced_at: String,
+    },
+    TitleSaved {
+        id: String,
+        synced_at: String,
+    },
+    Projects {
+        projects: Vec<Project>,
+    },
+    ProjectCreated(Project),
+    /// ChatGPT's saved-memory objects, as it sent them.
+    Memories {
+        memories: Vec<serde_json::Value>,
+    },
+    MemorySummary {
+        summary: serde_json::Value,
+    },
     #[serde(other)]
     Unknown,
 }

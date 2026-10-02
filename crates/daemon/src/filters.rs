@@ -116,6 +116,9 @@ pub struct JevFilter<'a> {
     topic: Option<&'a str>,
     /// `Some(None)`: any brainstorm.
     brainstorm: Option<Option<&'a str>>,
+    /// `excludeUnsure`: applying Jev's own suggestion leaves unsure chats
+    /// out, before `--limit`.
+    exclude_unsure: bool,
 }
 
 /// The first half of `applyJevFiltersAndLimit`: validate in the TS CLI's
@@ -148,6 +151,7 @@ pub fn jev_filter<'a>(
         suggest,
         topic,
         brainstorm,
+        exclude_unsure: false,
     };
     if !jev.narrows() {
         return Ok(jev);
@@ -180,6 +184,11 @@ pub fn jev_filter<'a>(
 }
 
 impl JevFilter<'_> {
+    pub fn excluding_unsure(mut self, exclude: bool) -> Self {
+        self.exclude_unsure = exclude;
+        self
+    }
+
     /// Whether any Jev filter is set; without one, unjudged chats count.
     fn narrows(&self) -> bool {
         self.suggest.is_some() || self.topic.is_some() || self.brainstorm.is_some()
@@ -219,6 +228,9 @@ impl JevFilter<'_> {
             .suggest
             .is_some_and(|suggest| verdict.suggestion != suggest)
         {
+            return Ok(false);
+        }
+        if self.exclude_unsure && verdict.unsure {
             return Ok(false);
         }
         if let Some(kind) = self.brainstorm {

@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::args::{FilterArgs, ListArgs};
 use crate::output::{data, json, note, unexpected};
 
-fn filter(args: FilterArgs) -> Filter {
+pub fn filter(args: FilterArgs) -> Filter {
     Filter {
         older_than: args.older_than,
         newer_than: args.newer_than,
@@ -117,7 +117,7 @@ fn json_row(row: &Row) -> Value {
 }
 
 /// `formatRow`.
-fn text_row(row: &Row) -> String {
+pub fn text_row(row: &Row) -> String {
     let flags = format!(
         "{}{}{}",
         if row.is_archived != 0 { "A" } else { " " },

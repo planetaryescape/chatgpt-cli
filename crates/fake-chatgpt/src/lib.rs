@@ -4,7 +4,7 @@
 //! between calls. It runs on its own runtime, so blocking tests (driving the
 //! real binary) can use it.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Utc};
@@ -13,6 +13,11 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 pub mod fixtures;
+pub mod typesafe;
+mod writes;
+
+use writes::Write;
+pub use writes::{Project, WriteFailure};
 
 pub const ACCESS_TOKEN: &str = "fake-access-token";
 pub const COOKIE: &str = "__Secure-next-auth.session-token=fake-session";
@@ -149,6 +154,22 @@ pub struct State {
     pub search_items: Vec<Value>,
     /// The body of every `global/search` request, in order.
     pub search_bodies: Vec<Value>,
+    /// The projects the sidebar lists, in order.
+    pub projects: Vec<Project>,
+    /// How many projects `POST /backend-api/projects` made.
+    pub created_projects: u32,
+    /// What the memory summary answers.
+    pub memory_summary: Value,
+    /// Chats whose rename answers 500 yet applies (pre-2025 chats).
+    pub legacy_rename: HashSet<String>,
+    /// Chats whose project move answers 500 yet applies.
+    pub project_500: HashSet<String>,
+    /// Chats whose project move answers `success: false`.
+    pub unconfirmed_moves: HashSet<String>,
+    /// Memories whose delete answers `success: false` (and applies).
+    pub unconfirmed_memories: HashSet<String>,
+    /// How the next writes are answered instead, in order.
+    pub fail_writes: VecDeque<WriteFailure>,
 }
 
 pub struct FakeChatGpt {
@@ -172,6 +193,7 @@ enum Route {
     Batch,
     Memories,
     GlobalSearch,
+    Write(Write),
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -261,6 +283,7 @@ impl Respond for Handler {
         };
         match self.route {
             Route::Session => ResponseTemplate::new(500),
+            Route::Write(write) => writes::respond(&mut state, write, request),
             Route::List => {
                 let archived = query(request, "is_archived").as_deref() == Some("true");
                 let offset: usize = query(request, "offset")
@@ -361,6 +384,10 @@ impl FakeChatGpt {
         let state = Arc::new(Mutex::new(State {
             chats,
             memories: Some(Vec::new()),
+            memory_summary: json!({
+                "sections": [], "generatedAtIso": "2026-09-28T00:00:00.000Z",
+                "emptyStateMessage": null, "sourceChecksum": "c",
+            }),
             ..State::default()
         }));
         let server = runtime.block_on(async {
@@ -390,6 +417,38 @@ impl FakeChatGpt {
                 (
                     Mock::given(method("POST")).and(path("/backend-api/global/search")),
                     Route::GlobalSearch,
+                ),
+                (
+                    Mock::given(method("PATCH"))
+                        .and(path_regex(r"^/backend-api/conversation/[^/]+$")),
+                    Route::Write(Write::Patch),
+                ),
+                (
+                    Mock::given(method("DELETE"))
+                        .and(path_regex(r"^/backend-api/conversation/id/[^/]+$")),
+                    Route::Write(Write::Delete),
+                ),
+                (
+                    Mock::given(method("POST"))
+                        .and(path_regex(r"^/backend-api/conversation/id/[^/]+/rename$")),
+                    Route::Write(Write::Rename),
+                ),
+                (
+                    Mock::given(method("GET")).and(path("/backend-api/gizmos/snorlax/sidebar")),
+                    Route::Write(Write::ProjectList),
+                ),
+                (
+                    Mock::given(method("POST")).and(path("/backend-api/projects")),
+                    Route::Write(Write::CreateProject),
+                ),
+                (
+                    Mock::given(method("POST"))
+                        .and(path("/backend-api/memories/about_you/summary")),
+                    Route::Write(Write::MemorySummary),
+                ),
+                (
+                    Mock::given(method("DELETE")).and(path_regex(r"^/backend-api/memories/[^/]+$")),
+                    Route::Write(Write::DeleteMemory),
                 ),
             ];
             for (mock, route) in routes {

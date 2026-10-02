@@ -14,6 +14,7 @@
 mod codec;
 mod events;
 mod export;
+mod mutations;
 mod reads;
 mod request;
 mod response;
@@ -24,6 +25,7 @@ mod sync;
 pub use codec::{Codec, FrameTooLarge, MAX_FRAME_BYTES};
 pub use events::{Event, Progress, ProgressKind};
 pub use export::ExportedChat;
+pub use mutations::{ChatAction, Outcome, Project, Secret, Selection, Target};
 pub use reads::{Filter, Jev, ListRows, MemoryCounts, Row, StatsReport, TopicCounts};
 pub use request::{Request, SessionChoice};
 pub use response::{ErrorPayload, Response, ResponseData};

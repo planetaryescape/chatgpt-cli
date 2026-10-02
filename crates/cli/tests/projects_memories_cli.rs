@@ -1,0 +1,354 @@
+//! `project create|list|add|remove` and `memory list|summary|delete`
+//! through the real binary and the fake chatgpt.com, with its quirks: a
+//! project move that answers 500 after applying, a move or memory delete
+//! ChatGPT doesn't confirm.
+
+#![allow(clippy::unwrap_used)]
+
+mod support;
+
+use fake_chatgpt::{Chat, Project, WriteFailure};
+use serde_json::{Value, json};
+use support::{Env, in_terminal};
+
+fn synced() -> Env {
+    let mut moved = Chat::new("b-moved", "In a project", "2026-09-26T10:00:00.000000Z");
+    moved.gizmo_id = Some("g-p-other".into());
+    let mut writing = Chat::new("c-writing", "Draft", "2026-09-25T10:00:00.000000Z");
+    writing.gizmo_id = Some("g-p-writing".into());
+    let env = Env::with_fake(vec![
+        Chat::new("a-loose", "Loose chat", "2026-09-27T10:00:00.000000Z"),
+        moved,
+        writing,
+    ]);
+    {
+        let mut state = env.fake().state();
+        let mut projects: Vec<Project> = (0..23)
+            .map(|n| Project::new(&format!("g-p-filler{n:02}"), &format!("Filler {n}")))
+            .collect();
+        projects.insert(0, Project::new("g-p-writing", "Writing"));
+        let mut read_only = Project::new("g-p-shared", "Shared");
+        read_only.can_write = false;
+        projects.push(read_only);
+        let mut gone = Project::new("g-p-old", "Old");
+        gone.archived = true;
+        projects.push(gone);
+        state.projects = projects;
+        state.memories = Some(vec![
+            json!({ "id": "mem-aaa", "content": "Prefers  tea,\n not \"coffee\"", "updated_at": "2026-09-01T00:00:00Z",
+                    "status": "active", "conversation_id": null, "gizmo_id": null, "created_timestamp": 1.5,
+                    "last_updated": null, "labels": null }),
+            json!({ "id": "mem-bbb", "content": "x".repeat(130), "updated_at": "2026-09-02T00:00:00Z",
+                    "status": "active", "conversation_id": "a-loose" }),
+        ]);
+    }
+    env.cmd().arg("sync").assert().success();
+    env
+}
+
+fn run(env: &Env, args: &[&str]) -> (Option<i32>, String, String) {
+    let output = env.cmd().args(args).output().unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn steady(stderr: &str) -> String {
+    stderr
+        .lines()
+        // A running count draws a bar; a summary line doesn't.
+        .filter(|line| !line.contains(['█', '░']))
+        .map(|line| match line.rfind(" (") {
+            Some(at) if line.ends_with("s)") => &line[..at],
+            _ => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn project_of(env: &Env, id: &str) -> Option<String> {
+    let rows: Vec<Value> = serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
+    rows.into_iter()
+        .find(|row| row["id"] == id)
+        .and_then(|row| row["project_id"].as_str().map(str::to_owned))
+}
+
+#[test]
+fn projects_list_across_pages_and_new_names_must_be_new() {
+    let env = synced();
+    let listed = env.stdout(&["project", "list"]);
+    assert_eq!(listed.lines().count(), 25, "every page, archived left out");
+    assert!(listed.starts_with("g-p-writing  Writing\n"));
+    assert!(listed.ends_with("g-p-shared  Shared (read-only)\n"));
+    let calls: Vec<String> = env
+        .fake()
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("sidebar"))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "GET /backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&limit=20&owned_only=false",
+            "GET /backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&limit=20&owned_only=false&cursor=page+20",
+        ]
+    );
+    let limited: Value =
+        serde_json::from_str(&env.stdout(&["project", "list", "--json", "--limit", "1"])).unwrap();
+    assert_eq!(
+        limited,
+        json!([{ "id": "g-p-writing", "name": "Writing", "canWrite": true }])
+    );
+    let (_, _, stderr) = run(&env, &["project", "list", "--limit", "0"]);
+    assert_eq!(stderr, "error: --limit must be a positive integer.\n");
+
+    assert_eq!(
+        env.stdout(&["project", "create", "  chatgpt-cli test  "]),
+        "g-p-new1  chatgpt-cli test\n"
+    );
+    let (code, _, stderr) = run(&env, &["project", "create", "WRITING"]);
+    assert_ne!(code, Some(0));
+    assert_eq!(
+        stderr,
+        "error: Project \"Writing\" already exists (g-p-writing).\n"
+    );
+    let (_, _, stderr) = run(&env, &["project", "create", " "]);
+    assert_eq!(stderr, "error: Project name cannot be empty.\n");
+    let created: Value =
+        serde_json::from_str(&env.stdout(&["project", "create", "Another", "--json"])).unwrap();
+    assert_eq!(
+        created,
+        json!({ "id": "g-p-new2", "name": "Another", "canWrite": true })
+    );
+    assert_eq!(
+        env.fake()
+            .calls()
+            .iter()
+            .filter(|call| call.starts_with("POST /backend-api/projects"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn chats_move_into_a_project_and_out_again() {
+    let env = synced();
+    let (code, _, stderr) = run(
+        &env,
+        &[
+            "project",
+            "add",
+            "writ",
+            "a-loose",
+            "b-moved",
+            "c-writing",
+            "a-l",
+            "-n",
+        ],
+    );
+    assert_eq!(code, Some(2), "a name isn't a prefix: {stderr}");
+    assert!(
+        stderr.starts_with("error: No project matching \"writ\"."),
+        "{stderr}"
+    );
+    let (code, _, stderr) = run(
+        &env,
+        &[
+            "project",
+            "add",
+            "Writing",
+            "a-loose",
+            "b-moved",
+            "c-writing",
+            "a-l",
+            "-n",
+        ],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stderr,
+        "a-loose  Loose chat\nb-moved  In a project  (from g-p-other)\ndry run: would move 2 chat(s) to \"Writing\".\n"
+    );
+    let (code, _, stderr) = run(
+        &env,
+        &["project", "add", "g-p-writing", "a-loose", "b-moved", "-y"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        steady(&stderr).ends_with("Moving chats to project…\nMoved 2 chat(s) to \"Writing\""),
+        "{stderr}"
+    );
+    assert_eq!(project_of(&env, "a-loose").as_deref(), Some("g-p-writing"));
+    let (_, _, stderr) = run(&env, &["project", "add", "Writing", "a-loose", "-y"]);
+    assert_eq!(
+        stderr,
+        "No chats to move; all 1 are already in \"Writing\".\n"
+    );
+
+    let (code, _, stderr) = run(&env, &["project", "remove", "Writing", "a-loose", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Removed 1 chat(s) from \"Writing\""),
+        "{stderr}"
+    );
+    assert_eq!(project_of(&env, "a-loose"), None);
+    let (_, _, stderr) = run(&env, &["project", "remove", "Writing", "a-loose", "-y"]);
+    assert_eq!(stderr, "No selected chats are in \"Writing\".\n");
+    let (_, _, stderr) = run(&env, &["project", "add", "Shared", "a-loose", "-y"]);
+    assert_eq!(
+        stderr,
+        "error: You do not have write access to project \"Shared\".\n"
+    );
+}
+
+#[test]
+fn a_move_answering_500_is_checked_and_an_unconfirmed_one_fails() {
+    let env = synced();
+    env.fake().state().project_500.insert("a-loose".into());
+    let (code, _, stderr) = run(&env, &["project", "add", "Writing", "a-loose", "-y"]);
+    assert_eq!(code, Some(0), "applied despite the 500: {stderr}");
+    assert!(
+        env.fake()
+            .calls()
+            .contains(&"GET /backend-api/conversation/a-loose".to_owned())
+    );
+    assert_eq!(project_of(&env, "a-loose").as_deref(), Some("g-p-writing"));
+
+    env.fake()
+        .state()
+        .unconfirmed_moves
+        .insert("b-moved".into());
+    let (code, _, stderr) = run(&env, &["project", "add", "Writing", "b-moved", "-y"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        stderr.contains("failed: b-moved In a project: ChatGPT did not confirm changing the project of b-moved.\n"),
+        "{stderr}"
+    );
+    assert_eq!(project_of(&env, "b-moved").as_deref(), Some("g-p-other"));
+
+    // A move is sent once even when the gateway fails.
+    env.fake()
+        .state()
+        .fail_writes
+        .push_back(WriteFailure::Status(504));
+    let (code, _, stderr) = run(&env, &["project", "remove", "Writing", "a-loose", "-y"]);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("so it may have applied"), "{stderr}");
+}
+
+#[test]
+fn the_project_prompt_reads_the_terminal_after_ids_on_stdin() {
+    let env = synced();
+    let (code, shown) = in_terminal(
+        &env,
+        &["project", "add", "Writing", "-"],
+        Some("a-loose"),
+        "Move 1 chat(s) to \"Writing\"? [y/N] ",
+        "y",
+    );
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("Moved 1 chat(s) to \"Writing\""), "{shown}");
+}
+
+#[test]
+fn memories_list_in_every_format() {
+    let env = synced();
+    assert_eq!(
+        env.stdout(&["memory", "list"]),
+        format!(
+            "ID                                    UPDATED      CONTENT\nmem-aaa  2026-09-01  Prefers tea, not \"coffee\"\nmem-bbb  2026-09-02  {}…\n",
+            "x".repeat(119)
+        )
+    );
+    assert_eq!(
+        env.stdout(&["memory", "list", "--format", "ids"]),
+        "mem-aaa\nmem-bbb\n"
+    );
+    assert_eq!(
+        env.stdout(&["memory", "list", "--format", "csv", "--search", "TEA"]),
+        "id,content,updated_at,status,conversation_id\nmem-aaa,\"Prefers  tea,\n not \"\"coffee\"\"\",2026-09-01T00:00:00Z,active,\n"
+    );
+    let raw: Value =
+        serde_json::from_str(&env.stdout(&["memory", "list", "--format", "json", "--limit", "1"]))
+            .unwrap();
+    assert_eq!(raw[0]["created_timestamp"], 1.5, "as ChatGPT sent it");
+    assert_eq!(
+        env.stdout(&["memory", "list", "--format", "ids", "--search", "zzz"]),
+        ""
+    );
+    let (_, _, stderr) = run(&env, &["memory", "list", "--format", "xml"]);
+    assert_eq!(
+        stderr,
+        "error: --format must be json, csv, table, or ids.\n"
+    );
+}
+
+#[test]
+fn the_memory_summary_prints_its_sections() {
+    let env = synced();
+    assert_eq!(
+        env.stdout(&["memory", "summary"]),
+        "No memory summary available.\n"
+    );
+    env.fake().state().memory_summary = json!({
+        "sections": [{ "id": "1", "title": "Work", "description": "Builds CLIs" },
+                     { "id": "2", "title": "Home", "description": "Two kids" }],
+        "generatedAtIso": "x", "emptyStateMessage": null, "sourceChecksum": "c",
+    });
+    assert_eq!(
+        env.stdout(&["memory", "summary"]),
+        "Work\nBuilds CLIs\n\nHome\nTwo kids\n"
+    );
+    let json: Value =
+        serde_json::from_str(&env.stdout(&["memory", "summary", "--format", "json"])).unwrap();
+    assert_eq!(json["sourceChecksum"], "c");
+}
+
+#[test]
+fn memories_delete_after_a_preview_and_must_be_confirmed() {
+    let env = synced();
+    let (code, _, stderr) = run(&env, &["memory", "delete", "mem-a", "MEM-AAA", "-n"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stderr,
+        "mem-aaa  Prefers tea, not \"coffee\"\ndry run: would delete 1 saved memory.\n"
+    );
+    let (_, _, stderr) = run(&env, &["memory", "delete", "mem", "-n"]);
+    assert_eq!(
+        stderr,
+        "error: \"mem\" matches 2 saved memories; use a longer id prefix.\n"
+    );
+    let (code, shown) = in_terminal(
+        &env,
+        &["memory", "delete", "mem-aaa"],
+        None,
+        "Permanently delete 1 saved memory? Type 1 to confirm: ",
+        "1",
+    );
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.ends_with("Deleted 1 saved memory.\n"), "{shown}");
+    assert_eq!(
+        env.stdout(&["memory", "list", "--format", "ids"]),
+        "mem-bbb\n"
+    );
+
+    env.fake()
+        .state()
+        .unconfirmed_memories
+        .insert("mem-bbb".into());
+    let (code, _, stderr) = run(&env, &["memory", "delete", "mem-bbb", "-y"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        stderr,
+        "mem-bbb  ".to_owned()
+            + &"x".repeat(119)
+            + "…\nDeleted 0 saved memories, 1 failed.\nfailed: mem-bbb: ChatGPT did not confirm deleting memory mem-bbb.\n"
+    );
+    let (_, _, stderr) = run(&env, &["memory", "delete", "-", "-y"]);
+    assert_eq!(
+        stderr,
+        "error: Pass saved memory ids, or `-` to read ids from stdin.\n"
+    );
+}
