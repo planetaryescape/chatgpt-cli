@@ -199,3 +199,47 @@ fn no_index_says_so_before_taking_the_screen() {
     assert_eq!(code, Some(1));
     assert!(!text.contains("\x1b[?1049h"), "never took the screen");
 }
+
+/// SIGTERM or SIGHUP: the TUI leaves the screen, puts the terminal back
+/// (echo and line editing), and exits 128 + the signal.
+#[test]
+fn a_signal_gives_the_terminal_back() {
+    let env = synced();
+    for (signal, status) in [("TERM", 143), ("HUP", 129)] {
+        let mut pty = Pty::spawn_then(
+            &env,
+            &["tui"],
+            ROWS,
+            COLS,
+            "echo \"exit:$?\"; stty -a; echo end-of-stty",
+        );
+        pty.wait_for_screen("3 of 3");
+        // script → sh → chatgpt.
+        let shell = children(pty.pid());
+        let tui = *children(*shell.first().unwrap()).first().unwrap();
+        std::process::Command::new("kill")
+            .args([&format!("-{signal}"), &tui.to_string()])
+            .status()
+            .unwrap();
+        pty.wait_for(&format!("exit:{status}"));
+        let settings = pty.wait_for("end-of-stty");
+        assert!(
+            !settings.contains("-icanon") && !settings.contains("-echo "),
+            "SIG{signal} left the terminal raw:\n{settings}"
+        );
+        let (_, text) = pty.finish_keeping_text();
+        assert!(text.contains(RESTORED[0]), "left the alternate screen");
+    }
+}
+
+/// The children of process `pid`.
+fn children(pid: u32) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}

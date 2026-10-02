@@ -150,7 +150,8 @@ async fn triage(
     verdicts: &HashMap<String, (Jev, String)>,
     tty: &mut RawTty,
 ) -> Result<HashMap<String, Decision>, ClientError> {
-    // Each chat as fetched, once; a failed fetch is tried again when the
+    // Each chat as fetched, for the chats in the undo window; a failed
+    // fetch, or one that fell out of the window, is fetched again when the
     // chat is shown again.
     let mut loaded: HashMap<String, ChatTranscript> = HashMap::new();
     let mut decisions = HashMap::new();
@@ -160,6 +161,8 @@ async fn triage(
     while let Some(row) = targets.get(at) {
         let jev = verdicts.get(&row.id);
         if shown != Some(at) {
+            let kept = undo_window(targets, at);
+            loaded.retain(|id, _| kept.contains(&id.as_str()));
             let chat = match loaded.get(&row.id) {
                 Some(chat) => chat.clone(),
                 None => load(paths, session, &row.id).await,
@@ -210,6 +213,20 @@ async fn triage(
         }
     }
     Ok(decisions)
+}
+
+/// How many chats back `u` can go without fetching again.
+const UNDO_KEPT: usize = 3;
+
+/// The chats whose transcripts stay in memory at `at`: it and the
+/// [`UNDO_KEPT`] before it. A long review holds a few transcripts, not
+/// every one it showed.
+fn undo_window(targets: &[Row], at: usize) -> Vec<&str> {
+    let end = (at + 1).min(targets.len());
+    targets[at.saturating_sub(UNDO_KEPT).min(end)..end]
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect()
 }
 
 /// The chat through the batch endpoint, as the TS CLI's `load`, with its
@@ -457,6 +474,29 @@ impl Drop for RawTty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_undo_window_stays_in_memory() {
+        let targets: Vec<Row> = (0..8)
+            .map(|n| Row {
+                id: format!("c{n}"),
+                title: String::new(),
+                create_time: String::new(),
+                update_time: String::new(),
+                is_archived: 0,
+                pinned: 0,
+                project_id: None,
+                local_title: None,
+                display_title: String::new(),
+                topic: None,
+                row_topic: None,
+                jev: None,
+            })
+            .collect();
+        assert_eq!(undo_window(&targets, 0), ["c0"]);
+        assert_eq!(undo_window(&targets, 5), ["c2", "c3", "c4", "c5"]);
+        assert_eq!(undo_window(&targets, 7), ["c4", "c5", "c6", "c7"]);
+    }
 
     #[test]
     fn a_read_splits_into_keys_but_an_escape_sequence_stays_whole() {

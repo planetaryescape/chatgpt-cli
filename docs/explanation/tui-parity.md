@@ -60,7 +60,9 @@ Test locations:
 | A late answer (a title save, another apply, an older reload) never unlocks a running apply or replaces newer rows | `tui::a_late_answer_never_unlocks_a_running_apply`, `tui::only_the_latest_reload_counts` |
 | Keys faster than a render all apply (the TS `live` ref) | `tui::keys_pressed_before_a_draw_all_apply` |
 | `requireSynced` before the screen | `tui_cli::no_index_says_so_before_taking_the_screen` |
-| The terminal is given back on quit, Ctrl-C and a panic | `tui_cli::the_terminal_is_given_back_on_quit_ctrl_c_and_a_panic` (and SIGTERM, SIGHUP, SIGINT by reading) |
+| The terminal is given back on quit, Ctrl-C and a panic | `tui_cli::the_terminal_is_given_back_on_quit_ctrl_c_and_a_panic` |
+| SIGTERM and SIGHUP give the terminal back too (handlers in place before raw mode; exit 128 + the signal) | `tui_cli::a_signal_gives_the_terminal_back` |
+| Titles typed for one chat land in the order typed (one save out at a time; the latest waits) | `tui::title_saves_to_one_chat_land_in_the_order_typed` |
 | Marks aren't kept | by construction (`App::marks` lives in memory only) |
 
 ## review
@@ -84,6 +86,7 @@ Test locations:
 | A transcript of any size | `review_command_cli::a_transcript_larger_than_a_frame_streams_whole` |
 | SIGTERM or SIGHUP while waiting for a key gives the terminal back (exit 128 + signal) | `review_command_cli::a_signal_while_waiting_for_a_key_gives_the_terminal_back` |
 | A fetch a sync overtook is shown but not cached | `review_command_cli::a_fetch_overtaken_by_a_sync_is_shown_but_not_cached` |
+| Only the current chat and the 3 before it stay in memory; older ones are fetched again on `u` | `review_cmd::tests::only_the_undo_window_stays_in_memory` |
 
 ## Where the Rust port differs, on purpose
 

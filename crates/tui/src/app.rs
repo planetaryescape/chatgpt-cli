@@ -175,6 +175,10 @@ pub struct App {
     /// The last ticket handed out, and the reload whose answer counts.
     tickets: u64,
     reloading: u64,
+    /// Per chat: the title save that's out, and the latest title typed
+    /// while it was.
+    titles_saving: HashMap<String, u64>,
+    titles_waiting: HashMap<String, (u64, String)>,
 }
 
 impl App {
@@ -206,6 +210,8 @@ impl App {
             wrapped: None,
             tickets: 0,
             reloading: 0,
+            titles_saving: HashMap::new(),
+            titles_waiting: HashMap::new(),
         };
         app.visible = visible_rows(&app.rows, &app.view, clock());
         app
@@ -281,12 +287,7 @@ impl App {
                 // touches the screen.
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    let ticket = self.ticket();
-                    effects.push(Effect::SaveTitle {
-                        ticket,
-                        id: id.clone(),
-                        title: input.text().to_owned(),
-                    });
+                    let ticket = self.save_title(&id, input.text(), &mut effects);
                     // Until the daemon answers: a refused title stays open.
                     self.mode = Mode::Title {
                         id,
@@ -494,6 +495,25 @@ impl App {
         self.tickets
     }
 
+    /// Save `title` for chat `id`, or, while a save for it is out, after
+    /// that one answers: only the latest title typed waits, so the last
+    /// one typed is the one that lands. Its ticket.
+    fn save_title(&mut self, id: &str, title: &str, effects: &mut Vec<Effect>) -> u64 {
+        let ticket = self.ticket();
+        if self.titles_saving.contains_key(id) {
+            self.titles_waiting
+                .insert(id.to_owned(), (ticket, title.to_owned()));
+        } else {
+            self.titles_saving.insert(id.to_owned(), ticket);
+            effects.push(Effect::SaveTitle {
+                ticket,
+                id: id.to_owned(),
+                title: title.to_owned(),
+            });
+        }
+        ticket
+    }
+
     /// Every chat again; only the latest reload's answer is used.
     fn reload(&mut self) -> Effect {
         let ticket = self.ticket();
@@ -582,6 +602,23 @@ impl App {
                 effects.push(self.reload());
             }
             Outcome::TitleSaved { ticket, result } => {
+                // The chat's next title goes out only now, so saves to one
+                // chat land in the order they were typed.
+                if let Some(id) = self
+                    .titles_saving
+                    .iter()
+                    .find_map(|(id, saving)| (*saving == ticket).then(|| id.clone()))
+                {
+                    self.titles_saving.remove(&id);
+                    if let Some((next, title)) = self.titles_waiting.remove(&id) {
+                        self.titles_saving.insert(id.clone(), next);
+                        effects.push(Effect::SaveTitle {
+                            ticket: next,
+                            id,
+                            title,
+                        });
+                    }
+                }
                 let open = matches!(&self.mode, Mode::Title { saving: Some(saving), .. } if *saving == ticket);
                 match result {
                     Ok(()) => {

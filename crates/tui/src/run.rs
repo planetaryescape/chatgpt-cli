@@ -41,8 +41,8 @@ static PANICKED: AtomicBool = AtomicBool::new(false);
 enum Event {
     Input(TermEvent),
     Outcome(Outcome),
-    /// SIGTERM, SIGHUP or SIGINT.
-    Signal,
+    /// SIGTERM, SIGHUP or SIGINT: its number.
+    Signal(u8),
     /// A request's task panicked.
     Crashed,
 }
@@ -177,7 +177,8 @@ fn event_loop(
                 // A resize redraws at the new size.
                 Event::Input(_) => {}
                 Event::Outcome(outcome) => effects.extend(app.on_outcome(outcome)),
-                Event::Signal => return Ok(ExitCode::from(130)),
+                // As the signal would have: 128 + its number.
+                Event::Signal(number) => return Ok(ExitCode::from(128 + number)),
                 Event::Crashed => return Err(crashed()),
             }
         }
@@ -200,11 +201,20 @@ fn start_worker(
 ) -> UnboundedSender<Effect> {
     let (jobs, mut queue): (UnboundedSender<Effect>, UnboundedReceiver<Effect>) =
         unbounded_channel();
+    // Registered here, before this returns and the terminal goes raw: a
+    // signal in between would otherwise take the default action and leave
+    // the terminal raw.
+    let signals = {
+        let _context = runtime.enter();
+        Signals::register()
+    };
     std::thread::spawn(move || {
         // The launcher's requests aren't `Send`: they run as local tasks.
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async move {
-            tokio::task::spawn_local(watch_signals(events.clone()));
+            if let Some(signals) = signals {
+                tokio::task::spawn_local(signals.watch(events.clone()));
+            }
             while let Some(effect) = queue.recv().await {
                 let task = tokio::task::spawn_local(perform(
                     effect,
@@ -224,21 +234,34 @@ fn start_worker(
     jobs
 }
 
-async fn watch_signals(events: Sender<Event>) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let (Ok(mut terminate), Ok(mut hangup), Ok(mut interrupt)) = (
-        signal(SignalKind::terminate()),
-        signal(SignalKind::hangup()),
-        signal(SignalKind::interrupt()),
-    ) else {
-        return;
-    };
-    tokio::select! {
-        _ = terminate.recv() => {}
-        _ = hangup.recv() => {}
-        _ = interrupt.recv() => {}
+/// SIGTERM, SIGHUP and SIGINT, caught from the moment they're registered.
+struct Signals {
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+}
+
+impl Signals {
+    /// Inside the runtime's context. `None` if they can't be: the default
+    /// actions stay.
+    fn register() -> Option<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Some(Self {
+            terminate: signal(SignalKind::terminate()).ok()?,
+            hangup: signal(SignalKind::hangup()).ok()?,
+            interrupt: signal(SignalKind::interrupt()).ok()?,
+        })
     }
-    let _ = events.send(Event::Signal);
+
+    /// The first of them stops the TUI, which restores the terminal.
+    async fn watch(mut self, events: Sender<Event>) {
+        let number = tokio::select! {
+            _ = self.terminate.recv() => 15,
+            _ = self.hangup.recv() => 1,
+            _ = self.interrupt.recv() => 2,
+        };
+        let _ = events.send(Event::Signal(number));
+    }
 }
 
 async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: Sender<Event>) {

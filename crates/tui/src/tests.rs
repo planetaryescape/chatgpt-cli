@@ -671,3 +671,53 @@ fn a_reload_that_brings_a_newer_revision_refetches_the_preview() {
         }]
     );
 }
+
+/// Title A, then B for the same chat (the box closed and opened again)
+/// before A answers: B waits for A, so B is the title that lands; a C typed
+/// meanwhile replaces B in the wait, and only C follows A.
+#[test]
+fn title_saves_to_one_chat_land_in_the_order_typed() {
+    let mut h = Harness::new();
+    let type_title = |h: &mut Harness, title: &str| -> Vec<Effect> {
+        h.key(KeyCode::Char('n'));
+        h.key_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        h.key_with(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        h.keys(title);
+        let effects = h.key(KeyCode::Enter);
+        h.key(KeyCode::Esc);
+        effects
+    };
+    let first = type_title(&mut h, "Title A");
+    let a = ticket_of(&first);
+    assert!(type_title(&mut h, "Title B").is_empty(), "B waits for A");
+    assert!(
+        type_title(&mut h, "Title C").is_empty(),
+        "C replaces B in the wait"
+    );
+    let effects = h.answer(Outcome::TitleSaved {
+        ticket: a,
+        result: Ok(()),
+    });
+    let next = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::SaveTitle { ticket, id, title } => Some((*ticket, id.clone(), title.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!((next.1.as_str(), next.2.as_str()), ("a1", "Title C"));
+    // C's answer sends nothing more.
+    let effects = h.answer(Outcome::TitleSaved {
+        ticket: next.0,
+        result: Ok(()),
+    });
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::SaveTitle { .. }))
+    );
+    // Another chat's title never waits on this one's.
+    h.key(KeyCode::Char('j'));
+    let other = type_title(&mut h, "Other");
+    assert!(matches!(other[..], [Effect::SaveTitle { .. }]));
+}
