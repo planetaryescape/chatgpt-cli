@@ -72,21 +72,10 @@ pub(super) async fn run(
                 ));
                 continue;
             };
-            match same_content(candidate, item) {
-                Err(why) => report.failures.push(format!("{}: {why}", candidate.id)),
+            match check(state, candidate, item).await {
+                Ok(true) => report.preserved += 1,
                 Ok(false) => report.changed += 1,
-                Ok(true) => {
-                    let id = candidate.id.clone();
-                    let candidate = candidate.clone();
-                    match state
-                        .db_write(move |db| chatgpt_store::preserve(db, &candidate))
-                        .await
-                    {
-                        Ok(true) => report.preserved += 1,
-                        Ok(false) => report.changed += 1,
-                        Err(failure) => report.failures.push(format!("{id}: {}", failure.message)),
-                    }
-                }
+                Err(why) => report.failures.push(format!("{}: {why}", candidate.id)),
             }
         }
         step.update(done);
@@ -107,6 +96,26 @@ pub(super) async fn run(
         tracing::warn!("reconcile failed: {failure}");
     }
     Ok(report)
+}
+
+/// One candidate against its fresh copy from the batch endpoint: when the
+/// title and rendered body are unchanged, move every cache forward
+/// (`Ok(true)`); otherwise leave them stale (`Ok(false)`). The search
+/// indexer runs this too before it replaces a stale transcript, so a
+/// metadata-only change never strands judgments, summaries or titles.
+pub(crate) async fn check(
+    state: &State,
+    candidate: &Candidate,
+    item: &BatchItem,
+) -> Result<bool, String> {
+    if !same_content(candidate, item)? {
+        return Ok(false);
+    }
+    let candidate = candidate.clone();
+    state
+        .db_write(move |db| chatgpt_store::preserve(db, &candidate))
+        .await
+        .map_err(|failure| failure.message)
 }
 
 /// `sameContent`. The batch endpoint returns old or rounded update times
@@ -170,6 +179,7 @@ mod tests {
                 .expect("render")
                 .replace("unknown model", "gpt-4"),
             turns: 1,
+            render_version: 2,
         }
     }
 

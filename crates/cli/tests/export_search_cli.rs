@@ -522,3 +522,126 @@ fn export_dash_takes_the_first_id_piped_in_after_checking_them_all() {
     assert_eq!(code, Some(0));
     assert!(stdout.starts_with("# Old garden plan\n"));
 }
+
+/// A project move: ChatGPT bumps `update_time` without changing the chat.
+/// On a named instance (no TS sync or import to paper over it) a sync whose
+/// cache reconcile couldn't run leaves the transcript, the judgment and the
+/// local title at the old time; the indexer must check the content before
+/// it replaces the transcript, and move them all forward.
+#[test]
+fn a_metadata_only_change_keeps_judgments_current_after_indexing() {
+    let mut env = Env::with_fake(chats());
+    env.extra_env
+        .push(("CHATGPT_INSTANCE".into(), "s2move".into()));
+    let data = env
+        .home
+        .path()
+        .join("Library/Application Support/chatgpt-cli-s2move/chatgpt.db");
+    env.cmd().arg("sync").assert().success();
+    wait_indexed(&env);
+    let old = "2026-09-26T10:00:00.000000Z";
+    {
+        let db = rusqlite::Connection::open(&data).unwrap();
+        support::judge(
+            &db,
+            "c-other",
+            old,
+            &support::delete_answers("home_money_admin"),
+        );
+        db.execute(
+            "insert into local_titles values ('c-other', ?, 2, 'luna', 'Local taxes', '', 'now')",
+            [old],
+        )
+        .unwrap();
+    }
+    let jev = |env: &Env| {
+        let rows: Vec<Value> = serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
+        let row = rows.into_iter().find(|row| row["id"] == "c-other").unwrap();
+        (
+            row["jev"]["suggestion"].clone(),
+            row["display_title"].clone(),
+        )
+    };
+    assert_eq!(
+        jev(&env),
+        (Value::from("delete"), Value::from("Local taxes"))
+    );
+
+    // The move; the sync's reconcile read fails, so nothing moves forward.
+    {
+        let mut fake = env.fake().state();
+        let chat = fake
+            .chats
+            .iter_mut()
+            .find(|chat| chat.id == "c-other")
+            .unwrap();
+        chat.update_time = "2026-09-29T10:00:00.000000Z".into();
+        chat.gizmo_id = Some("g-p-1".into());
+        fake.fail_batch = 1;
+    }
+    let sync = env.cmd().arg("sync").output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&sync.stderr).contains("failed: c-other: 500"),
+        "the sync couldn't reconcile"
+    );
+    wait_indexed(&env);
+    assert_eq!(
+        jev(&env),
+        (Value::from("delete"), Value::from("Local taxes")),
+        "the indexer's check moved the judgment and title forward"
+    );
+    assert_eq!(
+        env.stdout(&["search", "garden", "--format", "ids"])
+            .lines()
+            .filter(|id| *id == "c-other")
+            .count(),
+        1
+    );
+}
+
+/// An export too large for one IPC frame goes to the TS CLI with the same
+/// arguments and stdin, so its output is still the TS CLI's. A lowered frame
+/// cap (debug builds only) stands in for 16 MiB.
+#[test]
+fn an_export_too_large_for_the_socket_falls_back_to_the_ts_cli() {
+    let mut big = Chat::new("d-big", "Huge", "2026-09-28T10:00:00.000000Z");
+    big.text = "word ".repeat(40_000);
+    let mut all = chats();
+    all.push(big);
+    let mut env = Env::with_fake(all);
+    env.extra_env
+        .push(("CHATGPT_TEST_MAX_FRAME_BYTES".into(), "50000".into()));
+    env.fake_ts_cli(
+        "printf 'argv:'; for arg in \"$@\"; do printf ' [%s]' \"$arg\"; done; printf '\\nstdin:%s\\n' \"$(cat)\"; exit 4\n",
+    );
+    env.cmd().arg("sync").assert().success();
+
+    let output = env
+        .cmd()
+        .args(["--browser", "dia", "export", "d-big", "-o"])
+        .env("CHATGPT_TEST_COOKIE_DIA", fake_chatgpt::COOKIE)
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4), "the TS CLI's exit code");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "argv: [--browser] [dia] [export] [d-big] [-o]\nstdin:\n"
+    );
+
+    let output = env
+        .cmd()
+        .args(["export", "-"])
+        .write_stdin("d-big  2026-09-28  Huge\n")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "argv: [export] [-]\nstdin:d-big  2026-09-28  Huge\n",
+        "the TS CLI reads the same stdin"
+    );
+
+    // Anything that fits is still exported natively.
+    assert!(env.stdout(&["export", "c-other"]).starts_with("# Taxes\n"));
+}

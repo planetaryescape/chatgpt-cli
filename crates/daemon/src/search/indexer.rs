@@ -24,14 +24,14 @@ use std::time::{Duration, Instant};
 
 use chatgpt_core::ErrorKind;
 use chatgpt_protocol::SearchIndexStatus;
-use chatgpt_store::{ChunkVersions, Unindexed};
+use chatgpt_store::{Candidate, ChunkVersions, Unindexed};
 use tokio::sync::Notify;
 
 use super::chunks::{bun_sqlite_text, transcript_chunks};
 use crate::api::{ApiError, BATCH_MAX, BatchItem};
 use crate::render::cached_transcript;
 use crate::state::{State, now_unix};
-use crate::sync::{backoff_for, remaining};
+use crate::sync::{backoff_for, reconcile, remaining};
 
 const BATCH_GAP: Duration = Duration::from_millis(500);
 /// Cached transcripts chunked per write, so the writer is never held long.
@@ -247,6 +247,8 @@ async fn index(state: &State) -> Result<(), String> {
 }
 
 /// Cache and chunk what a batch returned; chats it left out wait an hour.
+/// A chat whose cached transcript is only older goes through the cache
+/// reconcile's check first, as `sync` would have done.
 async fn save_batch(
     state: &State,
     batch: Vec<Unindexed>,
@@ -257,26 +259,56 @@ async fn save_batch(
         .into_iter()
         .map(|item| (item.id.clone(), item))
         .collect();
+    // Chats whose cached transcript is for an older `update_time`: the
+    // reconcile's check decides whether that was only a metadata change.
+    let ids: Vec<String> = batch.iter().map(|chat| chat.id.clone()).collect();
+    let stale: HashMap<String, Candidate> = state
+        .db(move |db| chatgpt_store::candidates(db, &ids, versions.render))
+        .await
+        .map_err(|failure| failure.message)?
+        .into_iter()
+        .map(|candidate| (candidate.id.clone(), candidate))
+        .collect();
     let mut ready = Vec::new();
+    let mut preserved = Vec::new();
     let mut failed = Vec::new();
     for chat in batch {
-        match items
-            .remove(&chat.id)
-            .map(|item| cached_transcript(&item, &chat.update_time, versions.render))
-        {
-            Some(Ok(transcript)) => ready.push((chat, transcript)),
-            Some(Err(why)) => {
-                tracing::warn!(id = %chat.id, "search transcript not rendered: {why}");
-                failed.push(chat);
+        let Some(item) = items.remove(&chat.id) else {
+            tracing::info!(id = %chat.id, "ChatGPT did not return the chat for the search index");
+            failed.push(chat);
+            continue;
+        };
+        if let Some(candidate) = stale.get(&chat.id) {
+            match reconcile::check(state, candidate, &item).await {
+                // Unchanged: every cache moved to `update_time`, so the
+                // cached transcript is current; only chunks are needed.
+                Ok(true) => {
+                    preserved.push((chat, candidate.markdown.clone()));
+                    continue;
+                }
+                // Changed: replace it below and leave the rest stale.
+                Ok(false) => {}
+                Err(why) => {
+                    tracing::warn!(id = %chat.id, "search transcript not checked: {why}");
+                    failed.push(chat);
+                    continue;
+                }
             }
-            None => {
-                tracing::info!(id = %chat.id, "ChatGPT did not return the chat for the search index");
+        }
+        match cached_transcript(&item, &chat.update_time, versions.render) {
+            Ok(transcript) => ready.push((chat, transcript)),
+            Err(why) => {
+                tracing::warn!(id = %chat.id, "search transcript not rendered: {why}");
                 failed.push(chat);
             }
         }
     }
     unavailable(state, &failed);
-    let saved = u64::try_from(ready.len()).unwrap_or(u64::MAX);
+    let saved = u64::try_from(ready.len() + preserved.len()).unwrap_or(u64::MAX);
+    let preserved: Vec<_> = preserved
+        .into_iter()
+        .map(|(chat, markdown)| (chat, chunk_bytes(&markdown)))
+        .collect();
     // Chunked before taking the writer.
     let ready: Vec<_> = ready
         .into_iter()
@@ -289,6 +321,9 @@ async fn save_batch(
         .db_write(move |db| {
             for (chat, transcript, bodies) in &ready {
                 chatgpt_store::save_indexed(db, transcript, chat, versions, bodies)?;
+            }
+            for (chat, bodies) in &preserved {
+                chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
             }
             Ok(())
         })

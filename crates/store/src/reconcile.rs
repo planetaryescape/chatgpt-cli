@@ -17,6 +17,7 @@ pub struct Candidate {
     pub cached_update_time: String,
     pub markdown: String,
     pub turns: i64,
+    pub render_version: u32,
 }
 
 /// The candidates among `ids`, in `ids` order (duplicates dropped).
@@ -46,6 +47,7 @@ pub fn candidates(
                     cached_update_time: row.get(4)?,
                     markdown: row.get(5)?,
                     turns: row.get(6)?,
+                    render_version,
                 })
             })
             .optional()?;
@@ -55,7 +57,9 @@ pub fn candidates(
 }
 
 /// Move every cache of `candidate` from its cached `update_time` to the
-/// chat's current one, unless the chat changed again since it was read.
+/// chat's current one, unless the chat changed again since it was read or
+/// its cached transcript is no longer the one that was verified (an import
+/// may have replaced it while the check ran).
 /// Returns whether it did. Search chunks move too when they were indexed
 /// from the cached version under the same title.
 pub fn preserve(connection: &mut Connection, candidate: &Candidate) -> Result<bool> {
@@ -68,6 +72,23 @@ pub fn preserve(connection: &mut Connection, candidate: &Candidate) -> Result<bo
         )
         .optional()?;
     if current.as_ref() != Some(&(candidate.update_time.clone(), candidate.title.clone())) {
+        return Ok(false);
+    }
+    let verified = transaction
+        .query_row(
+            "select 1 from transcripts
+             where id = ? and update_time = ? and render_version = ? and markdown = ?",
+            params![
+                candidate.id,
+                candidate.cached_update_time,
+                candidate.render_version,
+                candidate.markdown
+            ],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !verified {
         return Ok(false);
     }
     for table in [

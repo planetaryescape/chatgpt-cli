@@ -11,6 +11,7 @@ use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{Request, ResponseData, SessionChoice};
 
 use crate::args::ExportArgs;
+use crate::bridge;
 use crate::output::{data, io_error, note, unexpected};
 use crate::reads::stale_note;
 
@@ -18,12 +19,14 @@ pub async fn export(
     paths: &Paths,
     args: ExportArgs,
     session: SessionChoice,
+    argv: &[std::ffi::OsString],
 ) -> Result<ExitCode, ClientError> {
-    let stdin_ids = if args.link == "-" {
-        read_stdin_ids()?
+    let piped = if args.link == "-" {
+        Some(read_stdin()?)
     } else {
-        Vec::new()
+        None
     };
+    let stdin_ids = piped.as_deref().map(stdin_ids).unwrap_or_default();
     let request = Request::Export {
         reference: args.link,
         stdin_ids,
@@ -31,8 +34,17 @@ pub async fn export(
         all: args.all,
         session,
     };
-    let ResponseData::Exported(chat) = chatgpt_launcher::ask(paths, request, |_| {}).await? else {
-        return Err(unexpected());
+    let chat = match chatgpt_launcher::ask(paths, request, |_| {}).await? {
+        ResponseData::Exported(chat) => chat,
+        // Too large for the daemon's socket: the TS CLI writes it instead,
+        // with the same arguments (and the same stdin).
+        ResponseData::ExportTooLarge => {
+            return Ok(match &piped {
+                Some(text) => bridge::run_with_stdin(argv, text.as_bytes()),
+                None => bridge::exec(argv),
+            });
+        }
+        _ => return Err(unexpected()),
     };
     if let Some(synced_at) = &chat.synced_at {
         stale_note(synced_at);
@@ -65,16 +77,16 @@ pub async fn export(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `readStdinIds`: the first word of each line, so `list` output can be
-/// piped in.
-fn read_stdin_ids() -> Result<Vec<String>, ClientError> {
+fn read_stdin() -> Result<String, ClientError> {
     let mut text = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|error| {
         ClientError::new(ErrorKind::Internal, format!("reading stdin: {error}"))
     })?;
-    Ok(stdin_ids(&text))
+    Ok(text)
 }
 
+/// `readStdinIds`: the first word of each line, so `list` output can be
+/// piped in.
 fn stdin_ids(text: &str) -> Vec<String> {
     text.split('\n')
         .filter_map(|line| trim(line).split(is_space).next())

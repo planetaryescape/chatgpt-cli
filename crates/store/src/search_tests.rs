@@ -355,3 +355,36 @@ fn moving_a_transcript_forward_keeps_its_chunks() {
         .unwrap();
     assert_eq!(left, 1);
 }
+
+#[test]
+fn reconcile_skips_a_transcript_replaced_after_it_was_verified() {
+    let (_dir, store) = store_with(&[chat("a", "Idea", "t2", false)]);
+    store
+        .write(|db| {
+            db.execute(
+                "insert into transcripts values ('a', 't1', 2, '# Idea A', 1, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    // The reconcile snapshots A and checks it against ChatGPT…
+    let found = store
+        .read(|db| candidates(db, &["a".to_owned()], 2))
+        .unwrap();
+    // …while an import replaces it with B under the same time.
+    store
+        .write(|db| {
+            db.execute(
+                "update transcripts set markdown = '# Idea B' where id = 'a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!store.write(|db| preserve(db, &found[0])).unwrap());
+    let time: String = store
+        .read(|db| Ok(db.query_row("select update_time from transcripts", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(time, "t1", "B stays stale");
+}

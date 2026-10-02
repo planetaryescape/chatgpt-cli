@@ -37,7 +37,7 @@ pub fn main(daemon: DaemonEntry) -> ExitCode {
         return bridge::exec(&args);
     }
     let cli = Cli::parse_from(&args);
-    match run(cli, daemon) {
+    match run(cli, daemon, &args) {
         Ok(code) => code,
         Err(error) => {
             output::error_line(&error.message);
@@ -86,7 +86,9 @@ fn is_native(args: &[OsString]) -> bool {
     }
 }
 
-fn run(cli: Cli, daemon: DaemonEntry) -> Result<ExitCode, ClientError> {
+/// `args`: the command line as typed, for a native command that has to hand
+/// over to the TS CLI after all.
+fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, ClientError> {
     let instance = Instance::detect(cli.instance.as_deref())
         .map_err(|error| ClientError::new(ErrorKind::InvalidInput, error.to_string()))?;
     let paths = Paths::resolve(instance)
@@ -105,7 +107,7 @@ fn run(cli: Cli, daemon: DaemonEntry) -> Result<ExitCode, ClientError> {
                 Command::Sync { full } => sync_cmd::sync(&paths, full, session).await,
                 Command::List(list) => reads::list(&paths, list).await,
                 Command::Stats(filters) => reads::stats(&paths, filters, session).await,
-                Command::Export(export) => export_cmd::export(&paths, export, session).await,
+                Command::Export(export) => export_cmd::export(&paths, export, session, args).await,
                 Command::Search(search) => search_cmd::search(&paths, search).await,
                 Command::ImportLegacy => sync_cmd::import_legacy(&paths).await,
                 Command::Daemon(DaemonCommand::Status { json }) => {

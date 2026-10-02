@@ -21,7 +21,7 @@ Native commands ask a background daemon over a Unix socket. A native command tha
 - backs off for as long as ChatGPT's rate limit asks (at least a minute, at most an hour) and shows it in `chatgpt daemon status`. A rate limit in any step, the cache reconcile included, ends the pass, and the TS sync waits for the next one;
 - logs to `~/Library/Application Support/chatgpt-cli/logs/daemon.log.<date>`, one file a day, seven kept. Logs never hold cookies, tokens or response bodies.
 
-`list` and `search` never touch the network. `stats` reads the saved memories live, as the TS CLI does. `export` always fetches the chat from the single-chat endpoint, as the TS CLI does, rather than using a cached transcript: the cache is filled from the batch endpoint, which doesn't name the model, so its header would differ.
+`list` and `search` never touch the network. `stats` reads the saved memories live, as the TS CLI does. `export` always fetches the chat from the single-chat endpoint, as the TS CLI does, rather than using a cached transcript: the cache is filled from the batch endpoint, which doesn't name the model, so its header would differ. An export too large for one IPC frame (16 MiB) is handed to the TS CLI with the same arguments until exports are streamed (`docs/issues/export-frame-limit.md`).
 
 ## The search index
 
@@ -29,6 +29,7 @@ Lexical `search` needs no `search-index` step. The daemon keeps a full-text inde
 
 - When it starts, it chunks every cached transcript that's current for its chat. After every successful sync pass, and after an import, it also fetches the transcripts it lacks through the batch endpoint, 10 chats per call with half a second between calls, as `search-index` does. A daemon that has not yet synced in its lifetime fetches nothing, so a cold start reads no cookies.
 - Chunks count as current only while they were built from the transcript the cache holds: any write that brings a transcript new content (the TS import, the indexer) drops that chat's chunks in the same transaction (triggers in `crates/store/migrations/0003_search_follows_transcripts.sql`), so the cache reconcile can only move forward chunks of the content it verified.
+- Before the indexer replaces a transcript that is only older than its chat, it runs the cache reconcile's check on it: unchanged content moves every cache (judgments, summaries, titles, chunks) forward, as `sync` would have; changed content replaces the transcript and leaves the rest stale.
 - Each chat's transcript and chunks are written in one short transaction, so `list` and `search` never wait and an interrupted run continues where it stopped. Active, archived and pinned chats are all indexed; `search` filters by scope.
 - It steps aside while a `sync` or `export` runs. A rate limit stops fetching for as long as ChatGPT asked (between a minute and an hour) without holding up syncs, a chat ChatGPT doesn't return (or whose batch it answers with an error) is asked for again after an hour, and a timeout or dropped connection ends the run until the next pass.
 - `chatgpt daemon status` shows `search index: N of M chats indexed`, whether it's indexing, how many transcripts it fetched, and why it's waiting. While the index is incomplete, `search` answers from what's indexed and says `N of M chats indexed` on stderr.

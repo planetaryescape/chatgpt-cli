@@ -38,6 +38,10 @@ pub enum ResponseData {
     Imported(ImportReport),
     Ack,
     Exported(Box<ExportedChat>),
+    /// The export is too large for one IPC frame ([`crate::MAX_FRAME_BYTES`]):
+    /// the client hands the command to the TS CLI instead, until exports
+    /// are streamed (docs/issues/export-frame-limit.md).
+    ExportTooLarge,
     SearchHits(SearchResults),
     #[serde(other)]
     Unknown,
