@@ -129,7 +129,8 @@ fn chunks_are_searchable_only_while_current_for_their_chat() {
 #[test]
 fn chunk_bytes_that_are_not_utf8_are_stored_and_read_as_they_are() {
     let (_dir, store) = store_with(&[chat("a", "T", "2026-01-01T00:00:00Z", false)]);
-    // What Bun writes for a chunk ending in half of a surrogate pair.
+    // What a chunk from before CHUNK_VERSION 2 can hold: the bytes Bun
+    // wrote for half of a surrogate pair.
     let body = b"hello rust \xED\xA0\xBD".to_vec();
     store
         .write(|db| {

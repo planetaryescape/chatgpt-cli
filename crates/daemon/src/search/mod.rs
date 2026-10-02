@@ -56,16 +56,11 @@ pub fn coverage(
     })
 }
 
-/// `text.slice(0, units)`: at most the first `units` UTF-16 code units,
-/// less one when the cut would split an emoji's surrogate pair.
+/// At most the first `units` UTF-16 code units of `text`, never cutting
+/// through a character (where JS's `text.slice(0, units)` would split an
+/// emoji's surrogate pair).
 pub fn slice_units(text: &str, units: usize) -> String {
-    let mut taken = 0;
-    text.chars()
-        .take_while(|c| {
-            taken += c.len_utf16();
-            taken <= units
-        })
-        .collect()
+    chatgpt_core::js::utf16_prefix(text, units).to_owned()
 }
 
 /// The longest local snippet, in UTF-16 code units (`excerpt`).

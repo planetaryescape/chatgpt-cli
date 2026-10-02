@@ -225,8 +225,8 @@ pub async fn run_scheduled(state: std::sync::Arc<State>) {
     }
 }
 
-/// One pass. A background pass that fails is retried at the next interval; one that hit a rate limit waits
-/// out the backoff first.
+/// One pass. A background pass that fails is retried at the next interval;
+/// one that hit a rate limit waits out the backoff first.
 pub async fn run_pass(
     state: &std::sync::Arc<State>,
     options: PassOptions,

@@ -36,8 +36,7 @@ fn plist_path() -> Result<PathBuf, ClientError> {
 }
 
 /// The agent: `<exe> daemon run --instance default`, kept alive after a
-/// crash, with the installing shell's PATH so the daemon finds bun for the
-/// TS sync.
+/// crash, with the installing shell's PATH.
 fn plist(program: &Path, stderr: &Path, path_var: Option<&str>) -> Result<String, ClientError> {
     use plist::{Dictionary, Value};
     let text = |value: &str| Value::String(value.to_owned());

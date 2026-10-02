@@ -273,7 +273,8 @@ mod tests {
                 "Rust async runtimes compared: tokio, smol and async-std for a small CLI daemon.",
             )
             .expect("embed");
-        // `bun scripts/dump-embeddings.ts --batch 1` for the same text.
+        // The TS CLI's vector for the same text, recorded with
+        // `bun scripts/dump-embeddings.ts --batch 1` (in tag v0.1.5).
         let ts: Vec<f32> =
             serde_json::from_str(include_str!("../tests/data/ts_vector.json")).expect("vector");
         let cosine: f32 = vector.iter().zip(&ts).map(|(a, b)| a * b).sum();
