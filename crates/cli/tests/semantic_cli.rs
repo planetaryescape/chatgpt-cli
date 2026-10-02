@@ -405,6 +405,7 @@ fn an_index_from_0_1_1_upgrades_in_place_and_embeds_in_the_background() {
     let db = Connection::open(env.data_dir().join("chatgpt.db")).unwrap();
     db.execute_batch(
         "drop trigger search_chunks_delete_vectors; drop table search_vectors;
+         drop trigger search_chunks_delete_vector_failures; drop table search_vector_failures;
          pragma user_version = 3;",
     )
     .unwrap();

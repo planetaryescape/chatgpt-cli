@@ -5,9 +5,10 @@
 //! `fixtures/v0.1.5-list.json` is what that build's `list --json --all`
 //! printed for it. Nothing in it is anyone's real data.
 //!
-//! The new daemon must keep every row, drop `native_rows` (migration 6),
-//! and rebuild every search chunk at `CHUNK_VERSION` 2 from the cached
-//! transcripts, then embed them, without the network: this environment has
+//! The new daemon must keep every row, drop `native_rows` (migration 6)
+//! and the chunks that may not be UTF-8 (migration 7), and rebuild every
+//! search chunk at `CHUNK_VERSION` 2 from the cached transcripts, then
+//! embed them, without the network: this environment has
 //! no browser session and no reachable chatgpt.com.
 
 #![allow(clippy::unwrap_used)]
@@ -118,7 +119,7 @@ fn an_index_from_0_1_5_keeps_its_data_and_rechunks_without_the_network() {
     assert!(status["sync"]["last_summary"].is_null(), "{status}");
 
     let db = Connection::open(&database).unwrap();
-    assert_eq!(count(&db, "pragma user_version"), 6);
+    assert_eq!(count(&db, "pragma user_version"), 8);
     assert_eq!(
         count(
             &db,
