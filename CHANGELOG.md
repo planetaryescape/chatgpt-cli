@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.1...v0.1.2) (2026-10-02)
+
+
+### Features
+
+* native semantic, hybrid and remote search with background embeddings ([#8](https://github.com/planetaryescape/chatgpt-cli/issues/8)) ([d610075](https://github.com/planetaryescape/chatgpt-cli/commit/d6100757b882ef0446f3cc5ba337474b0559d78f))
+
 ## [0.1.1](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.0...v0.1.1) (2026-10-02)
 
 
