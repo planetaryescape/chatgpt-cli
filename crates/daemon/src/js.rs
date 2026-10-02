@@ -60,7 +60,7 @@ fn round_half_up(whole: &str, kept: &str, digits: usize) -> String {
     format!("{}.{}", &text[..split], &text[split..])
 }
 
-pub use crate::js_regex::{JsRegex, regex};
+pub use crate::js_regex::{JsRegex, JsString, regex};
 pub use chatgpt_core::js::{number, trim};
 
 /// How a template literal prints a JSON value (`${value}`): `undefined` for

@@ -47,9 +47,9 @@ Before a change to the TUI, run `cargo nextest run -p chatgpt-tui` (keys and scr
 
 ### Output pinned from the TS CLI
 
-The CLI began as a TypeScript one, and the Rust port matched its output byte for byte. The parity harnesses that proved it ran both CLIs; they live in tag `v0.1.5`. What the TS CLI printed in their last run is frozen in `crates/cli/tests/golden/*.jsonl`, and `crates/cli/tests/golden.rs` builds the same data for the Rust CLI alone and requires the same output: `list` and `stats` over 120 synthetic chats with every kind of verdict, and `export` plus lexical, semantic, hybrid and remote `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). For an intended change, `CHATGPT_UPDATE_GOLDEN=1 cargo nextest run -p chatgpt-cli --test golden` rewrites the files; read the diff and give the reason in the commit. Deliberate changes so far: search chunks and snippets never hold half an emoji (`CHUNK_VERSION` 2).
+The CLI began as a TypeScript one, and the Rust port matched its output byte for byte. The parity harnesses that proved it ran both CLIs; they live in tag `v0.1.5`. What the TS CLI printed in their last run is frozen in `crates/cli/tests/golden/*.jsonl`, and `crates/cli/tests/golden.rs` builds the same data for the Rust CLI alone and requires the same output: `list` and `stats` over 120 synthetic chats with every kind of verdict, and `export` plus lexical, semantic, hybrid and remote `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). For an intended change, `CHATGPT_UPDATE_GOLDEN=1 cargo nextest run -p chatgpt-cli --test golden` rewrites the files; read the diff and give the reason in the commit. Deliberate changes so far: search chunks and snippets never hold half an emoji (`CHUNK_VERSION` 2); equal semantic scores are ordered by chat id (stage 7).
 
-`crates/cli/tests/upgrade_cli.rs` opens an index made by v0.1.5 (`fixtures/v0.1.5.db`, synthetic chats only) with the current daemon and checks every row survives, `native_rows` is dropped, and the search chunks are rebuilt without the network.
+`crates/cli/tests/upgrade_cli.rs` opens an index made by v0.1.5 (`fixtures/v0.1.5.db`, synthetic chats only) with the current daemon and checks every row survives, `native_rows` is dropped, and the transcripts (rendered at version 2) are fetched again from the fake chatgpt.com and chunked.
 
 ### impit
 
@@ -77,7 +77,7 @@ Search index changes that alter passage text bump `CHUNK_VERSION` in `crates/dae
 | Luna's local-title prompt (`prompts/titles.txt`) or result meaning | Bump `local_title_version`; next `titles` regenerates titles and themes |
 | The summary prompt (`prompts/summary.txt`) | Bump `SUMMARY_PROMPT_VERSION` in `classify/summarise.rs`; long chats are re-summarised on your subscriptions |
 | The memory review prompt (`prompts/memory_review.txt`) | Bump `memory_version` |
-| Transcript rendering (`crates/daemon/src/render.rs`) | Bump `render_version`; transcripts are re-downloaded |
+| Transcript rendering (`crates/daemon/src/render.rs`) | Bump `RENDER_VERSION` there; every reader looks transcripts up at it, so the indexer re-downloads them all through the batch endpoint (about six minutes for 800 chats) |
 | A provider's prices | Update the `Price` constants in `crates/daemon/src/classify/costs.rs` with the new source and date |
 
 The question files are the questions' source: edit them directly. They were first written out from the TS CLI's sources.

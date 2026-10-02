@@ -69,19 +69,35 @@ impl JsRegex {
         })
     }
 
-    /// `text.replace(regex, () => replacement)`, at most `limit` times (0
-    /// for every match). `None` when the budget runs out.
-    pub fn replacen(&self, text: &str, limit: usize, replacement: &str) -> Option<String> {
-        let units = to_units(text);
+    /// `text = text.replace(regex, () => replacement)`, at most `limit`
+    /// times (0 for every match). `None`, leaving `text` as it was, when
+    /// the budget runs out.
+    pub fn replacen(&self, text: &mut JsString, limit: usize, replacement: &str) -> Option<()> {
         let replacement = to_units(replacement);
         let replaced = self
             .0
-            .try_replacen(&units, limit, fancy_regex::NoExpand(&replacement))
-            .ok()?;
-        Some(match (&units, &replacement) {
-            (Cow::Borrowed(_), Cow::Borrowed(_)) => replaced.into_owned(),
-            _ => from_units(&replaced),
-        })
+            .try_replacen(&text.0, limit, fancy_regex::NoExpand(&replacement))
+            .ok()?
+            .into_owned();
+        text.0 = replaced;
+        Some(())
+    }
+}
+
+/// A string as JS holds it, in UTF-16 code units: half an emoji left by
+/// one edit is still there for the next, and becomes U+FFFD only when the
+/// text is written out ([`JsString::into_string`]), as JS's UTF-8 output
+/// does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JsString(String);
+
+impl JsString {
+    pub fn new(text: &str) -> Self {
+        Self(to_units(text).into_owned())
+    }
+
+    pub fn into_string(self) -> String {
+        from_units(&self.0)
     }
 }
 
@@ -339,13 +355,15 @@ fn class_atom(chars: &mut Chars<'_>) -> ClassAtom {
                 .next()
                 .map_or(u32::from('c'), |letter| u32::from(letter) % 32),
         ),
-        // A legacy octal escape, at most 0o377.
+        // A legacy octal escape: at most three digits, at most 0o377.
         '0'..='7' => {
             let mut value = u32::from(next) - u32::from('0');
+            let mut digits = 1;
             while let Some(digit) = chars.peek().and_then(|c| c.to_digit(8)) {
-                if value * 8 + digit > 0o377 {
+                if digits == 3 || value * 8 + digit > 0o377 {
                     break;
                 }
+                digits += 1;
                 value = value * 8 + digit;
                 chars.next();
             }
@@ -416,16 +434,47 @@ mod tests {
     }
 
     #[test]
-    fn replacing_half_an_emoji_leaves_a_replacement_character() {
-        assert_eq!(
-            js("^.").replacen("👍!", 1, "x").as_deref(),
-            Some("x\u{FFFD}!")
-        );
-        assert_eq!(js("b").replacen("a😀b", 0, "😂").as_deref(), Some("a😀😂"));
+    fn replacing_half_an_emoji_leaves_a_replacement_character_when_written() {
+        let replaced = |pattern: &str, text: &str, limit: usize, with: &str| {
+            let mut text = JsString::new(text);
+            js(pattern)
+                .replacen(&mut text, limit, with)
+                .expect("in budget");
+            text.into_string()
+        };
+        assert_eq!(replaced("^.", "👍!", 1, "x"), "x\u{FFFD}!");
+        assert_eq!(replaced("b", "a😀b", 0, "😂"), "a😀😂");
         // Text in the stand-ins' own range comes through untouched.
         let private = "\u{F0001}\u{F0400}";
-        assert_eq!(js("x").replacen(private, 0, "y").as_deref(), Some(private));
+        assert_eq!(replaced("x", private, 0, "y"), private);
         assert_eq!(js("..").find(private).as_deref(), Some("\u{F0001}"));
+    }
+
+    // The coordinator's repro, as node runs it: `d = "👍"; d =
+    // d.replace(/^./, () => ""); d = d.replace(/^\uDC4D$/, () => "OK")` is
+    // "OK". The half emoji the first edit leaves is still there for the
+    // second.
+    #[test]
+    fn half_an_emoji_survives_from_one_edit_to_the_next() {
+        let mut doc = JsString::new("👍");
+        js("^.").replacen(&mut doc, 1, "").expect("in budget");
+        js(r"^\uDC4D$")
+            .replacen(&mut doc, 1, "OK")
+            .expect("in budget");
+        assert_eq!(doc.into_string(), "OK");
+    }
+
+    // Annex B reads at most three octal digits, up to 0o377. Expected
+    // values from node: `/^[\0000]+$/.test("\0" + "0")` and so on.
+    #[test]
+    fn legacy_octal_escapes_read_at_most_three_digits() {
+        assert!(js(r"^[\0000]+$").is_match("\u{0}0"));
+        assert!(js(r"^[\0000]$").is_match("\u{0}"));
+        assert!(js(r"^[\0100]+$").is_match("\u{8}0"));
+        assert!(!js(r"^[\0100]$").is_match("@"));
+        assert!(js(r"^[\400]+$").is_match(" 0"));
+        assert!(js(r"^[\377]$").is_match("\u{FF}"));
+        assert!(js(r"^[\08]+$").is_match("\u{0}8"));
     }
 
     #[test]

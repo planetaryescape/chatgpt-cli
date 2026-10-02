@@ -72,6 +72,10 @@ Cost this run:
 
 Prices live in `crates/daemon/src/classify/costs.rs`, with their sources.
 
+## After upgrading from 0.2.0
+
+The rendering of canvas edits changed (render version 3: they match by UTF-16 code unit, as JavaScript does), so every cached transcript is out of date. The daemon fetches each chat once more in the background through ChatGPT's batch endpoint, then chunks and embeds it again: about six minutes for 800 chats, plus the embedding. Judgments, titles and summaries are kept. Search keeps answering meanwhile, from the chats already re-fetched; `daemon status` shows the progress. Chunks that could hold invalid text from before 0.1.6 are dropped, and chunks the embedding model fails on are now set aside for a day rather than until the daemon restarts.
+
 ## After upgrading from 0.1.5
 
 0.1.5 was the last release with the old TS CLI in the repository. The first daemon of a newer release keeps your index, judgments, titles and summaries, and rebuilds the search passages from cached transcripts without the network (they no longer split an emoji), then embeds them again: about half an hour on one core for a large history. Lexical search works throughout; semantic and hybrid search say `N of M chunks embedded` until it's done. `chatgpt import-legacy` is gone. The TS CLI's database, `~/.local/share/chatgpt-cli/index.db`, is no longer read; delete it when you no longer want it.

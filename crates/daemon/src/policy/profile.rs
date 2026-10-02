@@ -33,7 +33,7 @@ impl Profile {
             luna_version: 8,
             local_title_version: 2,
             memory_version: "2026-09-28.5".into(),
-            render_version: 2,
+            render_version: crate::render::RENDER_VERSION,
             topics: [
                 "employer_work",
                 "side_projects",

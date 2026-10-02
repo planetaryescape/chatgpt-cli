@@ -1,12 +1,20 @@
 //! Conversation rendering, as far as the cache reconcile needs it: the
 //! markdown the TS CLI caches for a chat and its turn count. Ported from the
-//! TS CLI's `src/render/transcript.ts` @ 1b8c950 (RENDER_VERSION 2).
+//! TS CLI's `src/render/transcript.ts` @ 1b8c950 (its RENDER_VERSION 2).
 //!
 //! The reconcile compares a fresh render with the cached one, so a
 //! difference here only leaves a cache stale (the conservative side); it
 //! never keeps one current wrongly unless both renders agree.
 
 use std::collections::HashSet;
+
+/// Bump when the markdown a chat renders to changes: transcripts cached at
+/// another version are stale everywhere (export, previews, classification,
+/// the reconcile and search chunks), and the indexer fetches them again.
+///
+/// 3: canvas edits match by UTF-16 code unit, as JS regexes without the
+/// `u` flag do, and keep half an emoji from one edit to the next.
+pub const RENDER_VERSION: u32 = 3;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -239,7 +247,8 @@ pub fn visible_turns(convo: &Conversation) -> Result<Vec<(&'static str, String)>
 /// Canvas documents in their final state: `create_textdoc` carries a whole
 /// document, `update_textdoc` regex edits to the last one.
 fn final_canvases(convo: &Conversation) -> Vec<(String, String)> {
-    let mut docs: Vec<(String, String)> = Vec::new();
+    // Each document stays a JS string (UTF-16 units) through all its edits.
+    let mut docs: Vec<(String, js::JsString)> = Vec::new();
     for message in visible_thread(convo) {
         let raw = message
             .content()
@@ -253,7 +262,7 @@ fn final_canvases(convo: &Conversation) -> Vec<(String, String)> {
             Some("canmore.create_textdoc") => {
                 if let Ok(doc) = serde_json::from_str::<Value>(raw) {
                     let field = |name: &str| js::template(doc.get(name));
-                    docs.push((field("name"), field("content")));
+                    docs.push((field("name"), js::JsString::new(&field("content"))));
                 }
             }
             Some("canmore.update_textdoc") => {
@@ -275,22 +284,23 @@ fn final_canvases(convo: &Conversation) -> Vec<(String, String)> {
             _ => {}
         }
     }
-    docs
+    docs.into_iter()
+        .map(|(name, content)| (name, content.into_string()))
+        .collect()
 }
 
 /// One canvas edit: `.*` replaces the document, anything else is a regex
 /// whose matches become the replacement text literally.
-fn apply_update(content: &mut String, update: &Value) -> Option<()> {
+fn apply_update(content: &mut js::JsString, update: &Value) -> Option<()> {
     let pattern = update.get("pattern")?.as_str()?;
     let replacement = update.get("replacement")?.as_str()?;
     if pattern == ".*" {
-        *content = replacement.to_owned();
+        *content = js::JsString::new(replacement);
         return Some(());
     }
     let regex = js::regex(pattern, false).ok()?;
     let multiple = update.get("multiple").and_then(Value::as_bool) == Some(true);
-    *content = regex.replacen(content, if multiple { 0 } else { 1 }, replacement)?;
-    Some(())
+    regex.replacen(content, if multiple { 0 } else { 1 }, replacement)
 }
 
 /// `renderTranscript` with `create_time` already formatted as
@@ -412,11 +422,74 @@ mod tests {
 
     #[test]
     fn canvas_edits_use_js_regex_semantics() {
-        let mut content = "café menu".to_owned();
+        let mut content = js::JsString::new("café menu");
         let edit = json!({ "pattern": r"\w+", "replacement": "X", "multiple": true });
         apply_update(&mut content, &edit).expect("applied");
         // JS's \w stops at é.
-        assert_eq!(content, "Xé X");
+        assert_eq!(content.into_string(), "Xé X");
+    }
+
+    /// A canvas whose edits count UTF-16 units across an emoji, as the
+    /// TS CLI rendered it: one edit leaves half of 👍, the next matches
+    /// that half. Rendering version 2 printed U+FFFD and left `^..$` alone.
+    #[test]
+    fn canvas_edits_work_in_utf16_units_across_a_whole_document() {
+        let canvas = |updates: Value| {
+            let mapping = json!({
+                "root": node(None, Value::Null),
+                "tool": node(Some("root"), json!({
+                    "author": {"role": "assistant"}, "recipient": "canmore.create_textdoc",
+                    "content": {"content_type": "code", "text": "{\"name\":\"Doc\",\"content\":\"👍\"}"}
+                })),
+                "edit": node(Some("tool"), json!({
+                    "author": {"role": "assistant"}, "recipient": "canmore.update_textdoc",
+                    "content": {"content_type": "code", "text": json!({ "updates": updates }).to_string()}
+                })),
+            });
+            let rendered =
+                render_transcript("id", &convo(mapping, "edit"), "2026-09-01").expect("render");
+            rendered
+                .rsplit_once("## Canvas (final): Doc\n\n")
+                .map(|(_, doc)| doc.to_owned())
+                .expect("canvas")
+        };
+        assert_eq!(
+            canvas(json!([{ "pattern": "^..$", "replacement": "two units" }])),
+            "two units\n"
+        );
+        assert_eq!(
+            canvas(json!([
+                { "pattern": "^.", "replacement": "" },
+                { "pattern": "^\\uDC4D$", "replacement": "OK" }
+            ])),
+            "OK\n"
+        );
+        assert_eq!(
+            canvas(json!([{ "pattern": "^.", "replacement": "" }])),
+            "\u{FFFD}\n",
+            "a lone half is written as U+FFFD"
+        );
+    }
+
+    /// Transcripts cached by an older render are stale for every reader:
+    /// each one looks the cache up at this version.
+    #[test]
+    fn a_transcript_cached_at_render_version_2_is_stale() {
+        use crate::policy::Profile;
+        assert_eq!(Profile::current().render_version, RENDER_VERSION);
+        assert_eq!(crate::search::versions(Profile::current()).render, 3);
+        let dir = tempfile::tempdir().expect("dir");
+        let store = chatgpt_store::Store::open(&dir.path().join("chatgpt.db")).expect("store");
+        let found = store
+            .write(|db| {
+                db.execute(
+                    "insert into transcripts values ('a', 't', 2, '# Old', 1, 1)",
+                    [],
+                )?;
+                chatgpt_store::transcript(db, "a", "t", Profile::current().render_version)
+            })
+            .expect("read");
+        assert_eq!(found, None);
     }
 
     #[test]
