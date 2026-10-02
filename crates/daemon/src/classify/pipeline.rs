@@ -447,6 +447,28 @@ pub async fn save_transcripts(
     state: &State,
     saved: &[(IndexedConversation, Transcript)],
 ) -> Result<(), Failure> {
+    save(state, saved, false).await.map(|_| ())
+}
+
+/// [`save_transcripts`] for one transcript, only while the index still
+/// has the chat at the `update_time` it was fetched under: a fetch that a
+/// sync overtook (the chat moved on, its caches with it) mustn't write its
+/// older revision over theirs. Whether it was saved.
+pub async fn save_transcript_if_current(
+    state: &State,
+    chat: &IndexedConversation,
+    transcript: Transcript,
+) -> Result<bool, Failure> {
+    Ok(save(state, &[(chat.clone(), transcript)], true).await? == 1)
+}
+
+/// Save `saved` under the pass lock, all of them or (`only_current`) those
+/// whose chat's `update_time` hasn't moved; how many were saved.
+async fn save(
+    state: &State,
+    saved: &[(IndexedConversation, Transcript)],
+    only_current: bool,
+) -> Result<usize, Failure> {
     let versions = crate::search::versions(state.profile());
     let rows: Vec<(Unindexed, Transcript, Vec<Vec<u8>>)> = saved
         .iter()
@@ -464,10 +486,23 @@ pub async fn save_transcripts(
     let _no_pass = state.syncer.exclusive().await;
     state
         .db_write(move |db| {
+            let mut count = 0;
             for (target, transcript, bodies) in &rows {
+                if only_current {
+                    let current: Option<String> =
+                        rusqlite::OptionalExtension::optional(db.query_row(
+                            "select update_time from conversations where id = ?",
+                            [&target.id],
+                            |row| row.get(0),
+                        ))?;
+                    if current.as_deref() != Some(target.update_time.as_str()) {
+                        continue;
+                    }
+                }
                 chatgpt_store::save_indexed(db, transcript, target, versions, bodies)?;
+                count += 1;
             }
-            Ok(())
+            Ok(count)
         })
         .await
 }

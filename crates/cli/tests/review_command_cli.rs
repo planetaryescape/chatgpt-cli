@@ -251,3 +251,106 @@ fn a_transcript_larger_than_a_frame_streams_whole() {
         format!("args:-R\n{cached}")
     );
 }
+
+/// A fetch a sync overtook: the chat moved on while its batch read was out.
+/// The chat is still shown, but its older revision isn't cached over the
+/// newer one.
+#[test]
+fn a_fetch_overtaken_by_a_sync_is_shown_but_not_cached() {
+    let env = synced();
+    env.wait_for_indexer();
+    let before = indexed_update_time(&env, "b-two");
+    env.index_db()
+        .execute("delete from transcripts where id = 'b-two'", [])
+        .unwrap();
+    env.fake().state().batch_delay_ms = 3000;
+    let mut pty = Pty::spawn(&env, &["review", "b-two"], None, 40, 120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !env
+        .fake()
+        .state()
+        .batch_bodies
+        .iter()
+        .any(|ids| ids == &["b-two".to_owned()])
+    {
+        assert!(std::time::Instant::now() < deadline, "never fetched b-two");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // While that read is out: the chat changes, and a sync records it.
+    {
+        let mut fake = env.fake().state();
+        fake.batch_delay_ms = 0;
+        // Later batch reads (the indexer's) fail, so only the review's
+        // fetch could cache b-two.
+        fake.fail_batch = 1000;
+        let chat = fake
+            .chats
+            .iter_mut()
+            .find(|chat| chat.id == "b-two")
+            .unwrap();
+        chat.update_time = "2026-09-29T10:00:00.000000Z".into();
+    }
+    env.cmd().arg("sync").output().unwrap();
+    assert_ne!(
+        indexed_update_time(&env, "b-two"),
+        before,
+        "the sync moved it"
+    );
+    let shown = pty.wait_for("[k]eep");
+    assert!(shown.contains("You: Hello from b-two"), "{shown}");
+    pty.send("q");
+    assert_eq!(pty.finish(), Some(0));
+    let cached: i64 = env
+        .index_db()
+        .query_row(
+            "select count(*) from transcripts where id = 'b-two' and update_time = ?",
+            [&before],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cached, 0, "the overtaken fetch was cached");
+}
+
+/// The children of process `pid`.
+fn children(pid: u32) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+/// SIGTERM or SIGHUP while waiting for a key: the terminal is cooked again
+/// (echo and line editing back) and the exit status is 128 + the signal.
+#[test]
+fn a_signal_while_waiting_for_a_key_gives_the_terminal_back() {
+    let env = synced();
+    for (signal, status) in [("TERM", 143), ("HUP", 129)] {
+        let mut pty = Pty::spawn_then(
+            &env,
+            &["review", "b-two"],
+            40,
+            120,
+            "echo \"exit:$?\"; stty -a; echo end-of-stty",
+        );
+        pty.wait_for("[k]eep");
+        // script → sh → chatgpt.
+        let shell = children(pty.pid());
+        let review = children(*shell.first().unwrap());
+        let review = *review.first().unwrap();
+        std::process::Command::new("kill")
+            .args([&format!("-{signal}"), &review.to_string()])
+            .status()
+            .unwrap();
+        pty.wait_for(&format!("exit:{status}"));
+        let settings = pty.wait_for("end-of-stty");
+        assert!(
+            !settings.contains("-icanon") && !settings.contains("-echo "),
+            "SIG{signal} left the terminal raw:\n{settings}"
+        );
+        pty.finish();
+    }
+}

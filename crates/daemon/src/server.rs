@@ -341,19 +341,23 @@ async fn send(
             })
             .await;
     }
-    for text in split_at_chars(&json, part_bytes(cap)) {
+    let mut count = 0;
+    for (index, text) in (0..).zip(split_at_chars(&json, part_bytes(cap))) {
         let part = Message {
             id,
             payload: Payload::Event(Event::Part(Part {
+                index,
                 text: text.to_owned(),
             })),
         };
         framed.feed(part).await?;
+        count = index + 1;
     }
+    let bytes = u64::try_from(json.len()).unwrap_or(u64::MAX);
     framed
         .send(Message {
             id,
-            payload: Payload::Response(Response::Parted),
+            payload: Payload::Response(Response::Parted { count, bytes }),
         })
         .await
 }
@@ -427,7 +431,10 @@ mod tests {
         let text = "\"\\".repeat(part_bytes(cap) / 2);
         let message = Message {
             id: u64::MAX,
-            payload: Payload::Event(Event::Part(Part { text })),
+            payload: Payload::Event(Event::Part(Part {
+                index: u64::MAX,
+                text,
+            })),
         };
         let encoded = serde_json::to_vec(&message).expect("encode");
         assert!(encoded.len() <= cap, "{} > {cap}", encoded.len());

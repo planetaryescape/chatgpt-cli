@@ -18,8 +18,12 @@ pub enum Response {
     },
     /// The answer was too large for one frame and came as `Part` events
     /// before this: their text, joined, is the `Response` (0.1.5 and
-    /// newer; an older client can't read it).
-    Parted,
+    /// newer; an older client can't read it). The client checks it got
+    /// exactly `count` parts holding `bytes` bytes before reading them.
+    Parted {
+        count: u64,
+        bytes: u64,
+    },
     #[serde(other)]
     Unknown,
 }

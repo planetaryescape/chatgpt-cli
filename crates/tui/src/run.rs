@@ -32,7 +32,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{cursor, execute};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, DEBOUNCE, Effect, Outcome, Transcript};
+use crate::app::{App, ChatKey, DEBOUNCE, Effect, Outcome, Transcript};
 
 /// Set by the panic hook, so the loop stops instead of drawing on a
 /// terminal that's been restored.
@@ -110,7 +110,7 @@ fn event_loop(
     jobs: &UnboundedSender<Effect>,
 ) -> Result<ExitCode, ClientError> {
     // The chat whose transcript to fetch once the debounce passes.
-    let mut pending: Option<(String, Instant)> = None;
+    let mut pending: Option<(ChatKey, Instant)> = None;
     let panic_key = panic_key_for_tests();
     let mut effects = app.first_effects();
     loop {
@@ -119,8 +119,8 @@ fn event_loop(
                 Effect::Quit => return Ok(ExitCode::SUCCESS),
                 // Scrolled past already (keys handled together): only the
                 // chat now selected is looked up.
-                Effect::Transcript { id, .. } if app.preview.id.as_ref() != Some(&id) => {}
-                Effect::FetchLater { id } => pending = Some((id, Instant::now() + DEBOUNCE)),
+                Effect::Transcript { key, .. } if app.preview.key.as_ref() != Some(&key) => {}
+                Effect::FetchLater { key } => pending = Some((key, Instant::now() + DEBOUNCE)),
                 // `open` returns at once; a failure to start it shows
                 // nowhere, as in the TS TUI.
                 Effect::Open { id } => {
@@ -153,11 +153,11 @@ fn event_loop(
         let Some(first) = first else {
             // The debounce passed with the chat still selected and not
             // yet loaded: fetch it.
-            if let Some((id, _)) = pending.take()
-                && app.preview.id.as_ref() == Some(&id)
+            if let Some((key, _)) = pending.take()
+                && app.preview.key.as_ref() == Some(&key)
                 && app.preview.transcript == Transcript::Loading
             {
-                effects.push(Effect::Transcript { id, fetch: true });
+                effects.push(Effect::Transcript { key, fetch: true });
             }
             continue;
         };
@@ -243,20 +243,20 @@ async fn watch_signals(events: Sender<Event>) {
 
 async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: Sender<Event>) {
     let outcome = match effect {
-        Effect::Transcript { id, fetch } => {
+        Effect::Transcript { key, fetch } => {
             let source = if fetch {
                 TranscriptSource::CacheOrFetch
             } else {
                 TranscriptSource::Cache
             };
             let request = Request::Transcript {
-                id: id.clone(),
+                id: key.0.clone(),
                 source,
                 session,
             };
             let answer = chatgpt_launcher::ask(&paths, request, |_| {}).await;
             Outcome::Transcript {
-                id,
+                key,
                 fetched: fetch,
                 result: expect(answer, |data| match data {
                     ResponseData::Transcript(chat) => Some(*chat),
@@ -264,17 +264,23 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
                 }),
             }
         }
-        Effect::Reload => {
+        Effect::Reload { ticket } => {
             let answer = chatgpt_launcher::ask(&paths, Request::list_every_chat(), |_| {}).await;
-            Outcome::Reloaded(expect(answer, |data| match data {
+            let result = expect(answer, |data| match data {
                 ResponseData::Rows(answer) => Some(answer.rows),
                 _ => None,
-            }))
+            });
+            Outcome::Reloaded { ticket, result }
         }
-        Effect::Apply { archive, delete } => {
-            Outcome::Applied(apply(&paths, archive, delete, session, &events).await)
+        Effect::Apply {
+            ticket,
+            archive,
+            delete,
+        } => {
+            let result = apply(&paths, ticket, archive, delete, session, &events).await;
+            Outcome::Applied { ticket, result }
         }
-        Effect::SaveTitle { id, title } => {
+        Effect::SaveTitle { ticket, id, title } => {
             let request = Request::SetTitle {
                 reference: id,
                 title,
@@ -282,9 +288,10 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
                 all: true,
             };
             let answer = chatgpt_launcher::ask(&paths, request, |_| {}).await;
-            Outcome::TitleSaved(expect(answer, |data| {
+            let result = expect(answer, |data| {
                 matches!(data, ResponseData::TitleSaved { .. }).then_some(())
-            }))
+            });
+            Outcome::TitleSaved { ticket, result }
         }
         Effect::Copy { markdown, title } => {
             let copied = tokio::task::spawn_blocking(move || {
@@ -316,6 +323,7 @@ fn expect<T>(
 /// the archives, then the deletes, counting each chat attempted.
 async fn apply(
     paths: &Paths,
+    ticket: u64,
     archive: Vec<Target>,
     delete: Vec<Target>,
     session: SessionChoice,
@@ -339,9 +347,10 @@ async fn apply(
                 && progress.kind == ProgressKind::Update
             {
                 done_here += 1;
-                let _ = events.send(Event::Outcome(Outcome::ApplyProgress(
-                    attempted + done_here,
-                )));
+                let _ = events.send(Event::Outcome(Outcome::ApplyProgress {
+                    ticket,
+                    done: attempted + done_here,
+                }));
             }
         })
         .await;

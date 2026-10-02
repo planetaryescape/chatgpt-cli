@@ -42,12 +42,17 @@ pub enum Mode {
     Help,
     /// The apply dialog: the user must type `apply`.
     Confirm(LineInput),
-    /// Editing chat `id`'s local title.
+    /// Editing chat `id`'s local title; `saving` while the save asked for
+    /// with that ticket is out.
     Title {
         id: String,
         input: LineInput,
+        saving: Option<u64>,
     },
+    /// Until the apply asked for with `ticket` answers: nothing else
+    /// unlocks it.
     Applying {
+        ticket: u64,
         done: usize,
         total: usize,
     },
@@ -61,10 +66,14 @@ pub enum Transcript {
     Failed(String),
 }
 
-/// The selected chat's transcript and summary.
+/// A chat at one revision: its id and `update_time`.
+pub type ChatKey = (String, String);
+
+/// The selected chat's transcript and summary, for the revision the list
+/// shows: a reload that brings a newer one fetches it again.
 #[derive(Clone, Debug)]
 pub struct Preview {
-    pub id: Option<String>,
+    pub key: Option<ChatKey>,
     pub transcript: Transcript,
     pub summary: Option<String>,
     /// Lines scrolled past.
@@ -73,27 +82,32 @@ pub struct Preview {
     pub version: u64,
 }
 
-/// What the runner does for the app.
+/// What the runner does for the app. A `ticket` comes back on the
+/// outcome, so a late answer is matched with what asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Chat `id`'s transcript: from the cache only, or (`fetch`) fetched
-    /// when the cache lacks it.
+    /// A chat's transcript: from the cache only, or (`fetch`) fetched when
+    /// the cache lacks it.
     Transcript {
-        id: String,
+        key: ChatKey,
         fetch: bool,
     },
-    /// Fetch `id`'s transcript after [`DEBOUNCE`], if it's still selected.
+    /// Fetch the transcript after [`DEBOUNCE`], if it's still selected.
     FetchLater {
-        id: String,
+        key: ChatKey,
     },
     /// Every chat again, from the index.
-    Reload,
+    Reload {
+        ticket: u64,
+    },
     /// Archive, then delete, exactly these chats.
     Apply {
+        ticket: u64,
         archive: Vec<Target>,
         delete: Vec<Target>,
     },
     SaveTitle {
+        ticket: u64,
         id: String,
         title: String,
     },
@@ -111,16 +125,25 @@ pub enum Effect {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     Transcript {
-        id: String,
+        key: ChatKey,
         fetched: bool,
         result: Result<ChatTranscript, String>,
     },
-    Reloaded(Result<Vec<Row>, String>),
+    Reloaded {
+        ticket: u64,
+        result: Result<Vec<Row>, String>,
+    },
     /// Chats attempted so far in an apply.
-    ApplyProgress(usize),
+    ApplyProgress { ticket: u64, done: usize },
     /// Each failure as `<id> <title>: <why>`, or why nothing was applied.
-    Applied(Result<Vec<String>, String>),
-    TitleSaved(Result<(), String>),
+    Applied {
+        ticket: u64,
+        result: Result<Vec<String>, String>,
+    },
+    TitleSaved {
+        ticket: u64,
+        result: Result<(), String>,
+    },
     /// The status line to show.
     Copied(Result<String, String>),
 }
@@ -149,6 +172,9 @@ pub struct App {
     /// The preview's text wrapped: for which `Preview::version` and
     /// width. Wrapping a long transcript on every keypress would lag.
     pub wrapped: Option<(u64, usize, Vec<ratatui::text::Line<'static>>)>,
+    /// The last ticket handed out, and the reload whose answer counts.
+    tickets: u64,
+    reloading: u64,
 }
 
 impl App {
@@ -167,7 +193,7 @@ impl App {
             status: String::new(),
             quit_armed: false,
             preview: Preview {
-                id: None,
+                key: None,
                 transcript: Transcript::Idle,
                 summary: None,
                 scroll: 0,
@@ -178,6 +204,8 @@ impl App {
             preview_height: 1,
             preview_lines: 0,
             wrapped: None,
+            tickets: 0,
+            reloading: 0,
         };
         app.visible = visible_rows(&app.rows, &app.view, clock());
         app
@@ -216,7 +244,7 @@ impl App {
         // Taken out while the key is handled, and put back unless the key
         // changed it.
         match std::mem::replace(&mut self.mode, Mode::Browse) {
-            Mode::Applying { done, total } => self.mode = Mode::Applying { done, total },
+            applying @ Mode::Applying { .. } => self.mode = applying,
             Mode::Help => {}
             Mode::Filter(mut input) => match key.code {
                 KeyCode::Esc => self.change_view(&mut effects, |view| view.query.clear()),
@@ -244,19 +272,31 @@ impl App {
                     self.mode = Mode::Confirm(input);
                 }
             },
-            Mode::Title { id, mut input } => match key.code {
+            Mode::Title {
+                id,
+                mut input,
+                saving,
+            } => match key.code {
+                // A save still out lands in the index, but no longer
+                // touches the screen.
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
+                    let ticket = self.ticket();
                     effects.push(Effect::SaveTitle {
+                        ticket,
                         id: id.clone(),
                         title: input.text().to_owned(),
                     });
                     // Until the daemon answers: a refused title stays open.
-                    self.mode = Mode::Title { id, input };
+                    self.mode = Mode::Title {
+                        id,
+                        input,
+                        saving: Some(ticket),
+                    };
                 }
                 _ => {
                     input.edit(key);
-                    self.mode = Mode::Title { id, input };
+                    self.mode = Mode::Title { id, input, saving };
                 }
             },
             Mode::Browse => self.browse_key(key, &mut effects),
@@ -334,7 +374,7 @@ impl App {
                 self.change_view(effects, |view| view.brainstorm = kind);
             }
             ('r', _) => {
-                effects.push(Effect::Reload);
+                effects.push(self.reload());
                 "Reloaded from the local index.".clone_into(&mut self.status);
             }
             ('x', _) => {
@@ -358,7 +398,11 @@ impl App {
         match (name, shifted) {
             ('n', _) => {
                 let input = LineInput::new(&row.display_title);
-                self.mode = Mode::Title { id, input };
+                self.mode = Mode::Title {
+                    id,
+                    input,
+                    saving: None,
+                };
             }
             ('d', false) => self.toggle_mark(&id, Some(Mark::Delete)),
             ('a', false) => self.toggle_mark(&id, Some(Mark::Archive)),
@@ -368,7 +412,13 @@ impl App {
                 "Opened in the browser.".clone_into(&mut self.status);
             }
             ('c', _) => match &self.preview.transcript {
-                Transcript::Ready(markdown) if self.preview.id.as_ref() == Some(&id) => {
+                Transcript::Ready(markdown)
+                    if self
+                        .preview
+                        .key
+                        .as_ref()
+                        .is_some_and(|(shown, _)| *shown == id) =>
+                {
                     effects.push(Effect::Copy {
                         markdown: markdown.clone(),
                         title: row.display_title.clone(),
@@ -425,22 +475,42 @@ impl App {
                 None => {}
             }
         }
+        let ticket = self.ticket();
         self.mode = Mode::Applying {
+            ticket,
             done: 0,
             total: archive.len() + delete.len(),
         };
-        Effect::Apply { archive, delete }
+        Effect::Apply {
+            ticket,
+            archive,
+            delete,
+        }
+    }
+
+    /// A new request's ticket.
+    fn ticket(&mut self) -> u64 {
+        self.tickets += 1;
+        self.tickets
+    }
+
+    /// Every chat again; only the latest reload's answer is used.
+    fn reload(&mut self) -> Effect {
+        let ticket = self.ticket();
+        self.reloading = ticket;
+        Effect::Reload { ticket }
     }
 
     pub fn on_outcome(&mut self, outcome: Outcome) -> Vec<Effect> {
         let mut effects = Vec::new();
         match outcome {
             Outcome::Transcript {
-                id,
+                key,
                 fetched,
                 result,
             } => {
-                if self.preview.id.as_ref() != Some(&id) {
+                // For another chat, or another revision of this one.
+                if self.preview.key.as_ref() != Some(&key) {
                     return effects;
                 }
                 match result {
@@ -451,7 +521,7 @@ impl App {
                                 self.preview.transcript = Transcript::Ready(markdown);
                             }
                             (None, Some(why)) => self.preview.transcript = Transcript::Failed(why),
-                            (None, None) if !fetched => effects.push(Effect::FetchLater { id }),
+                            (None, None) if !fetched => effects.push(Effect::FetchLater { key }),
                             (None, None) => {
                                 self.preview.transcript =
                                     Transcript::Failed("not in the cache".to_owned());
@@ -462,22 +532,41 @@ impl App {
                 }
                 self.preview.version += 1;
             }
-            Outcome::Reloaded(Ok(rows)) => {
-                self.rows = rows;
-                self.visible = visible_rows(&self.rows, &self.view, (self.clock)());
-                self.sync_preview(&mut effects);
+            Outcome::Reloaded { ticket, result } => {
+                if ticket != self.reloading {
+                    return effects;
+                }
+                match result {
+                    Ok(rows) => {
+                        self.rows = rows;
+                        self.visible = visible_rows(&self.rows, &self.view, (self.clock)());
+                        self.sync_preview(&mut effects);
+                    }
+                    Err(why) => self.status = why,
+                }
             }
-            Outcome::Reloaded(Err(why)) | Outcome::TitleSaved(Err(why)) => self.status = why,
-            Outcome::ApplyProgress(done) => {
-                if let Mode::Applying { done: shown, .. } = &mut self.mode {
+            Outcome::ApplyProgress { ticket, done } => {
+                if let Mode::Applying {
+                    ticket: running,
+                    done: shown,
+                    ..
+                } = &mut self.mode
+                    && *running == ticket
+                {
                     *shown = done;
                 }
             }
-            Outcome::Applied(result) => {
-                let total = match std::mem::replace(&mut self.mode, Mode::Browse) {
-                    Mode::Applying { total, .. } => total,
-                    _ => self.marks.len(),
+            Outcome::Applied { ticket, result } => {
+                let total = match &self.mode {
+                    Mode::Applying {
+                        ticket: running,
+                        total,
+                        ..
+                    } if *running == ticket => *total,
+                    // Not the apply on screen: nothing to unlock.
+                    _ => return effects,
                 };
+                self.mode = Mode::Browse;
                 match result {
                     Ok(failures) => {
                         self.marks.clear();
@@ -490,12 +579,28 @@ impl App {
                     Err(why) => self.status = why,
                 }
                 self.select(&mut effects, 0);
-                effects.push(Effect::Reload);
+                effects.push(self.reload());
             }
-            Outcome::TitleSaved(Ok(())) => {
-                "Local title saved.".clone_into(&mut self.status);
-                self.mode = Mode::Browse;
-                effects.push(Effect::Reload);
+            Outcome::TitleSaved { ticket, result } => {
+                let open = matches!(&self.mode, Mode::Title { saving: Some(saving), .. } if *saving == ticket);
+                match result {
+                    Ok(()) => {
+                        if open {
+                            "Local title saved.".clone_into(&mut self.status);
+                            self.mode = Mode::Browse;
+                        }
+                        // Saved either way: the list shows it.
+                        effects.push(self.reload());
+                    }
+                    Err(why) if open => {
+                        self.status = why;
+                        if let Mode::Title { saving, .. } = &mut self.mode {
+                            *saving = None;
+                        }
+                    }
+                    // A refusal for a box already closed changed nothing.
+                    Err(_) => {}
+                }
             }
             Outcome::Copied(Ok(status) | Err(status)) => self.status = status,
         }
@@ -535,26 +640,30 @@ impl App {
         self.sync_preview(effects);
     }
 
-    /// A newly selected chat's transcript: from the cache now, fetched
-    /// after the debounce if it isn't there.
+    /// A newly selected chat's transcript, or a new revision of the same
+    /// chat's (after a reload): from the cache now, fetched after the
+    /// debounce if it isn't there.
     fn sync_preview(&mut self, effects: &mut Vec<Effect>) {
-        let id = self.current().map(|row| row.id.clone());
-        if self.preview.id == id {
+        let key = self
+            .current()
+            .map(|row| (row.id.clone(), row.update_time.clone()));
+        if self.preview.key == key {
             return;
         }
+        let same_chat = matches!((&self.preview.key, &key), (Some((a, _)), Some((b, _))) if a == b);
         self.preview = Preview {
-            transcript: if id.is_some() {
+            transcript: if key.is_some() {
                 Transcript::Loading
             } else {
                 Transcript::Idle
             },
-            id: id.clone(),
+            key: key.clone(),
             summary: None,
-            scroll: 0,
+            scroll: if same_chat { self.preview.scroll } else { 0 },
             version: self.preview.version + 1,
         };
-        if let Some(id) = id {
-            effects.push(Effect::Transcript { id, fetch: false });
+        if let Some(key) = key {
+            effects.push(Effect::Transcript { key, fetch: false });
         }
     }
 }

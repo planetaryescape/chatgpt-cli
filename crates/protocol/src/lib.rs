@@ -165,17 +165,21 @@ mod tests {
         let part = Message {
             id: 3,
             payload: Payload::Event(Event::Part(Part {
+                index: 0,
                 text: "{\"status\":".into(),
             })),
         };
         assert_eq!(round_trip(&part), part);
         let parted = Message {
             id: 3,
-            payload: Payload::Response(Response::Parted),
+            payload: Payload::Response(Response::Parted {
+                count: 2,
+                bytes: 20,
+            }),
         };
         assert_eq!(
             serde_json::to_string(&parted).expect("encode"),
-            r#"{"id":3,"payload":{"type":"response","status":"parted"}}"#
+            r#"{"id":3,"payload":{"type":"response","status":"parted","count":2,"bytes":20}}"#
         );
         let transcript: Request =
             serde_json::from_str(r#"{"method":"transcript","id":"abc"}"#).expect("decode");

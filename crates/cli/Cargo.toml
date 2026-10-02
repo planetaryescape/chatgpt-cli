@@ -32,7 +32,7 @@ nix = { workspace = true, features = ["term"] }
 plist = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "signal"] }
 unicode-width = { workspace = true }
 
 [dev-dependencies]

@@ -11,7 +11,7 @@ use chatgpt_protocol::{ChatTranscript, Excerpt, SessionChoice, TranscriptSource}
 use chatgpt_store::IndexedConversation;
 
 use crate::classify::SUMMARY_PROMPT_VERSION;
-use crate::classify::pipeline::save_transcripts;
+use crate::classify::pipeline::save_transcript_if_current;
 use crate::handlers::Failure;
 use crate::render::{cached_transcript, visible_turns};
 use crate::state::State;
@@ -121,7 +121,9 @@ async fn download(
             .map(|(_, text)| text.clone()),
     };
     let markdown = transcript.markdown.clone();
-    save_transcripts(state, &[(chat.clone(), transcript)]).await?;
-    state.embedder.wake();
+    // Shown either way; cached only if no sync moved the chat on meanwhile.
+    if save_transcript_if_current(state, chat, transcript).await? {
+        state.embedder.wake();
+    }
     Ok((markdown, excerpt))
 }

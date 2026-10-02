@@ -68,5 +68,7 @@ pub enum TranscriptSource {
 /// A slice of an answer too large for one frame: part of its JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Part {
+    /// 0, 1, 2…: a missing, repeated or reordered part is refused.
+    pub index: u64,
     pub text: String,
 }

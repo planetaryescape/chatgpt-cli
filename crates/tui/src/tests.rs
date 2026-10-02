@@ -55,6 +55,24 @@ fn topics() -> Vec<String> {
     vec!["coding_general".into(), "writing_projects".into()]
 }
 
+/// Chat `id` at the revision the fixtures have.
+fn key(id: &str) -> (String, String) {
+    (id.to_owned(), T.to_owned())
+}
+
+/// The ticket of the one request among `effects`.
+fn ticket_of(effects: &[Effect]) -> u64 {
+    effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Apply { ticket, .. }
+            | Effect::SaveTitle { ticket, .. }
+            | Effect::Reload { ticket } => Some(*ticket),
+            _ => None,
+        })
+        .unwrap()
+}
+
 fn transcript(markdown: Option<&str>, summary: Option<&str>) -> ChatTranscript {
     ChatTranscript {
         markdown: markdown.map(str::to_owned),
@@ -117,7 +135,7 @@ impl Harness {
     /// The cache's answer for the selected chat.
     fn cached(&mut self, id: &str, markdown: &str, summary: Option<&str>) {
         self.answer(Outcome::Transcript {
-            id: id.into(),
+            key: key(id),
             fetched: false,
             result: Ok(transcript(Some(markdown), summary)),
         });
@@ -134,7 +152,7 @@ fn lists_chats_with_suggestions_and_previews_the_selection() {
     assert_eq!(
         h.effects,
         [Effect::Transcript {
-            id: "a1".into(),
+            key: key("a1"),
             fetch: false
         }],
         "the first chat's transcript, from the cache"
@@ -152,34 +170,34 @@ fn lists_chats_with_suggestions_and_previews_the_selection() {
 fn an_uncached_transcript_is_fetched_after_the_debounce() {
     let mut h = Harness::new();
     h.answer(Outcome::Transcript {
-        id: "a1".into(),
+        key: key("a1"),
         fetched: false,
         result: Ok(transcript(None, None)),
     });
     assert!(h.screen().contains("Loading transcript…"));
     let effects = h.app.on_outcome(Outcome::Transcript {
-        id: "a1".into(),
+        key: key("a1"),
         fetched: false,
         result: Ok(transcript(None, None)),
     });
-    assert_eq!(effects, [Effect::FetchLater { id: "a1".into() }]);
+    assert_eq!(effects, [Effect::FetchLater { key: key("a1") }]);
     // Moving on first: the old chat's answer is ignored.
     let effects = h.key(KeyCode::Char('j'));
     assert_eq!(
         effects,
         [Effect::Transcript {
-            id: "b2".into(),
+            key: key("b2"),
             fetch: false
         }]
     );
     h.answer(Outcome::Transcript {
-        id: "a1".into(),
+        key: key("a1"),
         fetched: true,
         result: Ok(transcript(Some("stale"), None)),
     });
     assert_eq!(h.app.preview.transcript, Transcript::Loading);
     h.answer(Outcome::Transcript {
-        id: "b2".into(),
+        key: key("b2"),
         fetched: true,
         result: Ok(ChatTranscript {
             fetch_error: Some("ChatGPT didn't return this conversation (deleted?)".into()),
@@ -353,9 +371,11 @@ fn apply_needs_apply_typed_and_sends_exactly_the_marks() {
     h.key(KeyCode::Char('x'));
     h.keys(" apply ");
     let effects = h.key(KeyCode::Enter);
+    let ticket = ticket_of(&effects);
     assert_eq!(
         effects,
         [Effect::Apply {
+            ticket,
             archive: vec![Target {
                 id: "b2".into(),
                 title: "Postgres backup plan".into()
@@ -370,10 +390,17 @@ fn apply_needs_apply_typed_and_sends_exactly_the_marks() {
         h.key(KeyCode::Char('q')).is_empty(),
         "keys wait while applying"
     );
-    h.answer(Outcome::ApplyProgress(1));
+    h.answer(Outcome::ApplyProgress { ticket, done: 1 });
     insta::assert_snapshot!("applying", h.screen());
-    let effects = h.answer(Outcome::Applied(Ok(Vec::new())));
-    assert!(effects.contains(&Effect::Reload));
+    let effects = h.answer(Outcome::Applied {
+        ticket,
+        result: Ok(Vec::new()),
+    });
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Reload { .. }))
+    );
     assert!(h.app.marks.is_empty());
     assert!(h.screen().contains("Applied 2 change(s)."));
 }
@@ -384,10 +411,13 @@ fn a_failed_apply_says_how_many_failed_and_a_refused_one_keeps_the_marks() {
     h.key(KeyCode::Char('d'));
     h.key(KeyCode::Char('x'));
     h.keys("apply");
-    h.key(KeyCode::Enter);
-    h.answer(Outcome::Applied(Ok(vec![
-        "a1 Empty test chat: 500 from /backend-api/conversation/a1".into(),
-    ])));
+    let ticket = ticket_of(&h.key(KeyCode::Enter));
+    h.answer(Outcome::Applied {
+        ticket,
+        result: Ok(vec![
+            "a1 Empty test chat: 500 from /backend-api/conversation/a1".into(),
+        ]),
+    });
     assert!(
         h.screen()
             .contains("1 failed: a1 Empty test chat: 500 from /backend-api/conversation/a1")
@@ -395,8 +425,11 @@ fn a_failed_apply_says_how_many_failed_and_a_refused_one_keeps_the_marks() {
     h.key(KeyCode::Char('d'));
     h.key(KeyCode::Char('x'));
     h.keys("apply");
-    h.key(KeyCode::Enter);
-    h.answer(Outcome::Applied(Err("the daemon isn't running".into())));
+    let ticket = ticket_of(&h.key(KeyCode::Enter));
+    h.answer(Outcome::Applied {
+        ticket,
+        result: Err("the daemon isn't running".into()),
+    });
     assert_eq!(h.app.marks.len(), 1);
 }
 
@@ -432,23 +465,34 @@ fn edits_a_local_title() {
     h.keys("Better chat title");
     insta::assert_snapshot!("title_edit", h.screen());
     let effects = h.key(KeyCode::Enter);
+    let refused = ticket_of(&effects);
     assert_eq!(
         effects,
         [Effect::SaveTitle {
+            ticket: refused,
             id: "a1".into(),
             title: "Better chat title".into()
         }]
     );
-    h.answer(Outcome::TitleSaved(Err(
-        "Local title must be 1–100 characters.".into(),
-    )));
+    h.answer(Outcome::TitleSaved {
+        ticket: refused,
+        result: Err("Local title must be 1–100 characters.".into()),
+    });
     assert!(matches!(h.app.mode, Mode::Title { .. }), "stays open");
-    let effects = h.answer(Outcome::TitleSaved(Ok(())));
-    assert_eq!(effects, [Effect::Reload]);
+    let saved = ticket_of(&h.key(KeyCode::Enter));
+    let effects = h.answer(Outcome::TitleSaved {
+        ticket: saved,
+        result: Ok(()),
+    });
+    let reload = ticket_of(&effects);
+    assert_eq!(effects, [Effect::Reload { ticket: reload }]);
     let mut renamed = rows();
     renamed[0].display_title = "Better chat title".into();
     renamed[0].local_title = Some("Better chat title".into());
-    h.answer(Outcome::Reloaded(Ok(renamed)));
+    h.answer(Outcome::Reloaded {
+        ticket: reload,
+        result: Ok(renamed),
+    });
     let screen = h.screen();
     assert!(screen.contains("Better chat title"));
     assert!(screen.contains("Local title saved."));
@@ -477,7 +521,10 @@ fn copy_open_reload_and_preview_scrolling() {
         [Effect::Open { id: "a1".into() }]
     );
     assert!(h.screen().contains("Opened in the browser."));
-    assert_eq!(h.key(KeyCode::Char('r')), [Effect::Reload]);
+    assert!(matches!(
+        h.key(KeyCode::Char('r'))[..],
+        [Effect::Reload { .. }]
+    ));
     assert!(h.screen().contains("Reloaded from the local index."));
     h.key(KeyCode::Char('J'));
     assert_eq!(h.app.preview.scroll, 3);
@@ -512,4 +559,115 @@ fn a_resize_redraws_at_the_new_size() {
     );
     assert!(screen.contains("3 of 4"));
     insta::assert_snapshot!("small_terminal", screen);
+}
+
+/// A title save still out when the box is closed, the chat marked and an
+/// apply started: its late answer mustn't unlock the apply, or a second
+/// `x` would send the marks again.
+#[test]
+fn a_late_answer_never_unlocks_a_running_apply() {
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('n'));
+    let title = ticket_of(&h.key(KeyCode::Enter));
+    h.key(KeyCode::Esc);
+    h.key(KeyCode::Char('d'));
+    h.key(KeyCode::Char('x'));
+    h.keys("apply");
+    let apply = ticket_of(&h.key(KeyCode::Enter));
+    assert!(matches!(h.app.mode, Mode::Applying { .. }));
+    let effects = h.answer(Outcome::TitleSaved {
+        ticket: title,
+        result: Ok(()),
+    });
+    assert!(
+        matches!(h.app.mode, Mode::Applying { .. }),
+        "still applying"
+    );
+    assert!(
+        matches!(effects[..], [Effect::Reload { .. }]),
+        "the title still shows"
+    );
+    // A late refusal, or another apply's answer, changes nothing either.
+    h.answer(Outcome::TitleSaved {
+        ticket: title,
+        result: Err("refused".into()),
+    });
+    h.answer(Outcome::Applied {
+        ticket: apply + 100,
+        result: Ok(Vec::new()),
+    });
+    assert!(matches!(h.app.mode, Mode::Applying { .. }));
+    assert!(h.key(KeyCode::Char('x')).is_empty(), "no second apply");
+    h.answer(Outcome::Applied {
+        ticket: apply,
+        result: Ok(Vec::new()),
+    });
+    assert_eq!(h.app.mode, Mode::Browse);
+}
+
+/// Two reloads out at once: only the last one's rows are used.
+#[test]
+fn only_the_latest_reload_counts() {
+    let mut h = Harness::new();
+    let first = ticket_of(&h.key(KeyCode::Char('r')));
+    let second = ticket_of(&h.key(KeyCode::Char('r')));
+    let mut newer = rows();
+    newer.truncate(1);
+    h.answer(Outcome::Reloaded {
+        ticket: second,
+        result: Ok(newer),
+    });
+    h.answer(Outcome::Reloaded {
+        ticket: first,
+        result: Ok(rows()),
+    });
+    assert_eq!(
+        h.app.rows.len(),
+        1,
+        "the older answer came last and was dropped"
+    );
+}
+
+/// Chat A shown at t1, synced to t2 meanwhile: a reload fetches it again,
+/// drops the t1 answer, and `c` copies the t2 text.
+#[test]
+fn a_reload_that_brings_a_newer_revision_refetches_the_preview() {
+    let mut h = Harness::new();
+    h.cached("a1", "old text", Some("old summary"));
+    let reload = ticket_of(&h.key(KeyCode::Char('r')));
+    let mut synced = rows();
+    synced[0].update_time = "2024-06-01T10:00:00Z".into();
+    let new_key = ("a1".to_owned(), "2024-06-01T10:00:00Z".to_owned());
+    let effects = h.answer(Outcome::Reloaded {
+        ticket: reload,
+        result: Ok(synced),
+    });
+    assert_eq!(
+        effects,
+        [Effect::Transcript {
+            key: new_key.clone(),
+            fetch: false
+        }]
+    );
+    assert_eq!(h.app.preview.transcript, Transcript::Loading);
+    assert_eq!(h.app.preview.summary, None);
+    assert!(
+        h.key(KeyCode::Char('c')).is_empty(),
+        "nothing to copy until the new text is in"
+    );
+    // A late answer for t1 is dropped.
+    h.cached("a1", "old text again", None);
+    assert_eq!(h.app.preview.transcript, Transcript::Loading);
+    h.answer(Outcome::Transcript {
+        key: new_key,
+        fetched: false,
+        result: Ok(transcript(Some("new text"), None)),
+    });
+    assert_eq!(
+        h.key(KeyCode::Char('c')),
+        [Effect::Copy {
+            markdown: "new text".into(),
+            title: "Empty test chat".into()
+        }]
+    );
 }

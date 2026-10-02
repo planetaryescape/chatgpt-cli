@@ -347,6 +347,7 @@ impl RawTty {
         };
         let tty = std::fs::File::open("/dev/tty").map_err(|error| failed(&error))?;
         let saved = termios::tcgetattr(tty.as_fd()).map_err(|error| failed(&error))?;
+        restore_on_signal(&tty, &saved);
         let raw = Self {
             tty,
             saved,
@@ -403,6 +404,48 @@ fn keys(chunk: &str) -> Vec<String> {
         return vec![chunk.to_owned()];
     }
     chunk.chars().map(String::from).collect()
+}
+
+/// SIGTERM, SIGHUP and SIGINT (Ctrl-C reaches the review as a key) would
+/// end the process without `Drop`, leaving the terminal raw. A thread of
+/// its own waits for them, puts back the `saved` settings, and exits as the
+/// signal would have: 128 + its number. Without one (no runtime), signals
+/// keep their default; the review still runs.
+fn restore_on_signal(tty: &std::fs::File, saved: &Termios) {
+    use nix::sys::signal::Signal;
+    use tokio::signal::unix::{SignalKind, signal};
+    let Ok(tty) = tty.try_clone() else {
+        return;
+    };
+    let saved = saved.clone();
+    let (ready, listening) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        runtime.block_on(async move {
+            let (Ok(mut terminate), Ok(mut hangup), Ok(mut interrupt)) = (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::hangup()),
+                signal(SignalKind::interrupt()),
+            ) else {
+                return;
+            };
+            let _ = ready.send(());
+            let caught = tokio::select! {
+                _ = terminate.recv() => Signal::SIGTERM,
+                _ = hangup.recv() => Signal::SIGHUP,
+                _ = interrupt.recv() => Signal::SIGINT,
+            };
+            let _ = termios::tcsetattr(tty.as_fd(), SetArg::TCSANOW, &saved);
+            std::process::exit(128 + caught as i32);
+        });
+    });
+    // Raw mode starts only once the handlers are in place.
+    let _ = listening.recv();
 }
 
 impl Drop for RawTty {

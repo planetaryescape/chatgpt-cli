@@ -292,6 +292,23 @@ impl Pty {
     /// With `stdin_ids`, they're piped to the command's stdin, as
     /// `… | chatgpt review -` does, and keys still come from the terminal.
     pub fn spawn(env: &Env, args: &[&str], stdin_ids: Option<&str>, rows: u16, cols: u16) -> Self {
+        Self::spawn_with(env, args, stdin_ids, rows, cols, None)
+    }
+
+    /// [`Pty::spawn`], then the shell command `then` in the same terminal
+    /// once the binary ends (`$?` is its exit status).
+    pub fn spawn_then(env: &Env, args: &[&str], rows: u16, cols: u16, then: &str) -> Self {
+        Self::spawn_with(env, args, None, rows, cols, Some(then))
+    }
+
+    fn spawn_with(
+        env: &Env,
+        args: &[&str],
+        stdin_ids: Option<&str>,
+        rows: u16,
+        cols: u16,
+        then: Option<&str>,
+    ) -> Self {
         use std::io::Read;
         let template = env.std_cmd();
         let quote = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
@@ -303,10 +320,11 @@ impl Pty {
         let pipe = stdin_ids.map_or_else(String::new, |ids| {
             format!("printf '%s\\n' {} | ", quote(ids))
         });
-        let script = format!(
-            "stty rows {rows} cols {cols}; {pipe}exec {}",
-            command_line.join(" ")
-        );
+        let command = command_line.join(" ");
+        let script = match then {
+            Some(then) => format!("stty rows {rows} cols {cols}; {pipe}{command}; {then}"),
+            None => format!("stty rows {rows} cols {cols}; {pipe}exec {command}"),
+        };
         let mut command = std::process::Command::new("script");
         command.args(["-q", "/dev/null", "/bin/sh", "-c", &script]);
         for (name, value) in template.get_envs() {
@@ -354,6 +372,11 @@ impl Pty {
         let _ = stdin
             .write_all(keys.as_bytes())
             .and_then(|()| stdin.flush());
+    }
+
+    /// The `script` process the binary runs under.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     pub fn exited(&mut self) -> bool {

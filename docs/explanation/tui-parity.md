@@ -56,6 +56,8 @@ Test locations:
 |---|---|
 | Cached transcripts show at once; others are fetched (batch endpoint) after 200 ms if still selected, and cached | `tui::an_uncached_transcript_is_fetched_after_the_debounce`, `tui_cli::browse_…` (one batch read, then cached) |
 | A late transcript for a chat no longer selected is ignored | `tui::an_uncached_transcript_is_fetched_after_the_debounce` |
+| A reload that brings a newer revision of the selected chat fetches it again, drops the older answer, and `c` copies the new text | `tui::a_reload_that_brings_a_newer_revision_refetches_the_preview` |
+| A late answer (a title save, another apply, an older reload) never unlocks a running apply or replaces newer rows | `tui::a_late_answer_never_unlocks_a_running_apply`, `tui::only_the_latest_reload_counts` |
 | Keys faster than a render all apply (the TS `live` ref) | `tui::keys_pressed_before_a_draw_all_apply` |
 | `requireSynced` before the screen | `tui_cli::no_index_says_so_before_taking_the_screen` |
 | The terminal is given back on quit, Ctrl-C and a panic | `tui_cli::the_terminal_is_given_back_on_quit_ctrl_c_and_a_panic` (and SIGTERM, SIGHUP, SIGINT by reading) |
@@ -80,6 +82,8 @@ Test locations:
 | `(could not load: …)` for a chat ChatGPT doesn't return | `review_command_cli::a_chat_chatgpt_no_longer_has_says_why_and_can_still_be_decided` |
 | `Nothing matched.` | `review_command_cli::nothing_matched_needs_no_terminal` |
 | A transcript of any size | `review_command_cli::a_transcript_larger_than_a_frame_streams_whole` |
+| SIGTERM or SIGHUP while waiting for a key gives the terminal back (exit 128 + signal) | `review_command_cli::a_signal_while_waiting_for_a_key_gives_the_terminal_back` |
+| A fetch a sync overtook is shown but not cached | `review_command_cli::a_fetch_overtaken_by_a_sync_is_shown_but_not_cached` |
 
 ## Where the Rust port differs, on purpose
 

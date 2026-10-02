@@ -63,7 +63,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Help => draw_help(frame, area),
         Mode::Confirm(input) => draw_confirm(frame, app, input, area),
         Mode::Title { input, .. } => draw_title(frame, input, area),
-        Mode::Applying { done, total } => {
+        Mode::Applying { done, total, .. } => {
             let lines = vec![Line::styled(
                 format!("{done}/{total} done…"),
                 Style::new().fg(color::FG),
