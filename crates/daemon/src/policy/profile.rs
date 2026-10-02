@@ -1,9 +1,6 @@
 //! The classification versions and topics verdicts are made and read
-//! with: this build's, which are this repository's public TS sources' (D9).
-//! Classification runs here now, so the installed TS CLI's versions (a
-//! private checkout's, once read from its sources) no longer count, and a
-//! judgment made at them is simply stale until `classify` runs again.
-//! `crates/daemon/src/classify/questions.rs` keeps them equal to `src/`.
+//! with: this build's. A judgment made at other versions (an older build's,
+//! or the retired TS CLI's) is stale until `classify` runs again.
 
 use chatgpt_protocol::ClassificationInfo;
 
@@ -15,7 +12,7 @@ pub struct Profile {
     pub local_title_version: u32,
     pub memory_version: String,
     pub render_version: u32,
-    /// In the TS CLI's order, which `stats` uses for its topic table.
+    /// In `stats`' topic table order.
     pub topics: Vec<String>,
     /// The topic policy.ts treats as the user's employer's work.
     pub employer_topic: String,
@@ -28,7 +25,7 @@ impl Profile {
         &CURRENT
     }
 
-    /// This repository's TS sources @ 1b8c950.
+    /// This build's versions. The first ones were the TS CLI's @ 1b8c950.
     pub fn builtin() -> Self {
         Self {
             questions_version: "2026-09-28.9".into(),

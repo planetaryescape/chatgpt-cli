@@ -19,11 +19,9 @@ pub struct ManualTitle<'a> {
     pub updated_at: &'a str,
 }
 
-/// Save a manual local title, replacing any Luna or manual one, and mark it
-/// as the daemon's so the TS import keeps it.
+/// Save a manual local title, replacing any Luna or manual one.
 pub fn set_local_title(connection: &mut Connection, title: &ManualTitle<'_>) -> Result<()> {
-    let transaction = connection.transaction()?;
-    transaction.execute(
+    connection.execute(
         "insert or replace into local_titles values (?, ?, ?, 'manual', ?, '', ?)",
         params![
             title.id,
@@ -33,8 +31,6 @@ pub fn set_local_title(connection: &mut Connection, title: &ManualTitle<'_>) -> 
             title.updated_at
         ],
     )?;
-    crate::native::mark(&transaction, "local_titles", title.id, title.updated_at)?;
-    transaction.commit()?;
     Ok(())
 }
 
@@ -59,15 +55,13 @@ pub fn local_title_source(
 /// A Luna title and theme for chat `id` (`setLocalTitle(c, title, theme,
 /// "luna")`), already cleaned, unless the chat has a manual title by the
 /// time it's written: the user's own always wins, even one set while Luna
-/// was still answering. Marked as the daemon's, so the TS import keeps it
-/// until the TS CLI writes a newer manual one. Whether it was written.
+/// was still answering. Whether it was written.
 pub fn set_luna_title(
     connection: &mut Connection,
     title: &ManualTitle<'_>,
     theme: &str,
 ) -> Result<bool> {
-    let transaction = connection.transaction()?;
-    let written = transaction.execute(
+    let written = connection.execute(
         "insert into local_titles values (?, ?, ?, 'luna', ?, ?, ?)
          on conflict (id) do update set update_time = excluded.update_time,
             version = excluded.version, source = 'luna', title = excluded.title,
@@ -82,9 +76,5 @@ pub fn set_luna_title(
             title.updated_at
         ],
     )? > 0;
-    if written {
-        crate::native::mark(&transaction, "local_titles", title.id, title.updated_at)?;
-    }
-    transaction.commit()?;
     Ok(written)
 }

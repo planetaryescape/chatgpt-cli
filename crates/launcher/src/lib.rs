@@ -844,8 +844,6 @@ mod tests {
             sync: Default::default(),
             backoff: None,
             session: None,
-            ts_sync: Default::default(),
-            legacy_import: Default::default(),
             classification: Default::default(),
             search_index: Default::default(),
             embeddings: Default::default(),

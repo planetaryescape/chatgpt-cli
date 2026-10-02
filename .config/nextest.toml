@@ -4,15 +4,14 @@
 # reported instead of wedging the whole run.
 
 [profile.default]
-# Warn at 30s, kill after 2 periods (60s). The slowest test, the TS parity
-# harness, takes about 15s.
+# Warn at 30s, kill after 2 periods (60s).
 slow-timeout = { period = "30s", terminate-after = 2 }
 # The dev loop wants the full failure list from one run.
 fail-fast = false
 
-# The TS parity harnesses start the daemon and hundreds of TS CLI runs each;
-# under a full parallel run they take 30-50s. classify_cli moves 2 MB chats
-# through debug builds, which a loaded machine slows to about a minute.
+# The golden tests replay hundreds of CLI runs each; classify_cli moves 2 MB
+# chats through debug builds. Under a full parallel run on a loaded machine
+# either can take about a minute.
 [[profile.default.overrides]]
-filter = "binary(parity_ts) | binary(parity_export_search) | binary(parity_mutations) | binary(parity_classify) | binary(classify_cli)"
+filter = "binary(golden) | binary(classify_cli)"
 slow-timeout = { period = "60s", terminate-after = 3 }

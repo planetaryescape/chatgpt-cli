@@ -1,10 +1,8 @@
 //! What every part of the daemon shares.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use chatgpt_core::Paths;
-use chatgpt_core::ts_cli::{self, TsCli};
-use chatgpt_protocol::{ImportReport, ImportStatus, TsSyncOutcome, TsSyncStatus};
 use chatgpt_store::Store;
 use rusqlite::Connection;
 
@@ -34,16 +32,10 @@ pub struct State {
     pub flight: crate::classify::flight::InFlight,
     pub started_at: i64,
     pub version: String,
-    ts_sync: Mutex<TsSyncStatus>,
-    import: Mutex<ImportStatus>,
 }
 
 pub fn now_unix() -> i64 {
     chrono::Utc::now().timestamp()
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl State {
@@ -54,17 +46,6 @@ impl State {
             .ok()
             .filter(|version| cfg!(debug_assertions) && !version.is_empty())
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
-        let located = ts_cli::locate();
-        let ts_sync = match &located {
-            Ok(ts) => TsSyncStatus {
-                cli: Some(ts.entry.display().to_string()),
-                ..TsSyncStatus::default()
-            },
-            Err(error) => TsSyncStatus {
-                unavailable: Some(error.to_string()),
-                ..TsSyncStatus::default()
-            },
-        };
         let synced_age = store
             .read(chatgpt_store::synced_at)
             .ok()
@@ -86,8 +67,6 @@ impl State {
             flight: Default::default(),
             started_at: now_unix(),
             version,
-            ts_sync: Mutex::new(ts_sync),
-            import: Mutex::new(ImportStatus::default()),
         }
     }
 
@@ -115,58 +94,8 @@ impl State {
             .map_err(Failure::store)
     }
 
-    /// The classification versions verdicts are read with: this build's
-    /// (D9), whatever the bridged TS CLI's are.
+    /// The classification versions verdicts are read with: this build's.
     pub fn profile(&self) -> &'static Profile {
         Profile::current()
-    }
-
-    pub fn record_ts_sync(&self, ts: Option<&TsCli>, outcome: &TsSyncOutcome) {
-        let mut status = lock(&self.ts_sync);
-        status.cli = ts.map(|ts| ts.entry.display().to_string());
-        status.unavailable = None;
-        status.last_run_at = Some(now_unix());
-        status.last_ok = Some(outcome.ok);
-        status.last_message = Some(outcome.message.clone());
-        if outcome.ok {
-            tracing::info!("{}", outcome.message);
-        } else {
-            tracing::warn!("{}", outcome.message);
-        }
-    }
-
-    pub fn record_ts_unavailable(&self, why: String) {
-        let mut status = lock(&self.ts_sync);
-        status.cli = None;
-        status.unavailable = Some(why);
-    }
-
-    pub fn record_ts_skipped(&self, reason: &str) {
-        let message = format!("TS sync skipped: {reason}");
-        tracing::info!("{message}");
-        let mut status = lock(&self.ts_sync);
-        status.last_run_at = Some(now_unix());
-        status.last_ok = None;
-        status.last_message = Some(message);
-    }
-
-    pub fn ts_sync_status(&self) -> TsSyncStatus {
-        lock(&self.ts_sync).clone()
-    }
-
-    pub fn record_import(&self, result: Result<ImportReport, String>) {
-        let mut status = lock(&self.import);
-        status.last_at = Some(now_unix());
-        match result {
-            Ok(report) => {
-                status.last = Some(report);
-                status.last_error = None;
-            }
-            Err(error) => status.last_error = Some(error),
-        }
-    }
-
-    pub fn import_status(&self) -> ImportStatus {
-        lock(&self.import).clone()
     }
 }

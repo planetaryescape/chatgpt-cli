@@ -58,8 +58,6 @@ pub enum Command {
     /// Start, stop and inspect the background daemon
     #[command(subcommand)]
     Daemon(DaemonCommand),
-    /// Import Jev judgments, Luna reviews and local titles from the TS CLI's index now
-    ImportLegacy,
     /// Archive conversations by id/prefix, `-` for ids on stdin, or by filter
     Archive(ChangeArgs),
     /// Unarchive conversations by id/prefix, `-` for ids on stdin, or by filter

@@ -516,10 +516,9 @@ fn export_dash_takes_the_first_id_piped_in_after_checking_them_all() {
 }
 
 /// A project move: ChatGPT bumps `update_time` without changing the chat.
-/// On a named instance (no TS sync or import to paper over it) a sync whose
-/// cache reconcile couldn't run leaves the transcript, the judgment and the
-/// local title at the old time; the indexer must check the content before
-/// it replaces the transcript, and move them all forward.
+/// A sync whose cache reconcile couldn't run leaves the transcript, the
+/// judgment and the local title at the old time; the indexer must check the
+/// content before it replaces the transcript, and move them all forward.
 #[test]
 fn a_metadata_only_change_keeps_judgments_current_after_indexing() {
     let mut env = Env::with_fake(chats());
@@ -616,13 +615,6 @@ fn an_export_larger_than_a_frame_streams_byte_identical() {
     let mut env = Env::with_fake(with_big());
     env.extra_env
         .push(("CHATGPT_TEST_MAX_FRAME_BYTES".into(), "50000".into()));
-    // The daemon runs the TS CLI's own sync while the TS CLI exists; only
-    // an export reaching it would be the bridge.
-    let calls = env.home.path().join("ts-cli-calls");
-    env.fake_ts_cli(&format!(
-        "printf '%s\\n' \"$*\" >> '{}'\nexit 4\n",
-        calls.display()
-    ));
     env.cmd().arg("sync").assert().success();
 
     assert_eq!(env.stdout(&["export", "d-big"]), whole, "stdout");
@@ -650,6 +642,4 @@ fn an_export_larger_than_a_frame_streams_byte_identical() {
         whole,
         "-o"
     );
-    let ran = std::fs::read_to_string(&calls).unwrap_or_default();
-    assert!(!ran.contains("export"), "the TS CLI exported: {ran}");
 }

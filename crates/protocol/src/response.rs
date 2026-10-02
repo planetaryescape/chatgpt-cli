@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChatTranscript, ClassifiedMemories, ClassifyOutcome, DaemonStatus, ExportedChat, ImportReport,
-    ListRows, Outcome, Project, SearchIndexReport, SearchResults, StatsReport, SyncReport,
+    ChatTranscript, ClassifiedMemories, ClassifyOutcome, DaemonStatus, ExportedChat, ListRows,
+    Outcome, Project, SearchIndexReport, SearchResults, StatsReport, SyncReport,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,7 +44,6 @@ pub enum ResponseData {
     Sync(Box<SyncReport>),
     Rows(ListRows),
     Stats(Box<StatsReport>),
-    Imported(ImportReport),
     Ack,
     Exported(Box<ExportedChat>),
     Transcript(Box<ChatTranscript>),

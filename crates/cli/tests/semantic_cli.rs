@@ -347,7 +347,7 @@ fn an_index_from_0_1_1_upgrades_in_place_and_embeds_in_the_background() {
     // Back to 0.1.1's schema: chunks, no vectors.
     let db = Connection::open(env.data_dir().join("chatgpt.db")).unwrap();
     db.execute_batch(
-        "drop trigger search_chunks_delete_vectors; drop table search_vectors; drop table native_rows;
+        "drop trigger search_chunks_delete_vectors; drop table search_vectors;
          pragma user_version = 3;",
     )
     .unwrap();

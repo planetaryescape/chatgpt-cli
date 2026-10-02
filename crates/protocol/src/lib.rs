@@ -36,10 +36,8 @@ pub use search::{
     SearchMode, SearchResults,
 };
 use serde::{Deserialize, Serialize};
-pub use status::{
-    Backoff, ClassificationInfo, DaemonStatus, ImportStatus, SyncStatus, TsSyncStatus,
-};
-pub use sync::{ImportReport, ReconcileReport, SyncMode, SyncReport, TableImport, TsSyncOutcome};
+pub use status::{Backoff, ClassificationInfo, DaemonStatus, SyncStatus};
+pub use sync::{ReconcileReport, SyncMode, SyncReport};
 
 /// Bumped on any change an older peer can't read.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -210,5 +208,22 @@ mod tests {
         .expect("decode");
         assert_eq!(status.sync, SyncStatus::default());
         assert!(status.backoff.is_none());
+    }
+
+    #[test]
+    fn what_only_the_ts_era_sent_still_decodes() {
+        // A 0.1.5 daemon's status, with the TS sync and import fields this
+        // build dropped.
+        let status: DaemonStatus = serde_json::from_str(
+            r#"{"protocol_version":1,"version":"0.1.5","pid":4,"instance":"default","started_at":0,
+                "ts_sync":{"cli":"/x/src/cli.ts","last_ok":true},"legacy_import":{"last_at":1}}"#,
+        )
+        .expect("decode");
+        assert_eq!(status.version, "0.1.5");
+        // A 0.1.5 client's `import-legacy`: an unknown request, which the
+        // daemon answers with an error.
+        let request: Request =
+            serde_json::from_str(r#"{"method":"import_legacy"}"#).expect("decode");
+        assert_eq!(request, Request::Unknown);
     }
 }

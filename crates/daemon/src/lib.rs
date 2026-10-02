@@ -1,7 +1,6 @@
 //! The chatgpt daemon. It holds the browser session (cookies read once, the
 //! access token in memory only), keeps the index fresh with background
-//! delta syncs, classifies chats (Jev on new ones in the background),
-//! imports the TS CLI's titles and caches while the bridge exists, and
+//! delta syncs, classifies chats (Jev on new ones in the background), and
 //! answers the CLI over a Unix socket in the instance's 0700 run directory.
 //!
 //! Started by any client that finds no daemon, as a detached
@@ -29,7 +28,6 @@ mod session;
 mod state;
 mod sync;
 mod transcript;
-mod ts_sync;
 
 use std::os::unix::process::CommandExt;
 use std::process::ExitCode;

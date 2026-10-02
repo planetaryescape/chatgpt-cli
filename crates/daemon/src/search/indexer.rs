@@ -11,8 +11,8 @@
 //! that stops halfway resumes where it stopped: the next run only sees what
 //! is still missing.
 //!
-//! Runs start when the daemon starts (chunking only), after every sync pass
-//! and after an import. Fetching starts only after this daemon's first
+//! Runs start when the daemon starts (chunking only) and after every sync
+//! pass. Fetching starts only after this daemon's first
 //! successful pass, so a cold start reads no cookies and sends nothing. It
 //! steps aside while a `sync` or `export` is running, honours rate limits
 //! with its own backoff, and logs counts and ids, never transcript text.

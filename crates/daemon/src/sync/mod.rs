@@ -6,9 +6,6 @@
 //!   and the cache reconcile run at most hourly there.
 //! - `chatgpt sync`: a pass now, with the sweep and the reconcile; `--full`
 //!   for a full pass. The first pass of an empty index lists everything.
-//! - After a pass, while the bridge exists: the TS CLI's own sync (at most
-//!   every 15 minutes, always for `chatgpt sync`), then an import of its
-//!   titles and caches.
 //! - After a successful pass: Jev on new and changed chats, in the
 //!   background (`crate::classify::auto_jev`).
 //! - A rate limit backs off for as long as ChatGPT asked (clamped), and
@@ -34,7 +31,6 @@ const ACTIVE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const IDLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const ACTIVE_WINDOW: Duration = Duration::from_secs(10 * 60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
-pub const TS_SYNC_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// A rate limit is waited out for at least this long, even when ChatGPT
 /// gave no `retry-after` (its 429s clear after about a minute)…
 const MIN_BACKOFF: Duration = Duration::from_secs(60);
@@ -62,12 +58,11 @@ struct Schedule {
     last_client: Instant,
     last_pass: Option<Instant>,
     last_sweep: Option<Instant>,
-    last_ts_sync: Option<Instant>,
     backoff: Option<(Instant, Backoff)>,
 }
 
 pub struct PassOptions {
-    /// `chatgpt sync`: sweep, reconcile and run the TS sync now.
+    /// `chatgpt sync`: sweep and reconcile now.
     pub explicit: bool,
     pub full: bool,
     /// The browser and profile `chatgpt sync` asked for; it becomes the one
@@ -91,11 +86,10 @@ impl Syncer {
                 status: SyncStatus::default(),
                 choice: SessionChoice::default(),
                 last_client: Instant::now(),
-                // A restart behaves as if the last pass, with its sweep and
-                // TS sync, ran when the index last synced.
+                // A restart behaves as if the last pass, with its sweep, ran
+                // when the index last synced.
                 last_pass: synced_age.and_then(|age| Instant::now().checked_sub(age)),
                 last_sweep: synced_age.and_then(|age| Instant::now().checked_sub(age)),
-                last_ts_sync: synced_age.and_then(|age| Instant::now().checked_sub(age)),
                 backoff: None,
             }),
             wake: Notify::new(),
@@ -136,18 +130,6 @@ impl Syncer {
     /// The browser choice passes read with.
     pub fn choice(&self) -> SessionChoice {
         self.schedule().choice.clone()
-    }
-
-    pub fn ts_sync_due(&self, explicit: bool) -> bool {
-        explicit
-            || self
-                .schedule()
-                .last_ts_sync
-                .is_none_or(|at| at.elapsed() >= TS_SYNC_INTERVAL)
-    }
-
-    pub fn ts_sync_ran(&self) {
-        self.schedule().last_ts_sync = Some(Instant::now());
     }
 
     /// Hold off sync passes while a change writes ChatGPT and the index,
@@ -243,8 +225,7 @@ pub async fn run_scheduled(state: std::sync::Arc<State>) {
     }
 }
 
-/// One pass, then the TS sync and import when due. A background pass that
-/// fails is retried at the next interval; one that hit a rate limit waits
+/// One pass. A background pass that fails is retried at the next interval; one that hit a rate limit waits
 /// out the backoff first.
 pub async fn run_pass(
     state: &std::sync::Arc<State>,
@@ -283,8 +264,7 @@ pub async fn run_pass(
     };
     let started = Instant::now();
     state.syncer.schedule().status.in_progress = true;
-    let outcome =
-        async { pass(state, &pinned_api(state, choice.clone()).await?, &options).await }.await;
+    let outcome = async { pass(state, &pinned_api(state, choice).await?, &options).await }.await;
     let finished_at = now_unix();
     {
         let mut schedule = state.syncer.schedule();
@@ -320,11 +300,7 @@ pub async fn run_pass(
     report.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     tracing::info!("sync pass done: {}", summary(&report));
 
-    if state.syncer.ts_sync_due(options.explicit) {
-        crate::ts_sync::after_pass(state, &choice, options.full, &mut report).await;
-    }
-    // New and changed chats, and transcripts the import brought, get
-    // indexed for search.
+    // New and changed chats get indexed for search.
     state.indexer.pass_succeeded();
     // And new and changed chats get Jev's verdict, once this pass lets go
     // of the pass lock.

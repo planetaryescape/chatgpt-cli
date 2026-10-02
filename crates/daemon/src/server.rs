@@ -141,22 +141,14 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
     // Dropping the set when we return aborts open connections and the
     // background work with them.
     let mut tasks = JoinSet::new();
-    // Chunk what the cache already holds (also when there is nothing to
-    // import); fetching waits for a pass. Asked for before the first client
+    // Chunk what the cache already holds; fetching waits for a pass. Asked for before the first client
     // is answered, so `daemon status` shows indexing as pending from the
     // start.
     state.indexer.wake();
     // Chunks from an earlier run (or an index from before vectors) may
     // still need vectors.
     state.embedder.wake();
-    let background = Arc::clone(&state);
-    tasks.spawn(async move {
-        // The TS CLI's judgments and titles show from the first `list`.
-        if let Err(failure) = crate::ts_sync::import(&background).await {
-            tracing::info!("no import at startup: {}", failure.message);
-        }
-        crate::sync::run_scheduled(background).await;
-    });
+    tasks.spawn(crate::sync::run_scheduled(Arc::clone(&state)));
     tasks.spawn(crate::search::indexer::run(Arc::clone(&state)));
     tasks.spawn(crate::search::embedder::run(Arc::clone(&state)));
     loop {

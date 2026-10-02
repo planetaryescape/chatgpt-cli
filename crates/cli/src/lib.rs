@@ -1,18 +1,12 @@
-//! The `chatgpt` command. Every command is native: it asks the daemon over
-//! IPC and prints its answer (`configure` only writes the user config;
-//! `tui` is a daemon client of its own, in `chatgpt-tui`). Nothing goes to
-//! the TS CLI any more; the bridge to it is unreachable and goes in 6b.
+//! The `chatgpt` command. Every command asks the daemon over IPC and
+//! prints its answer (`configure` only writes the user config; `tui` is a
+//! daemon client of its own, in `chatgpt-tui`).
 //!
 //! This crate never touches the index or chatgpt.com itself: only the
 //! daemon does (tests/workspace_boundaries.rs). `main.rs` passes the
 //! daemon's entry point in for `chatgpt daemon run`.
 
 mod args;
-#[allow(
-    dead_code,
-    reason = "unreachable since every command is native; deleted with the TS CLI"
-)]
-mod bridge;
 mod change_cmd;
 mod classify_cmd;
 mod configure_cmd;
@@ -91,7 +85,6 @@ fn run(cli: Cli, daemon: DaemonEntry) -> Result<ExitCode, ClientError> {
                 Command::Export(export) => export_cmd::export(&paths, export, session).await,
                 Command::Search(search) => search_cmd::search(&paths, search, session).await,
                 Command::SearchIndex(scope) => search_cmd::search_index(&paths, scope).await,
-                Command::ImportLegacy => sync_cmd::import_legacy(&paths).await,
                 Command::Archive(change) => {
                     change_cmd::change(&paths, ChatAction::Archive, change, session).await
                 }
