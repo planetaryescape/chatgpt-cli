@@ -108,11 +108,21 @@ pub struct NewJudgment {
 }
 
 /// `ClassificationStore.saveJudgment`: the judgment replaces the chat's
-/// earlier one, and its follow-up and Luna review, which no longer apply.
+/// earlier one. Follow-ups and Luna reviews of another judgment (an older
+/// `update_time` or question version) go with it; ones for this very
+/// judgment's key stay, so a second first pass for the same chat and
+/// version (the background Jev racing `classify`, a time-bound refresh)
+/// never discards a follow-up or review already paid for.
 pub fn save_judgment(connection: &mut Connection, judgment: &NewJudgment) -> Result<()> {
     let transaction = connection.transaction()?;
-    transaction.execute("delete from deep_judgments where id = ?", [&judgment.id])?;
-    transaction.execute("delete from luna_judgments where id = ?", [&judgment.id])?;
+    for table in ["deep_judgments", "luna_judgments"] {
+        transaction.execute(
+            &format!(
+                "delete from {table} where id = ? and (update_time is not ? or questions_version is not ?)"
+            ),
+            params![judgment.id, judgment.update_time, judgment.version],
+        )?;
+    }
     transaction.execute(
         "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at)
          values (?, ?, ?, ?, ?, ?)",

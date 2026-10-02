@@ -8,6 +8,8 @@
 
 mod support;
 
+use std::time::{Duration, Instant};
+
 use fake_chatgpt::Chat;
 use fake_chatgpt::models::{ANTHROPIC_KEY, FakeModelApi, OPENAI_KEY};
 use fake_chatgpt::typesafe::{API_KEY, FakeTypeSafe};
@@ -680,4 +682,186 @@ fn configure_stores_keys_privately_and_never_echoes_them() {
         String::from_utf8_lossy(&output.stderr),
         format!("error: Invalid JSON in {}.\n", path.display())
     );
+}
+
+#[test]
+fn the_follow_up_asks_before_a_large_batch_of_summaries_too() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    let mut huge = huge();
+    huge.title = "Maybe huge log".into();
+    env.fake().state().chats.push(huge);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    let (code, _, stderr) = run(&env, &["classify", "h-huge", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(summaries(&env), 1);
+    // A current, unsure first pass; its follow-up and summary gone (as
+    // when the summary prompt changes).
+    env.index_db()
+        .execute_batch(
+            "delete from deep_judgments; delete from luna_judgments; delete from summaries;",
+        )
+        .unwrap();
+    let (code, _, stderr) = run(&env, &["classify", "h-huge"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("1 unsure long chat(s) need a new summary for the follow-up"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("pass -y"), "{stderr}");
+    assert_eq!(summaries(&env), 1, "nothing summarised without a yes");
+}
+
+#[test]
+fn a_client_that_goes_away_starts_no_further_paid_call() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    // codex takes three seconds to fail; claude would be next, then Jev.
+    env.set_tools("slowfail", &["codex"]);
+    std::fs::write(
+        env.tools.join("claude"),
+        std::fs::read_to_string(env.tools.join("codex"))
+            .unwrap()
+            .replace("'slowfail' codex", "'ok' claude"),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            env.tools.join("claude"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let mut child = env
+        .std_cmd()
+        .args(["classify", "e-long"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while env.model_calls().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "codex never started");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Ctrl-C while codex works.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let tools: Vec<String> = env
+        .model_calls()
+        .iter()
+        .map(|call| call["tool"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(tools, ["codex"], "claude was never started");
+    assert_eq!(typesafe.calls(), 0, "nor Jev");
+}
+
+#[test]
+fn a_client_that_cant_answer_is_never_asked_and_nothing_is_spent() {
+    use std::io::{Read, Write};
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    env.fake().state().chats.push(huge());
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    // A 0.1.3 client's JevCheck: no `can_answer`, no Answer support.
+    let request = serde_json::json!({ "id": 1, "payload": { "type": "request", "method": "jev_check",
+        "action": "delete", "ids": ["h-huge"], "api_key": API_KEY } });
+    let body = request.to_string();
+    let mut socket = std::os::unix::net::UnixStream::connect(env.socket()).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .unwrap();
+    socket
+        .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
+        .unwrap();
+    socket.write_all(body.as_bytes()).unwrap();
+    // Heartbeats keep the socket busy, so the read timeout alone can't
+    // catch a daemon that waits forever for an answer.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let answer = loop {
+        assert!(Instant::now() < deadline, "the daemon never answered");
+        let mut length = [0u8; 4];
+        socket
+            .read_exact(&mut length)
+            .expect("an answer, not a hang");
+        let mut frame = vec![0u8; u32::from_be_bytes(length) as usize];
+        socket.read_exact(&mut frame).unwrap();
+        let message: Value = serde_json::from_slice(&frame).unwrap();
+        assert_ne!(
+            message["payload"]["event"]["kind"], "ask",
+            "an old client was asked"
+        );
+        if message["payload"]["type"] == "response" {
+            break message;
+        }
+    };
+    assert_eq!(answer["payload"]["status"], "error", "{answer}");
+    assert!(
+        answer["payload"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("pass -y"),
+        "{answer}"
+    );
+    assert_eq!(summaries(&env), 0);
+    assert_eq!(typesafe.calls(), 0);
+}
+
+#[test]
+fn transcript_and_memory_saves_wait_for_a_running_sync_pass() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    env.fake().state().memories = Some(memories());
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    env.index_db()
+        .execute("delete from transcripts where id = 'a-junk'", [])
+        .unwrap();
+    // A slow pass holds the pass lock for about three seconds.
+    env.fake().state().list_delay_ms = 1500;
+    let mut sync = env.std_cmd().arg("sync").spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let started = Instant::now();
+    // No Jev key: the guard only downloads (and saves) the transcript.
+    let output = env
+        .cmd()
+        .env_remove("TYPESAFE_API_KEY")
+        .args(["delete", "a-junk", "--check", "-n"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() > Duration::from_millis(1500),
+        "the transcript save waited"
+    );
+    sync.wait().unwrap();
+
+    let mut sync = env.std_cmd().arg("sync").spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let started = Instant::now();
+    let output = env
+        .cmd()
+        .args(["memory", "classify", "--format", "ids"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() > Duration::from_millis(1500),
+        "the memory saves waited"
+    );
+    sync.wait().unwrap();
 }

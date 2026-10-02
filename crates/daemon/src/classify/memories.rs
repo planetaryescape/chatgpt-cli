@@ -332,6 +332,7 @@ async fn save(state: &State, id: &str, row: &Row) -> Result<(), String> {
         system_two: row.system_two.clone(),
         classified_at: row.classified_at.clone().unwrap_or_else(crate::js::now_iso),
     };
+    let _no_pass = state.syncer.exclusive().await;
     state
         .db_write(move |db| chatgpt_store::save_memory_judgment(db, &new))
         .await

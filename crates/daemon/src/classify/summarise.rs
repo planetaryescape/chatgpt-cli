@@ -158,8 +158,14 @@ struct Ran {
     tokens: u64,
 }
 
-/// `summarise(title, transcript)`.
-pub async fn summarise(access: &Access, title: &str, transcript: &str) -> Result<Summary, String> {
+/// `summarise(title, transcript)`. `gone` says the client went away: no
+/// further summariser is then started.
+pub async fn summarise(
+    access: &Access,
+    title: &str,
+    transcript: &str,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> Result<Summary, String> {
     let mut errors = Vec::new();
     let input = format!("Title: {title}\n\n{transcript}");
     let summarisers = installed(access)?;
@@ -167,6 +173,10 @@ pub async fn summarise(access: &Access, title: &str, transcript: &str) -> Result
         return Err("Configure an OpenAI or Anthropic API key, or install codex or claude.".into());
     }
     for summariser in &summarisers {
+        if gone() {
+            errors.push("the command was interrupted".to_owned());
+            break;
+        }
         match run(summariser, access, &input).await {
             Ok(ran) => {
                 let summary = chatgpt_core::js::trim(&ran.text);

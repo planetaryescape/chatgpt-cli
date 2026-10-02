@@ -42,7 +42,7 @@ pub const BATCH_GAP: Duration = Duration::from_millis(500);
 pub const CONCURRENCY: usize = 4;
 /// Summaries use the user's subscription; a big batch of them eats into
 /// its usage limits, so it's confirmed first.
-const CONFIRM_ABOVE_TOKENS: i64 = 500_000;
+pub const CONFIRM_ABOVE_TOKENS: i64 = 500_000;
 /// Codex adds ~19k tokens of its own instructions per call (measured
 /// 2026-09-27).
 const CODEX_OVERHEAD_TOKENS: i64 = 19_000;
@@ -260,6 +260,11 @@ impl Classifier<'_> {
             held_back.extend(need_summary.iter().map(|chat| chat.id.clone()));
             long.retain(|chat| summaries.contains_key(&chat.id));
         };
+        let gate = SummaryGate {
+            yes: options.yes,
+            asker: self.asker,
+        };
+        let mut approval = None;
         let names = if need_summary.is_empty() || !options.summarise {
             Vec::new()
         } else {
@@ -291,23 +296,13 @@ impl Classifier<'_> {
                     (tokens as f64 / 1000.0).round(),
                     format_usd(estimate)
                 ));
-                if tokens > CONFIRM_ABOVE_TOKENS && !options.yes {
-                    let go = match self.asker {
-                        Some(asker) => asker.ask("Go ahead? [y/N] ").await.ok_or_else(|| {
-                            Failure::new(
-                                ErrorKind::Internal,
-                                "the command went away before answering",
-                            )
-                        })?,
-                        None => false,
-                    };
-                    if !go {
-                        hold(&mut long, &mut held_back);
-                        self.reporter.note(
-                            "Skipping those in step 3; everything else will still be judged."
-                                .to_owned(),
-                        );
-                    }
+                approval = gate.confirm(tokens).await?;
+                if approval.is_none() {
+                    hold(&mut long, &mut held_back);
+                    self.reporter.note(
+                        "Skipping those in step 3; everything else will still be judged."
+                            .to_owned(),
+                    );
                 }
             }
         }
@@ -318,6 +313,7 @@ impl Classifier<'_> {
             reporter: self.reporter,
             client: self.access.jev(),
             access: self.access,
+            approval,
             meter: &meter,
             today: &today,
         };
@@ -434,6 +430,7 @@ pub async fn download(
                         (target, transcript.clone(), bodies)
                     })
                     .collect();
+                let _no_pass = state.syncer.exclusive().await;
                 state
                     .db_write(move |db| {
                         for (target, transcript, bodies) in &rows {
@@ -466,20 +463,73 @@ pub async fn download(
     Ok(())
 }
 
+/// Leave to make new summaries, which only [`SummaryGate::confirm`] gives:
+/// a batch small enough not to ask about, `-y`, or the user's yes. No
+/// summary is made without one.
+#[derive(Clone, Copy, Debug)]
+pub struct Approved(());
+
+/// The TS CLI's question before summarising more than 500k tokens.
+pub struct SummaryGate<'a> {
+    /// `-y`.
+    pub yes: bool,
+    /// The client, when it can answer a question.
+    pub asker: Option<&'a Asker>,
+}
+
+impl SummaryGate<'_> {
+    /// Whether summaries of `tokens` tokens may be made: `None` when the
+    /// user said no. A client that can't answer (an older one, or none)
+    /// fails here, before anything is spent, as the TS CLI does without a
+    /// terminal.
+    pub async fn confirm(&self, tokens: i64) -> Result<Option<Approved>, Failure> {
+        if tokens <= CONFIRM_ABOVE_TOKENS || self.yes {
+            return Ok(Some(Approved(())));
+        }
+        let Some(asker) = self.asker else {
+            return Err(Failure::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "can't ask whether to summarise ~{}k tokens here; pass -y to go ahead",
+                    (tokens as f64 / 1000.0).round()
+                ),
+            ));
+        };
+        let yes = asker.ask("Go ahead? [y/N] ").await.ok_or_else(|| {
+            Failure::new(
+                ErrorKind::Internal,
+                "the command went away before answering",
+            )
+        })?;
+        Ok(yes.then_some(Approved(())))
+    }
+}
+
 /// A long chat's summary: the cached one, else a new one, metered and
-/// saved (`ensureSummary`).
+/// saved (`ensureSummary`). A new one needs `approval`, and isn't started
+/// once the client has gone.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the summary's inputs and its guards"
+)]
 pub async fn ensure_summary(
     state: &State,
     access: &Access,
+    reporter: &Reporter,
     meter: &Mutex<CostMeter>,
     chat: &IndexedConversation,
     transcript: &Transcript,
     cached: Option<&str>,
+    approval: Option<Approved>,
 ) -> Result<String, String> {
     if let Some(summary) = cached {
         return Ok(summary.to_owned());
     }
-    let made = summarise::summarise(access, &chat.title, &transcript.markdown).await?;
+    approval.ok_or("not summarised: a large batch of summaries wasn't approved")?;
+    let made = summarise::summarise(access, &chat.title, &transcript.markdown, &|| {
+        reporter.client_gone()
+    })
+    .await?;
     meter.lock().unwrap_or_else(PoisonError::into_inner).add(
         &format!("summaries ({})", made.model),
         PaidBy::Subscription,
@@ -549,6 +599,8 @@ pub fn jev_state(
 
 struct Judge<'a> {
     state: &'a Arc<State>,
+    /// Leave to make the summaries step 3 needs.
+    approval: Option<Approved>,
     reporter: &'a Reporter,
     client: Result<typesafe_client::Client, String>,
     access: &'a Access,
@@ -632,10 +684,12 @@ impl Judge<'_> {
             let summary = ensure_summary(
                 self.state,
                 self.access,
+                self.reporter,
                 self.meter,
                 chat,
                 transcript,
                 summary,
+                self.approval,
             )
             .await?;
             (summary, "summary", summary_kind(transcript))
@@ -647,6 +701,10 @@ impl Judge<'_> {
             )
         };
         let client = self.client.as_ref().map_err(String::clone)?;
+        // A summary may have taken minutes; the client may be gone by now.
+        if self.reporter.client_gone() {
+            return Err("not judged: the command was interrupted".to_owned());
+        }
         let state = jev_state(chat, transcript, Some(self.today), &kind_label, &content);
         let result = client
             .system_one(&state, super::questions::chats())

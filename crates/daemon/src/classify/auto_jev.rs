@@ -178,6 +178,11 @@ async fn run(state: &Arc<State>) -> Result<Option<String>, String> {
     if chosen.is_empty() {
         return Ok(None);
     }
+    // Chats a command is judging now are its.
+    let (_claim, chosen) = state.flight.claim_free(chosen);
+    if chosen.is_empty() {
+        return Ok(None);
+    }
     let chats = super::chats(state, chosen)
         .await
         .map_err(|failure| failure.message)?;

@@ -29,6 +29,8 @@ pub struct TypeSafeState {
     pub fail: Option<(u32, u16)>,
     /// Answer with a score that isn't a number (it echoes text instead).
     pub malformed: bool,
+    /// Hold every answer this long.
+    pub delay_ms: u64,
 }
 
 pub struct FakeTypeSafe {
@@ -143,11 +145,13 @@ impl Respond for Handler {
         if state.malformed {
             answers["worth_keeping"]["score"] = json!("SENTINEL private transcript fragment");
         }
-        ResponseTemplate::new(200).set_body_json(json!({
-            "answers": answers,
-            "usage": { "input_tokens": INPUT_TOKENS },
-            "model": "jev-test",
-        }))
+        ResponseTemplate::new(200)
+            .set_delay(std::time::Duration::from_millis(state.delay_ms))
+            .set_body_json(json!({
+                "answers": answers,
+                "usage": { "input_tokens": INPUT_TOKENS },
+                "model": "jev-test",
+            }))
     }
 }
 

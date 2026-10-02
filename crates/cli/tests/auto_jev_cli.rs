@@ -206,3 +206,30 @@ fn it_is_off_without_a_configured_key_or_when_switched_off() {
     settled(&env);
     assert_eq!(typesafe.calls(), 2);
 }
+
+#[test]
+fn a_command_waits_for_the_background_instead_of_judging_the_same_chats_again() {
+    let typesafe = FakeTypeSafe::start();
+    typesafe.state().delay_ms = 1500;
+    let mut env = env_with(&typesafe, Some(&key_config()));
+    env.extra_env.extend([
+        ("CHATGPT_TEST_AUTO_JEV_SINCE".to_owned(), "2000".to_owned()),
+        ("TYPESAFE_API_KEY".to_owned(), API_KEY.to_owned()),
+    ]);
+    env.cmd().arg("sync").assert().success();
+    // The background Jev is judging both chats now.
+    assert_eq!(env.status()["auto_jev"]["in_progress"], true);
+    let output = env
+        .cmd()
+        .args(["classify", "a-junk", "b-idea", "-y"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.starts_with("2 chat(s): 2 already judged, 0 new or changed to judge.\n"),
+        "it waited for the background's verdicts: {stderr}"
+    );
+    settled(&env);
+    assert_eq!(typesafe.calls(), 2, "each chat paid for once");
+}

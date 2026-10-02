@@ -121,6 +121,7 @@ pub async fn change(
             session: session.clone(),
             access,
             yes: args.yes,
+            can_answer: true,
         };
         let ResponseData::Approved { ids } =
             crate::classify_cmd::ask_showing_progress_and_asking(paths, request).await?

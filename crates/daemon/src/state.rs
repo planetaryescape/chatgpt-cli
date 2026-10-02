@@ -30,6 +30,8 @@ pub struct State {
     pub indexer: Indexer,
     pub embedder: Embedder,
     pub auto_jev: AutoJev,
+    /// The chats a classification is judging now.
+    pub flight: crate::classify::flight::InFlight,
     pub started_at: i64,
     pub version: String,
     ts_sync: Mutex<TsSyncStatus>,
@@ -81,6 +83,7 @@ impl State {
             indexer: Indexer::default(),
             embedder: Embedder::default(),
             auto_jev: AutoJev::default(),
+            flight: Default::default(),
             started_at: now_unix(),
             version,
             ts_sync: Mutex::new(ts_sync),

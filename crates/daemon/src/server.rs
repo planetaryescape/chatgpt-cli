@@ -211,9 +211,18 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
         let (progress, mut updates) = mpsc::unbounded_channel();
         // The client's answers to what the request asks it (`Ask`); only
         // a request that can ask reads any.
-        let asks = matches!(request, Request::Classify { .. } | Request::JevCheck { .. });
+        let asks = matches!(
+            request,
+            Request::Classify {
+                can_answer: true,
+                ..
+            } | Request::JevCheck {
+                can_answer: true,
+                ..
+            }
+        );
         let (answer, answers) = mpsc::unbounded_channel();
-        let mut answer = asks.then_some(answer);
+        let answer = asks.then_some(answer);
         let work = handle(&state, request, Some(progress), answers);
         tokio::pin!(work);
         let mut heartbeat = tokio::time::interval(crate::progress::HEARTBEAT);
@@ -237,7 +246,11 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
                         return;
                     }
                 }
-                frame = framed.next(), if answer.is_some() => match frame {
+                // Read while the request runs, for every request: an answer
+                // goes to the request that asked, and a client that closed
+                // the connection is noticed at once, so a long run stops
+                // starting paid calls (`Reporter::client_gone`).
+                frame = framed.next() => match frame {
                     Some(Ok(Message { id, payload: Payload::Request(Request::Answer { yes }) }))
                         if id == message.id =>
                     {
@@ -247,8 +260,7 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
                     }
                     // A client sends nothing else while it waits.
                     Some(Ok(_)) => {}
-                    // It went away: whatever waits for an answer gets none.
-                    None | Some(Err(_)) => answer = None,
+                    None | Some(Err(_)) => return,
                 },
             }
         };

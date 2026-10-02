@@ -13,13 +13,13 @@ use futures_util::StreamExt;
 use super::access::Access;
 use super::costs::{CostMeter, format_usd};
 use super::pipeline::{
-    CONCURRENCY, cached_summaries, download, ensure_summary, failure_line, is_long, jev_state,
-    profile, summary_kind,
+    Approved, CONCURRENCY, CONFIRM_ABOVE_TOKENS, SummaryGate, cached_summaries, download,
+    ensure_summary, failure_line, is_long, jev_state, profile, summary_kind,
 };
 use super::summarise;
 use crate::handlers::Failure;
 use crate::policy::Judged;
-use crate::progress::Reporter;
+use crate::progress::{Asker, Reporter};
 use crate::state::State;
 
 pub struct DeepClassified {
@@ -34,6 +34,10 @@ pub struct DeepClassifier<'a> {
     pub reporter: &'a Reporter,
     pub session: SessionChoice,
     pub access: &'a Access,
+    /// The question before a large batch of summaries: `-y`, and the
+    /// client if it can answer.
+    pub yes: bool,
+    pub asker: Option<&'a Asker>,
 }
 
 impl DeepClassifier<'_> {
@@ -150,13 +154,53 @@ impl DeepClassifier<'_> {
             .copied()
             .filter(|chat| transcripts.contains_key(&chat.id))
             .collect();
-        let held_back = todo.len() - ready.len();
         let long: Vec<&IndexedConversation> = ready
             .iter()
             .copied()
             .filter(|chat| transcripts.get(&chat.id).is_some_and(is_long))
             .collect();
         let summaries = cached_summaries(self.state, &long).await?;
+        // New summaries pass the same question as the first pass's: a large
+        // batch is asked about (or needs -y), and a no holds those back.
+        let need: Vec<&IndexedConversation> = long
+            .iter()
+            .copied()
+            .filter(|chat| !summaries.contains_key(&chat.id))
+            .collect();
+        let tokens: i64 = need
+            .iter()
+            .filter_map(|chat| transcripts.get(&chat.id))
+            .map(|transcript| transcript.approx_tokens)
+            .sum();
+        let names = if need.is_empty() {
+            Vec::new()
+        } else {
+            summarise::names(self.access)
+                .map_err(|why| Failure::new(chatgpt_core::ErrorKind::InvalidInput, why))?
+        };
+        let gate = SummaryGate {
+            yes: self.yes,
+            asker: self.asker,
+        };
+        let mut approval = None;
+        let mut ready = ready;
+        if !need.is_empty() && !names.is_empty() {
+            if tokens > CONFIRM_ABOVE_TOKENS && !self.yes {
+                self.reporter.note(format!(
+                    "{} unsure long chat(s) need a new summary for the follow-up ({}), ~{}k tokens.",
+                    need.len(),
+                    names.join(", then "),
+                    (tokens as f64 / 1000.0).round()
+                ));
+            }
+            approval = gate.confirm(tokens).await?;
+            if approval.is_none() {
+                ready.retain(|chat| !need.iter().any(|held| held.id == chat.id));
+                self.reporter
+                    .note("Skipping those; the other follow-ups go ahead.".to_owned());
+            }
+        }
+        let held_back = todo.len() - ready.len();
         let meter = Mutex::new(CostMeter::default());
         let client = self.access.jev();
         let step = self.reporter.step("Deep-classifying", Some(ready.len()));
@@ -170,7 +214,8 @@ impl DeepClassifier<'_> {
                     async move {
                         let judged = match transcript {
                             Some(transcript) => {
-                                self.judge(&chat, transcript, summary, client, meter).await
+                                self.judge(&chat, transcript, summary, client, meter, approval)
+                                    .await
                             }
                             None => Err("no transcript".to_owned()),
                         };
@@ -218,6 +263,7 @@ impl DeepClassifier<'_> {
         summary: Option<&str>,
         client: &Result<typesafe_client::Client, String>,
         meter: &Mutex<CostMeter>,
+        approval: Option<Approved>,
     ) -> Result<JudgmentRow, String> {
         if self.reporter.client_gone() {
             return Err("not judged: the command was interrupted".to_owned());
@@ -228,13 +274,25 @@ impl DeepClassifier<'_> {
                     "Long chat needs a summary, but neither codex nor claude is on PATH.".into(),
                 );
             }
-            let summary =
-                ensure_summary(self.state, self.access, meter, chat, transcript, summary).await?;
+            let summary = ensure_summary(
+                self.state,
+                self.access,
+                self.reporter,
+                meter,
+                chat,
+                transcript,
+                summary,
+                approval,
+            )
+            .await?;
             (summary, summary_kind(transcript))
         } else {
             (transcript.markdown.clone(), "full transcript".to_owned())
         };
         let client = client.as_ref().map_err(String::clone)?;
+        if self.reporter.client_gone() {
+            return Err("not judged: the command was interrupted".to_owned());
+        }
         // No `as_of` here, as in the TS CLI's follow-up.
         let state = jev_state(chat, transcript, None, &content_kind, &content);
         let result = client

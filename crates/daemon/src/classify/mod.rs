@@ -23,6 +23,7 @@ mod access;
 pub mod auto_jev;
 mod costs;
 mod deep;
+pub mod flight;
 mod luna;
 mod memories;
 pub mod pipeline;
@@ -67,21 +68,24 @@ pub async fn classify(
     access: ModelAccess,
     session: SessionChoice,
     progress: Option<UnboundedSender<Progress>>,
-    answers: UnboundedReceiver<bool>,
+    answers: Option<UnboundedReceiver<bool>>,
 ) -> Result<ClassifyOutcome, Failure> {
     let state = Arc::clone(state);
     tokio::spawn(async move {
         let started = Instant::now();
         let reporter = Reporter::for_client(progress);
-        let asker = Asker::new(reporter.clone(), answers);
+        let asker = answers.map(|answers| Asker::new(reporter.clone(), answers));
         let access = Access::for_client(access);
+        // Waits out the background Jev on these chats, then keeps it off
+        // them until this run ends.
+        let _claim = state.flight.claim(&ids).await;
         let targets = chats(&state, ids).await?;
         let classifier = Classifier {
             state: &state,
             reporter: &reporter,
             session: session.clone(),
             access: &access,
-            asker: Some(&asker),
+            asker: asker.as_ref(),
         };
         let options = Options {
             force: redo,
@@ -109,6 +113,8 @@ pub async fn classify(
                 reporter: &reporter,
                 session,
                 access: &access,
+                yes,
+                asker: asker.as_ref(),
             }
             .classify(&unsure, redo)
             .await?;

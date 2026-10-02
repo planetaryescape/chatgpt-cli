@@ -99,6 +99,11 @@ pub enum Request {
         /// `-y`: summarise a large batch without asking.
         #[serde(default)]
         yes: bool,
+        /// The client answers `Ask` progress lines. Without it (a client
+        /// from before 0.1.4), the daemon never asks: a large batch of
+        /// summaries without `yes` fails before anything is spent.
+        #[serde(default)]
+        can_answer: bool,
     },
     /// `classify`: Jev (then its follow-up for unsure chats), Luna's
     /// review, and missing local titles, for exactly these chats, with
@@ -115,6 +120,9 @@ pub enum Request {
         access: ModelAccess,
         #[serde(default)]
         session: SessionChoice,
+        /// As for `JevCheck`.
+        #[serde(default)]
+        can_answer: bool,
     },
     /// `titles`: Luna's local titles and themes for these chats, from
     /// their cached transcripts or summaries.

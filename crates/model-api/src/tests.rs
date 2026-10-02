@@ -70,6 +70,11 @@ async fn errors_never_quote_the_answer() {
         .mount(&server)
         .await;
     Mock::given(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": SENTINEL })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(path("/v1/responses"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!("{{{SENTINEL}")))
         .up_to_n_times(1)
         .mount(&server)
@@ -82,14 +87,18 @@ async fn errors_never_quote_the_answer() {
         .await;
     let openai = OpenAi::new(&server.uri(), key("k")).unwrap();
     let mut messages = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         messages.push(openai.text("i", "x", None).await.unwrap_err().to_string());
+    }
+    for message in &messages {
+        assert!(!message.contains("SENTINEL"), "{message}");
     }
     assert_eq!(
         messages,
         [
             "127.0.0.1 returned 400",
             "OpenAI response failed: no completed output",
+            "OpenAI response unexpected: no completed output",
             "127.0.0.1 answered with unreadable JSON (Syntax error)",
             "OpenAI returned no text.",
         ]

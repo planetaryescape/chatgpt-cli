@@ -57,16 +57,22 @@ pub fn local_title_source(
 }
 
 /// A Luna title and theme for chat `id` (`setLocalTitle(c, title, theme,
-/// "luna")`), already cleaned. Marked as the daemon's, so the TS import
-/// keeps it until the TS CLI writes a newer manual one.
+/// "luna")`), already cleaned, unless the chat has a manual title by the
+/// time it's written: the user's own always wins, even one set while Luna
+/// was still answering. Marked as the daemon's, so the TS import keeps it
+/// until the TS CLI writes a newer manual one. Whether it was written.
 pub fn set_luna_title(
     connection: &mut Connection,
     title: &ManualTitle<'_>,
     theme: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let transaction = connection.transaction()?;
-    transaction.execute(
-        "insert or replace into local_titles values (?, ?, ?, 'luna', ?, ?, ?)",
+    let written = transaction.execute(
+        "insert into local_titles values (?, ?, ?, 'luna', ?, ?, ?)
+         on conflict (id) do update set update_time = excluded.update_time,
+            version = excluded.version, source = 'luna', title = excluded.title,
+            theme = excluded.theme, updated_at = excluded.updated_at
+         where local_titles.source != 'manual'",
         params![
             title.id,
             title.update_time,
@@ -75,8 +81,10 @@ pub fn set_luna_title(
             theme,
             title.updated_at
         ],
-    )?;
-    crate::native::mark(&transaction, "local_titles", title.id, title.updated_at)?;
+    )? > 0;
+    if written {
+        crate::native::mark(&transaction, "local_titles", title.id, title.updated_at)?;
+    }
     transaction.commit()?;
-    Ok(())
+    Ok(written)
 }

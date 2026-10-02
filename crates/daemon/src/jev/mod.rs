@@ -36,7 +36,7 @@ pub async fn check(
     yes: bool,
     session: SessionChoice,
     progress: Option<UnboundedSender<Progress>>,
-    answers: UnboundedReceiver<bool>,
+    answers: Option<UnboundedReceiver<bool>>,
 ) -> Result<Vec<String>, Failure> {
     let action = match action {
         ChatAction::Archive | ChatAction::Delete => action.as_str(),
@@ -55,8 +55,9 @@ pub async fn check(
     // Its own task: a judgment paid for is saved even if the client leaves.
     tokio::spawn(async move {
         let reporter = Reporter::for_client(progress);
-        let asker = Asker::new(reporter.clone(), answers);
+        let asker = answers.map(|answers| Asker::new(reporter.clone(), answers));
         let access = Access::for_client(access);
+        let _claim = state.flight.claim(&ids).await;
         let targets = crate::classify::chats(&state, ids.clone()).await?;
         let chats: HashMap<String, IndexedConversation> = targets
             .iter()
@@ -67,7 +68,7 @@ pub async fn check(
             reporter: &reporter,
             session,
             access: &access,
-            asker: Some(&asker),
+            asker: asker.as_ref(),
         };
         let options = Options {
             force: false,

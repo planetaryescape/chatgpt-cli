@@ -169,8 +169,17 @@ pub async fn handle(
             session,
             access,
             yes,
+            can_answer,
         } => jev::check(
-            state, action, ids, api_key, access, yes, session, progress, answers,
+            state,
+            action,
+            ids,
+            api_key,
+            access,
+            yes,
+            session,
+            progress,
+            can_answer.then_some(answers),
         )
         .await
         .map(|ids| ResponseData::Approved { ids }),
@@ -180,9 +189,19 @@ pub async fn handle(
             yes,
             access,
             session,
-        } => classify::classify(state, ids, redo, yes, access, session, progress, answers)
-            .await
-            .map(ResponseData::Classified),
+            can_answer,
+        } => classify::classify(
+            state,
+            ids,
+            redo,
+            yes,
+            access,
+            session,
+            progress,
+            can_answer.then_some(answers),
+        )
+        .await
+        .map(ResponseData::Classified),
         Request::Titles { ids, redo, access } => {
             classify::titles(state, ids, redo, access, progress)
                 .await

@@ -137,6 +137,21 @@ fn a_new_judgment_replaces_its_reviews_and_the_import_never_touches_it() {
             .unwrap()
     );
 
+    // A second first pass for the same chat and version (the background
+    // Jev racing `classify`) keeps the follow-up and review already paid
+    // for.
+    let again = NewJudgment {
+        classified_at: "2026-09-02T00:00:00.000Z".into(),
+        ..first.clone()
+    };
+    store.write(|db| save_judgment(db, &again)).unwrap();
+    let kept = store
+        .read(|db| judgment(db, "a", "t1", "v1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.luna_suggestion.as_deref(), Some("keep"));
+    assert_eq!(kept.deep_version.as_deref(), Some("d1"));
+
     // A new follow-up drops the review that rested on the old one.
     store.write(|db| save_deep_judgment(db, &deep)).unwrap();
     assert!(
@@ -145,14 +160,31 @@ fn a_new_judgment_replaces_its_reviews_and_the_import_never_touches_it() {
             .unwrap()
     );
 
+    // A judgment for a newer update of the chat (or newer questions) drops
+    // the old follow-up and review.
+    store.write(|db| save_luna_judgment(db, &luna)).unwrap();
+    store
+        .write(|db| replace_all(db, &[chat("a", "t2")], "t"))
+        .unwrap();
     let fresh = NewJudgment {
+        update_time: "t2".into(),
         answers: "{\"new\":1}".into(),
         classified_at: "2026-10-02T10:00:00.000Z".into(),
         ..first
     };
     store.write(|db| save_judgment(db, &fresh)).unwrap();
+    let left: i64 = store
+        .read(|db| {
+            Ok(db.query_row(
+                "select (select count(*) from deep_judgments) + (select count(*) from luna_judgments)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(left, 0, "the old follow-up and review went");
     let saved = store
-        .read(|db| judgment(db, "a", "t1", "v1"))
+        .read(|db| judgment(db, "a", "t2", "v1"))
         .unwrap()
         .unwrap();
     assert_eq!(saved.answers, "{\"new\":1}");
@@ -166,13 +198,13 @@ fn a_new_judgment_replaces_its_reviews_and_the_import_never_touches_it() {
     legacy
         .execute(
             "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
-             values ('a', 't1', 'v1', 'full', '{\"ts\":2}', '2030-01-01T00:00:00.000Z')",
+             values ('a', 't2', 'v1', 'full', '{\"ts\":2}', '2030-01-01T00:00:00.000Z')",
             [],
         )
         .unwrap();
     store.write(|db| import_legacy(db, &path)).unwrap();
     let kept = store
-        .read(|db| judgment(db, "a", "t1", "v1"))
+        .read(|db| judgment(db, "a", "t2", "v1"))
         .unwrap()
         .unwrap();
     assert_eq!(kept, saved);

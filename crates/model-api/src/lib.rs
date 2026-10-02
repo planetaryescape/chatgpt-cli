@@ -177,6 +177,26 @@ impl Http {
     }
 }
 
+/// A Responses API `status`, if it's one OpenAI defines; never the field
+/// itself otherwise.
+fn known_status(status: Option<&str>) -> &'static str {
+    const KNOWN: [&str; 6] = [
+        "completed",
+        "failed",
+        "in_progress",
+        "cancelled",
+        "queued",
+        "incomplete",
+    ];
+    match status {
+        None => "unknown",
+        Some(status) => KNOWN
+            .into_iter()
+            .find(|known| *known == status)
+            .unwrap_or("unexpected"),
+    }
+}
+
 fn count(value: &Value, pointer: &str) -> u64 {
     value
         .pointer(pointer)
@@ -244,11 +264,12 @@ impl OpenAi {
             .await?;
         let status = answer.get("status").and_then(Value::as_str);
         if status != Some("completed") {
-            // The TS CLI adds the API's error message, which may quote the
-            // request; it's left out here.
+            // Only a status OpenAI defines is named: the field is the
+            // answer's, which could hold anything. The TS CLI adds the API's
+            // error message, which may quote the request; it's left out.
             return Err(Error::Answer(format!(
                 "OpenAI response {}: no completed output",
-                status.unwrap_or("unknown")
+                known_status(status)
             )));
         }
         let text: String = answer

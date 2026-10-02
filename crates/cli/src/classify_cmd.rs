@@ -99,6 +99,7 @@ pub async fn classify(
         yes: args.yes,
         access: model_access(),
         session,
+        can_answer: true,
     };
     let ResponseData::Classified(outcome) = ask_showing_progress_and_asking(paths, request).await?
     else {

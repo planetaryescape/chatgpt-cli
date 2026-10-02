@@ -1,5 +1,5 @@
 //! Debug builds only: the debug `chatgpt` binary plays a fake `codex` or
-//! `claude` for tests, as `chatgpt __fake-model-cli <log dir> <ok|fail>
+//! `claude` for tests, as `chatgpt __fake-model-cli <log dir> <ok|fail|slowfail>
 //! <codex|claude> <its arguments…>`, run from a two-line script named
 //! `codex` or `claude` on a test's `PATH`. It answers as
 //! the fake-chatgpt crate's `model_answers.rs` decides, and records each call (its
@@ -38,7 +38,9 @@ fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 pub fn run(args: &[String]) -> ExitCode {
     let [log, mode, tool, rest @ ..] = args else {
-        eprintln!("usage: chatgpt __fake-model-cli <log dir> <ok|fail> <codex|claude> <args…>");
+        eprintln!(
+            "usage: chatgpt __fake-model-cli <log dir> <ok|fail|slowfail> <codex|claude> <args…>"
+        );
         return ExitCode::from(2);
     };
     let mut stdin = String::new();
@@ -61,7 +63,10 @@ pub fn run(args: &[String]) -> ExitCode {
         Path::new(log).join(format!("{tool}-{stamp}-{}.json", std::process::id())),
         record.to_string(),
     );
-    if mode == "fail" {
+    if mode == "slowfail" {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    if mode == "fail" || mode == "slowfail" {
         eprintln!("SENTINEL fake {tool} failure with private text");
         return ExitCode::from(1);
     }
