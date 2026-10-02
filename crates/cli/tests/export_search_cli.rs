@@ -677,3 +677,25 @@ fn a_session_refused_mid_indexing_ends_the_run_without_setting_chats_aside() {
     env.cmd().arg("search-index").assert().success();
     wait_indexed(&env);
 }
+
+/// docs/issues/export-search-followups.md: a `search --limit` whose hits
+/// don't fit one frame comes back in parts, as a big export does. A
+/// lowered frame cap (debug builds only) stands in for 16 MiB.
+#[test]
+fn search_hits_larger_than_a_frame_come_back_whole() {
+    let reference = synced(many());
+    wait_indexed(&reference);
+    let args = ["search", "needle", "--limit", "100000", "--format", "json"];
+    let whole = reference.stdout(&args);
+    assert!(whole.len() > 4_000, "{}", whole.len());
+
+    let mut env = Env::with_fake(many());
+    env.extra_env
+        .push(("CHATGPT_TEST_MAX_FRAME_BYTES".into(), "2000".into()));
+    env.cmd().arg("sync").assert().success();
+    wait_indexed(&env);
+    let parted = env.stdout(&args);
+    let hits = |json: &str| serde_json::from_str::<Vec<Value>>(json).unwrap();
+    assert_eq!(hits(&parted).len(), 35);
+    assert_eq!(hits(&parted), hits(&whole));
+}
