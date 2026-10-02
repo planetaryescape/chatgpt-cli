@@ -278,7 +278,7 @@ fn renames_go_to_chatgpt_and_the_index_and_a_legacy_500_says_it_likely_applied()
 }
 
 #[test]
-fn a_local_title_shows_in_list_and_survives_the_ts_import() {
+fn a_local_title_shows_in_list() {
     let env = synced();
     let (code, _, stderr) = run(&env, &["title", "b-old", "  My   taxes  "]);
     assert_eq!(code, Some(0), "{stderr}");
@@ -288,10 +288,6 @@ fn a_local_title_shows_in_list_and_survives_the_ts_import() {
             .contains("b-old  2024-01-01       My taxes\n")
     );
     assert!(writes(&env).is_empty(), "local only");
-    // The TS index never has it; the import keeps it.
-    drop(env.legacy_db());
-    env.cmd().arg("import-legacy").assert().success();
-    assert!(env.stdout(&["list"]).contains("My taxes"));
     let (_, _, stderr) = run(&env, &["title", "b-old", " "]);
     assert_eq!(stderr, "error: Local title must be 1–100 characters.\n");
     let (_, _, stderr) = run(&env, &["title", "z-archived", "x"]);

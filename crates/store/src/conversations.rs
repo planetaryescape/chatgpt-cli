@@ -230,7 +230,6 @@ pub fn remove(connection: &mut Connection, id: &str) -> Result<()> {
     let transaction = connection.transaction()?;
     transaction.execute("delete from conversations where id = ?", [id])?;
     transaction.execute("delete from local_titles where id = ?", [id])?;
-    crate::native::forget(&transaction, "local_titles", id)?;
     transaction.commit()?;
     Ok(())
 }

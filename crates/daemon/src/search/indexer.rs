@@ -11,8 +11,8 @@
 //! that stops halfway resumes where it stopped: the next run only sees what
 //! is still missing.
 //!
-//! Runs start when the daemon starts (chunking only), after every sync pass
-//! and after an import. Fetching starts only after this daemon's first
+//! Runs start when the daemon starts (chunking only) and after every sync
+//! pass. Fetching starts only after this daemon's first
 //! successful pass, so a cold start reads no cookies and sends nothing. It
 //! steps aside while a `sync` or `export` is running, honours rate limits
 //! with its own backoff, and logs counts and ids, never transcript text.
@@ -27,7 +27,7 @@ use chatgpt_protocol::SearchIndexStatus;
 use chatgpt_store::{Candidate, ChunkVersions, Unindexed};
 use tokio::sync::Notify;
 
-use super::chunks::{bun_sqlite_text, transcript_chunks};
+use super::chunks::transcript_chunks;
 use crate::api::{ApiError, BATCH_MAX, BatchItem};
 use crate::render::cached_transcript;
 use crate::state::{State, now_unix};
@@ -377,8 +377,8 @@ async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
 
 pub(crate) fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
     transcript_chunks(markdown)
-        .iter()
-        .map(|chunk| bun_sqlite_text(chunk))
+        .into_iter()
+        .map(String::into_bytes)
         .collect()
 }
 

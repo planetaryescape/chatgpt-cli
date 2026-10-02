@@ -2,7 +2,7 @@
 
 The questions Jev answers about each chat, the rules that turn its answers into delete, archive or keep, and Luna's final review of unresolved chats.
 
-Source of truth: `src/classify/questions.ts` and `src/classify/deep-questions.ts` (questions), `src/classify/policy.ts` and `src/classify/deep-policy.ts` (rules). If this page and the code disagree, the code wins; update this page.
+Source of truth: `crates/daemon/src/classify/questions.json` and `deep_questions.json` (questions), `crates/daemon/src/policy/` (rules), and the versions in `Profile::builtin` (`crates/daemon/src/policy/profile.rs`). If this page and the code disagree, the code wins; update this page.
 
 ## Jev's input
 
@@ -83,7 +83,7 @@ The follow-up uses the same cached transcript or summary and asks Jev which spec
 
 A strongly identified creative idea, personal record, reusable artifact, original thinking, or unfinished work becomes sure `keep`. Re-askable content becomes sure `delete` only when loss scores are very low and Jev is confident its value is low. Low-value content with no identified loss can become sure `archive`; content with substantial unique value can become sure `keep`. Conflicting or weak answers retain the original suggestion and its `?`. The follow-up can change the suggestion category as well as remove uncertainty.
 
-Follow-up answers have their own `DEEP_QUESTIONS_VERSION`. Changing those questions re-asks only the unsure chats; changing the regular questions still re-judges the regular pass. Threshold changes in either policy file recalculate suggestions on read.
+Follow-up answers have their own version (`deep_questions_version`). Changing those questions re-asks only the unsure chats; changing the regular questions still re-judges the regular pass. Threshold changes in either policy file recalculate suggestions on read.
 
 ### Luna's final review
 
@@ -110,8 +110,8 @@ Each number is the answer to the question with the matching id above.
 
 ## Changing the rules
 
-- Thresholds in `policy.ts` apply every time suggestions are read. Change them and re-open the TUI or re-run `stats`; there's nothing to re-run.
-- Changing a question's wording, criteria, or the set of questions needs a `QUESTIONS_VERSION` bump in `questions.ts`. The next `classify` then re-judges everything.
-- Changing a follow-up question or criterion needs a `DEEP_QUESTIONS_VERSION` bump in `deep-questions.ts`. The next `classify` re-asks the unsure chats.
-- Changing Luna's final-review prompt or output meaning needs a `LUNA_JUDGMENT_VERSION` bump in `luna-version.ts`. The next `classify` re-reviews chats still unsure after Jev, every product label, borderline product ideas and conflicting time-expired cases.
+- Thresholds in `crates/daemon/src/policy/` apply every time suggestions are read. Change them and re-open the TUI or re-run `stats`; there's nothing to re-run.
+- Changing a question's wording, criteria, or the set of questions needs a `questions_version` bump in `Profile::builtin`. The next `classify` then re-judges everything.
+- Changing a follow-up question or criterion needs a `deep_questions_version` bump. The next `classify` re-asks the unsure chats.
+- Changing Luna's final-review prompt or output meaning needs a `luna_version` bump. The next `classify` re-reviews chats still unsure after Jev, every product label, borderline product ideas and conflicting time-expired cases.
 - Check a change against a handful of chats whose correct answer you know before running it on everything. A few misses are acceptable; see [Maintainer guide](../maintainers.md#locked-decisions).

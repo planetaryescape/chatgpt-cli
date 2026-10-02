@@ -16,8 +16,8 @@ pub enum Request {
     /// Stop after answering.
     Shutdown,
     /// Sync now and answer when done, with progress events meanwhile. Runs
-    /// the archived sweep, the cache reconcile and the TS sync whatever their
-    /// schedule says.
+    /// the archived sweep and the cache reconcile whatever their schedule
+    /// says.
     Sync {
         #[serde(default)]
         full: bool,
@@ -33,8 +33,6 @@ pub enum Request {
         #[serde(default)]
         session: SessionChoice,
     },
-    /// Import the TS CLI's judgments, titles, summaries and transcripts now.
-    ImportLegacy,
     /// `export`/`show`: resolve a link, id or id prefix, fetch the chat now
     /// and render it.
     Export {

@@ -58,8 +58,8 @@ pub fn candidates(
 
 /// Move every cache of `candidate` from its cached `update_time` to the
 /// chat's current one, unless the chat changed again since it was read or
-/// its cached transcript is no longer the one that was verified (an import
-/// may have replaced it while the check ran).
+/// its cached transcript is no longer the one that was verified (another
+/// write may have replaced it while the check ran).
 /// Returns whether it did. Search chunks move too when they were indexed
 /// from the cached version under the same title.
 pub fn preserve(connection: &mut Connection, candidate: &Candidate) -> Result<bool> {

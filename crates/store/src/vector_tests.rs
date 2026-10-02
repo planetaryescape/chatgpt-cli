@@ -237,7 +237,7 @@ fn an_index_from_before_vectors_upgrades_in_place() {
     let version: i64 = store
         .read(|db| Ok(db.query_row("pragma user_version", [], |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     assert_eq!(store.read(|db| coverage(db, None, V)).unwrap(), (1, 1));
     assert_eq!(
         store

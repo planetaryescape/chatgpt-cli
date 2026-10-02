@@ -16,6 +16,7 @@ What chatgpt.com's private API does, as observed on 2026-09-27, 2026-09-28 and 2
 | Delete saved memory | `DELETE /backend-api/memories/{memory_id}` | Returns `{success: true}` after the UI's confirmation |
 | List projects | `GET /backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&limit=20&owned_only=false` | `items` contain project ids, names, write permission and archive state; `cursor` pages results |
 | Create project | `POST /backend-api/projects` `{emoji: null, instructions: "", memory_scope: "unset", name, theme: null}` | Observed in the ChatGPT UI on 2026-09-29; returns `resource.gizmo` with the new project id and display name |
+| Delete project | `DELETE /backend-api/gizmos/{id}` | Observed 2026-10-02 on an empty project; returns `{"deleted": true}`, and the project leaves the sidebar list. No command uses it |
 | Move into project | `PATCH /backend-api/conversation/{id}` `{gizmo_id: "g-p-…"}` | Returns `{success: true}`; observed through the ChatGPT UI and replayed by the CLI |
 | Remove from project | `PATCH /backend-api/conversation/{id}` `{gizmo_id: ""}` | Observed through the ChatGPT UI; the CLI confirms legacy 500 responses by reading the chat |
 | Archive / unarchive | `PATCH /backend-api/conversation/{id}` `{is_archived}` | |
@@ -73,7 +74,7 @@ Re-observe rather than guess:
 
 1. Open chatgpt.com in a real browser with network recording. The agent-browser skill's `derive-client` flow records a HAR while you use the site.
 2. Do the action that broke (list, open a chat, archive…) and find the request in the HAR.
-3. Compare its URL, body and response with the table above and with `src/api/conversations.ts`.
+3. Compare its URL, body and response with the table above and with `crates/daemon/src/api.rs` (writes in `api/writes.rs`).
 4. Delete the HAR afterwards: it contains your session cookies and token.
 
 A headed browser passes Cloudflare where a headless one gets challenged.

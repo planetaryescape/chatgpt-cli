@@ -4,8 +4,8 @@ A CLI and TUI for managing ChatGPT history through chatgpt.com's private web API
 
 ## Every change
 
-1. `bunx tsc --noEmit` and `bun test` pass. `bun test` fails when `docs/reference/cli.md` is stale; `bun run docs:cli` regenerates it.
-2. For anything touching the API, rendering, or classification, run the real command against your own account (`bun src/cli.ts <command>`). Tests only use fixtures; the private API is verified live.
+1. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo nextest run` pass. Never set `RUSTFLAGS`: it replaces `.cargo/config.toml`'s `reqwest_unstable` cfg and the build fails. The `cli_reference` test fails when `docs/reference/cli.md` is stale; `CHATGPT_UPDATE_CLI_REFERENCE=1 cargo nextest run -p chatgpt-cli --test cli_reference` regenerates it.
+2. For anything touching the API, rendering, or classification, run the real command against your own account (`cargo build`, then `target/debug/chatgpt <command>`, which uses the `dev` instance). Tests only use fixtures; the private API is verified live.
 3. Update the page in `docs/` that describes what you changed.
 4. Commit as `type: description`, using your own Git identity without agent attribution.
 
@@ -17,6 +17,6 @@ Transcripts can contain private conversations about other people. When debugging
 
 - An API call, or something chatgpt.com returns: read `docs/explanation/chatgpt-api.md`, then re-observe the live site rather than guessing.
 - A Jev question, the policy, or the summariser: read `docs/reference/classification.md` and the classification section of `docs/maintainers.md`, and bump the right version constant.
-- The TUI: its key handler reads state from the `live` ref, because key repeat outruns React commits. Tests drive it with `testRender`, a temp SQLite fixture, and `settle()`.
-- Commands, flags or output formats: update the relevant page in `docs/` and regenerate `docs/reference/cli.md`.
-- Terminal output: send status through `note()` in `src/progress.ts`. Reserve `console.error` for real errors, since Bun prints it in red.
+- The TUI (`crates/tui`): tests drive keys and screens against ratatui's `TestBackend` with insta snapshots, and the real binary in a pseudo-terminal (`crates/cli/tests/tui_cli.rs`); see `docs/maintainers.md`.
+- Commands, flags or output formats: update the relevant page in `docs/` and regenerate `docs/reference/cli.md`. Output the TS CLI printed is pinned in `crates/cli/tests/golden/`; change a golden line only on purpose, and say why in the commit.
+- Terminal output: stdout carries data and stderr carries status. Send status lines through `output::note` and failures through `output::error_line` in `crates/cli/src/output.rs`.

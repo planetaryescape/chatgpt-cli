@@ -2,11 +2,9 @@
 //! Ported from the TS CLI's `src/search/store.ts` and the transcript half of
 //! `src/index/classification-store.ts` @ 1b8c950.
 //!
-//! Chunk bodies are bytes, not `&str`: the TS CLI cuts transcripts into
-//! chunks at UTF-16 offsets, which can split an emoji's surrogate pair, and
-//! Bun hands SQLite such a string in a form that isn't always valid UTF-8.
-//! The daemon reproduces those bytes so the FTS index, its ranking and its
-//! snippets come out as the TS CLI's do.
+//! Chunk bodies are bytes, not `&str`: chunks from before `CHUNK_VERSION` 2
+//! held half an emoji in the bytes Bun gave SQLite, which aren't UTF-8.
+//! Such chunks are stale and rebuilt, but may still be read until then.
 
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, ToSql, params};

@@ -47,7 +47,7 @@ fn hits(
         }
         let updated = iso_from_seconds(hit.update_time)
             .ok_or_else(|| Failure::new(ErrorKind::Decode, "Invalid time value"))?;
-        let (snippet, snippet_cut) = slice_units(&collapse_spaces(&hit.snippet), SNIPPET_UNITS);
+        let snippet = slice_units(&collapse_spaces(&hit.snippet), SNIPPET_UNITS);
         hits.push(SearchHit {
             id: hit.payload.conversation_id,
             title: hit.title,
@@ -55,7 +55,6 @@ fn hits(
             archived: hit.payload.is_archived,
             score: None,
             snippet,
-            snippet_cut,
         });
         if hits.len() as u64 == limit {
             break;
@@ -145,7 +144,7 @@ mod tests {
             None,
         )
         .expect("hits");
-        assert_eq!(cut[0].snippet_cut, Some(0xD83D));
+        assert_eq!(cut[0].snippet, "a".repeat(159), "no half emoji");
         let bad = GlobalSearchHit {
             update_time: f64::NAN,
             ..found("f", false, "")

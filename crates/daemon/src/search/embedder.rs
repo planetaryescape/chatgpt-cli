@@ -25,7 +25,6 @@ use chatgpt_protocol::EmbeddingStatus;
 use chatgpt_store::{ChunkVersions, NewVector};
 use tokio::sync::Notify;
 
-use super::bun_text;
 use super::worker::{Worker, WorkerError, WorkerModel};
 use crate::state::{State, now_unix};
 
@@ -417,7 +416,7 @@ async fn embed_pending(state: &State) -> Result<(), String> {
                 continue;
             }
             super::indexer::yield_to_requests(state).await;
-            let text = bun_text(&chunk.text).into_owned();
+            let text = String::from_utf8_lossy(&chunk.text);
             match state.embedder.embed(&model, &text).await {
                 Ok(vector) => batch.push(NewVector {
                     chunk_id: chunk.id,

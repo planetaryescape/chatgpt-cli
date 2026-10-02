@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AutoJevStatus, EmbeddingStatus, ImportReport, SearchIndexStatus};
+use crate::{AutoJevStatus, EmbeddingStatus, SearchIndexStatus};
 
 /// What `Status` reports. Ready means this answers with a compatible
 /// `protocol_version`.
@@ -28,10 +28,6 @@ pub struct DaemonStatus {
     /// "Default"`; `None` before it first needed one.
     #[serde(default)]
     pub session: Option<String>,
-    #[serde(default)]
-    pub ts_sync: TsSyncStatus,
-    #[serde(default)]
-    pub legacy_import: ImportStatus,
     #[serde(default)]
     pub classification: ClassificationInfo,
     /// The background search indexer.
@@ -72,35 +68,6 @@ pub struct Backoff {
     /// Unix seconds.
     pub until: i64,
     pub reason: String,
-}
-
-/// The TS CLI's sync, which the daemon runs while the bridge exists.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TsSyncStatus {
-    /// The TS CLI's `cli.ts`, or why it wasn't found.
-    #[serde(default)]
-    pub cli: Option<String>,
-    #[serde(default)]
-    pub unavailable: Option<String>,
-    /// Unix seconds.
-    #[serde(default)]
-    pub last_run_at: Option<i64>,
-    #[serde(default)]
-    pub last_ok: Option<bool>,
-    #[serde(default)]
-    pub last_message: Option<String>,
-}
-
-/// The import of the TS index's judgments and titles.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportStatus {
-    /// Unix seconds.
-    #[serde(default)]
-    pub last_at: Option<i64>,
-    #[serde(default)]
-    pub last: Option<ImportReport>,
-    #[serde(default)]
-    pub last_error: Option<String>,
 }
 
 /// The classification versions verdicts are read with: this build's (D9).

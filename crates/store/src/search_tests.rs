@@ -1,7 +1,5 @@
 #![allow(clippy::unwrap_used)]
 
-use rusqlite::Connection;
-
 use super::*;
 
 const V: ChunkVersions = ChunkVersions {
@@ -131,7 +129,8 @@ fn chunks_are_searchable_only_while_current_for_their_chat() {
 #[test]
 fn chunk_bytes_that_are_not_utf8_are_stored_and_read_as_they_are() {
     let (_dir, store) = store_with(&[chat("a", "T", "2026-01-01T00:00:00Z", false)]);
-    // What Bun writes for a chunk ending in half of a surrogate pair.
+    // What a chunk from before CHUNK_VERSION 2 can hold: the bytes Bun
+    // wrote for half of a surrogate pair.
     let body = b"hello rust \xED\xA0\xBD".to_vec();
     store
         .write(|db| {
@@ -219,82 +218,16 @@ fn reconcile_moves_search_chunks_with_the_other_caches() {
     assert!(store.read(|db| unindexed(db, V)).unwrap().is_empty());
 }
 
-#[test]
-fn the_import_keeps_transcripts_the_daemon_fetched() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(&dir.path().join("chatgpt.db")).unwrap();
-    let path = dir.path().join("ts.db");
-    let legacy = Connection::open(&path).unwrap();
-    legacy
-        .execute_batch(include_str!("../migrations/0001_index.sql"))
-        .unwrap();
-    store
-        .write(|db| {
-            replace_all(
-                db,
-                &[
-                    chat("current", "T", "t2", false),
-                    chat("stale", "T", "t2", false),
-                    chat("mine", "T", "t2", false),
-                ],
-                "t",
-            )?;
-            db.execute_batch(
-                "insert into transcripts values ('current', 't2', 2, 'daemon', 1, 1);
-                 insert into transcripts values ('stale', 't1', 2, 'daemon old', 1, 1);
-                 insert into transcripts values ('mine', 't2', 2, 'daemon only', 1, 1);",
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    legacy
-        .execute_batch(
-            "insert into transcripts values ('current', 't2', 2, 'ts', 1, 1);
-             insert into transcripts values ('stale', 't2', 2, 'ts new', 1, 1);
-             insert into transcripts values ('new', 't2', 2, 'ts only', 1, 1);",
-        )
-        .unwrap();
-    store.write(|db| import_legacy(db, &path)).unwrap();
-    let rows: Vec<(String, String)> = store
-        .read(|db| {
-            let mut statement = db.prepare("select id, markdown from transcripts order by id")?;
-            Ok(statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?)
-        })
-        .unwrap();
-    let rows: Vec<(&str, &str)> = rows
-        .iter()
-        .map(|(id, markdown)| (id.as_str(), markdown.as_str()))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("current", "daemon"),
-            ("mine", "daemon only"),
-            ("new", "ts only"),
-            ("stale", "ts new"),
-        ]
-    );
-}
-
-// The review's scenario: the indexer backs off while a chat moves from t1
-// to t2; its cached transcript and chunks say "oldword" at t1. An import
-// then replaces the transcript with "newword", still at t1, and the
-// reconcile verifies that replacement against a fresh render and moves the
-// caches to t2. The old chunks must not ride along as current.
+// The indexer backs off while a chat moves from t1 to t2; its cached
+// transcript and chunks say "oldword" at t1. Another write then replaces
+// the transcript with "newword", still at t1, and the reconcile verifies
+// that replacement against a fresh render and moves the caches to t2. The
+// old chunks must not ride along as current.
 #[test]
 fn chunks_never_outlive_the_transcript_they_were_built_from() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(&dir.path().join("chatgpt.db")).unwrap();
-    let path = dir.path().join("ts.db");
-    let legacy = Connection::open(&path).unwrap();
-    legacy
-        .execute_batch(include_str!("../migrations/0001_index.sql"))
-        .unwrap();
+    let (_dir, store) = store_with(&[chat("a", "Idea", "t1", false)]);
     store
         .write(|db| {
-            replace_all(db, &[chat("a", "Idea", "t1", false)], "t")?;
             db.execute(
                 "insert into transcripts values ('a', 't1', 2, '# Idea\n\n---\n\noldword', 1, 1)",
                 [],
@@ -304,13 +237,15 @@ fn chunks_never_outlive_the_transcript_they_were_built_from() {
             apply_delta(db, &[chat("a", "Idea", "t2", false)], &[], "t2")
         })
         .unwrap();
-    legacy
-        .execute(
-            "insert into transcripts values ('a', 't1', 2, '# Idea\n\n---\n\nnewword', 1, 1)",
-            [],
-        )
+    store
+        .write(|db| {
+            db.execute(
+                "insert or replace into transcripts values ('a', 't1', 2, '# Idea\n\n---\n\nnewword', 1, 1)",
+                [],
+            )?;
+            Ok(())
+        })
         .unwrap();
-    store.write(|db| import_legacy(db, &path)).unwrap();
     let found = store
         .read(|db| candidates(db, &["a".to_owned()], 2))
         .unwrap();
@@ -372,7 +307,7 @@ fn reconcile_skips_a_transcript_replaced_after_it_was_verified() {
     let found = store
         .read(|db| candidates(db, &["a".to_owned()], 2))
         .unwrap();
-    // …while an import replaces it with B under the same time.
+    // …while another write replaces it with B under the same time.
     store
         .write(|db| {
             db.execute(
@@ -387,66 +322,4 @@ fn reconcile_skips_a_transcript_replaced_after_it_was_verified() {
         .read(|db| Ok(db.query_row("select update_time from transcripts", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(time, "t1", "B stays stale");
-}
-
-#[test]
-fn the_import_never_replaces_a_current_transcript_with_an_older_one() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(&dir.path().join("chatgpt.db")).unwrap();
-    let path = dir.path().join("ts.db");
-    let legacy = Connection::open(&path).unwrap();
-    legacy
-        .execute_batch(include_str!("../migrations/0001_index.sql"))
-        .unwrap();
-    store
-        .write(|db| {
-            replace_all(
-                db,
-                &[
-                    chat("newer-render-older-time", "T", "t2", false),
-                    chat("newer-render-current", "T", "t2", false),
-                    chat("both-stale-older", "T", "t3", false),
-                    chat("both-stale-newer", "T", "t3", false),
-                ],
-                "t",
-            )?;
-            db.execute_batch(
-                "insert into transcripts values ('newer-render-older-time', 't2', 2, 'daemon', 1, 1);
-                 insert into transcripts values ('newer-render-current', 't2', 2, 'daemon', 1, 1);
-                 insert into transcripts values ('both-stale-older', 't2', 2, 'daemon', 1, 1);
-                 insert into transcripts values ('both-stale-newer', 't1', 2, 'daemon', 1, 1);",
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    legacy
-        .execute_batch(
-            "insert into transcripts values ('newer-render-older-time', 't1', 3, 'ts', 1, 1);
-             insert into transcripts values ('newer-render-current', 't2', 3, 'ts', 1, 1);
-             insert into transcripts values ('both-stale-older', 't1', 2, 'ts', 1, 1);
-             insert into transcripts values ('both-stale-newer', 't2', 2, 'ts', 1, 1);",
-        )
-        .unwrap();
-    store.write(|db| import_legacy(db, &path)).unwrap();
-    let rows: Vec<(String, String)> = store
-        .read(|db| {
-            let mut statement = db.prepare("select id, markdown from transcripts order by id")?;
-            Ok(statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?)
-        })
-        .unwrap();
-    let rows: Vec<(&str, &str)> = rows
-        .iter()
-        .map(|(id, markdown)| (id.as_str(), markdown.as_str()))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("both-stale-newer", "ts"),
-            ("both-stale-older", "daemon"),
-            ("newer-render-current", "ts"),
-            ("newer-render-older-time", "daemon"),
-        ]
-    );
 }

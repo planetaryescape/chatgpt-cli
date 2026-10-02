@@ -17,9 +17,7 @@ use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
 use crate::sync::{PassOptions, pinned_api, run_pass};
-use crate::{
-    classify, export, jev, memories, mutate, projects, reads, search, select, transcript, ts_sync,
-};
+use crate::{classify, export, jev, memories, mutate, projects, reads, search, select, transcript};
 
 /// A failed request, worded for people: no response body, cookie or token.
 #[derive(Debug, Clone)]
@@ -113,7 +111,6 @@ pub async fn handle(
         Request::Stats { filter, session } => stats(state, *filter, &session)
             .await
             .map(|report| ResponseData::Stats(Box::new(report))),
-        Request::ImportLegacy => ts_sync::import(state).await.map(ResponseData::Imported),
         Request::Export {
             reference,
             stdin_ids,
@@ -370,8 +367,6 @@ async fn status(state: &State) -> DaemonStatus {
         sync,
         backoff,
         session: state.sessions.source(&state.syncer.choice()),
-        ts_sync: state.ts_sync_status(),
-        legacy_import: state.import_status(),
         classification: state.profile().info(),
         search_index: state.indexer.status(),
         embeddings: state.embedder.status(),

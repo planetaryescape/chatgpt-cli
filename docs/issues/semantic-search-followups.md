@@ -14,5 +14,5 @@ Found while porting semantic, hybrid and remote search and `search-index` (stage
 - **Remote errors** say `403 from /backend-api/global/search` without the body the TS CLI appends. That's the daemon's no-bodies rule, kept on purpose.
 - **Chunks the model fails on** are skipped until the daemon restarts (an in-memory set). None failed on BK's 43,755 chunks.
 - **Equal semantic scores** keep SQLite's row order, as the TS CLI's do. Two indexes with different chunk ids could order exact ties differently; the parity harness gives both the same ids. Real vectors don't tie.
-- **`search --format table` with a cut emoji:** the cell width of a lone surrogate (`Bun.stringWidth`) wasn't compared; the cut shows as U+FFFD in both.
+- ~~**`search --format table` with a cut emoji:** the cell width of a lone surrogate (`Bun.stringWidth`) wasn't compared; the cut shows as U+FFFD in both.~~ Gone after 0.1.5: snippets never cut an emoji.
 - **The embedder recounts** chunks and vectors at every page of 64 (about 30 ms on 43,755 chunks, roughly 1% of embedding time), to keep `daemon status` right while the indexer adds chunks.

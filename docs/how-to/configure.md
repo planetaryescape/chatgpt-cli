@@ -9,7 +9,7 @@ chatgpt --browser chrome sync
 chatgpt --browser chrome --profile "Profile 1" sync
 ```
 
-Supported browser names are `safari`, `chrome`, `firefox`, `dia`, `arc`, `brave` and `edge`. `--profile` takes a Chromium or Firefox profile directory name. To keep the choice for your shell, set `CHATGPT_BROWSER` and optionally `CHATGPT_BROWSER_PROFILE`; no session token is saved in the CLI config. If you use different ChatGPT accounts, give each one a separate `XDG_DATA_HOME` so their local indexes do not mix.
+Supported browser names are `safari`, `chrome`, `firefox`, `dia`, `arc`, `brave` and `edge`. `--profile` takes a Chromium or Firefox profile directory name. To keep the choice for your shell, set `CHATGPT_BROWSER` and optionally `CHATGPT_BROWSER_PROFILE`; no session token is saved in the CLI config. An index holds one ChatGPT account's chats, and a sync from another account is refused. If you use different accounts, give each one its own instance with `CHATGPT_INSTANCE=<name>`, which has its own daemon and index.
 
 ## Model API keys
 
@@ -27,4 +27,18 @@ For each provider, the matching environment variable (`TYPESAFE_API_KEY`, `OPENA
 
 ## Jev on new chats in the background
 
-With a Jev key stored by `chatgpt configure jev`, the Rust CLI's background daemon judges new and changed chats with Jev after each sync (at most 50 at a time), so `list --suggest` stays current between `classify` runs. It runs only Jev's first pass, never its follow-up, Luna or a summary, and never for a key that's only in your environment. `chatgpt daemon status` shows what it judged and spent today. To switch it off, add `"auto_jev": false` to the config file; `chatgpt configure` keeps the setting.
+With a Jev key stored by `chatgpt configure jev`, the background daemon judges new and changed chats with Jev after each sync (at most 50 at a time), so `list --suggest` stays current between `classify` runs. It runs only Jev's first pass, never its follow-up, Luna or a summary, and never for a key that's only in your environment. `chatgpt daemon status` shows what it judged and spent today. To switch it off, add `"auto_jev": false` to the config file; `chatgpt configure` keeps the setting.
+
+## The background daemon
+
+Every command but `configure` talks to a background daemon, and the first one starts it. It holds your session, keeps the index, search index and embeddings fresh, and runs classification. Nothing needs configuring; these commands manage it:
+
+```sh
+chatgpt daemon status      # what it's doing: last and next sync, search index, embeddings, background Jev
+chatgpt daemon logs -f     # follow its log (-n for more lines)
+chatgpt daemon stop        # stop it; the next command starts it again
+chatgpt daemon install     # start it at login (writes a LaunchAgent; prints how to load it)
+chatgpt daemon uninstall   # stop starting it at login
+```
+
+A command started with `--browser` or `--profile` passes that choice to the daemon. After you upgrade `chatgpt`, the next command restarts an older daemon by itself.

@@ -1,6 +1,6 @@
 # Keep the index and judgments up to date
 
-Pick up new chats and changes since your last run, classify them, and generate local display titles.
+The background daemon syncs on its own: every 2 minutes while you're using `chatgpt`, otherwise every 15 (`chatgpt daemon status` shows when it last ran and when it runs next). Run `sync` yourself to pick up changes now, including the archived list and the cache check, which the daemon otherwise runs at most hourly. Then classify new chats and generate local display titles.
 
 ```sh
 chatgpt sync
@@ -38,7 +38,7 @@ chatgpt classify --redo
 This re-judges every matching chat, including its unsure follow-up, even when both are cached. You rarely need it:
 
 - Changes to Jev's questions already trigger re-judging, because judgments are tied to a version number.
-- Changes to the thresholds in `src/classify/policy.ts` need no re-run at all, because suggestions are recalculated every time they're read.
+- Changes to the policy thresholds (`crates/daemon/src/policy/`) need no re-run at all, because suggestions are recalculated every time they're read.
 
 Cached transcripts and summaries are reused either way. Scope it with any filter, for example `chatgpt classify --redo --older-than 2y`.
 
@@ -46,12 +46,13 @@ Cached transcripts and summaries are reused either way. Scope it with any filter
 
 | Cached | Invalidated when |
 |---|---|
-| Transcript | the chat changes, or the rendering changes (`RENDER_VERSION`) |
+| Transcript | the chat changes, or the rendering changes (`render_version`) |
 | Summary of a long chat | the chat changes, or the summary prompt changes (`SUMMARY_PROMPT_VERSION`) |
-| Jev judgment | the chat changes, the questions change (`QUESTIONS_VERSION`), a time-bound judgment comes due for review, or you pass `--redo` |
-| Jev follow-up | the chat or regular judgment changes, the follow-up questions change (`DEEP_QUESTIONS_VERSION`), or you pass `--redo` |
-| Luna final judgment | the chat or Jev judgment changes, the final prompt changes (`LUNA_JUDGMENT_VERSION`), or you pass `--redo` |
-| Luna local title and theme | the chat changes, the title prompt changes (`LOCAL_TITLE_VERSION`), or you pass `titles --redo`; manual titles remain until edited |
+| Jev judgment | the chat changes, the questions change (`questions_version`), a time-bound judgment comes due for review, or you pass `--redo` |
+| Jev follow-up | the chat or regular judgment changes, the follow-up questions change (`deep_questions_version`), or you pass `--redo` |
+| Luna final judgment | the chat or Jev judgment changes, the final prompt changes (`luna_version`), or you pass `--redo` |
+| Search passages and their embeddings | the transcript changes, the chunking changes (`CHUNK_VERSION`) or the embedding model changes (`MODEL_VERSION`); the daemon rebuilds them in the background, from cached transcripts |
+| Luna local title and theme | the chat changes, the title prompt changes (`local_title_version`), or you pass `titles --redo`; manual titles remain until edited |
 
 An interrupted `classify` or `titles` run loses nothing it finished; the next run carries on.
 
@@ -65,8 +66,12 @@ Cost this run:
   total           $0.0027  of which billed: $0.0027
 ```
 
-- **Jev** is billed to your TypeSafe account per input token; see `src/classify/costs.ts` for the current estimate.
+- **Jev** is billed to your TypeSafe account per input token; see `crates/daemon/src/classify/costs.rs` for the current estimate.
 - **Summaries** run on your Codex subscription, or your Claude subscription as a fallback. They're listed at their API-equivalent price (about $0.003 each with `gpt-6-luna`) so you can compare them with Jev, and aren't included in "billed".
 - Before summarising more than about 500k tokens, `classify` shows a dollar estimate and asks. Pass `-y` to skip the question.
 
-Prices live in `src/classify/costs.ts`, with their sources.
+Prices live in `crates/daemon/src/classify/costs.rs`, with their sources.
+
+## After upgrading from 0.1.5
+
+0.1.5 was the last release with the old TS CLI in the repository. The first daemon of a newer release keeps your index, judgments, titles and summaries, and rebuilds the search passages from cached transcripts without the network (they no longer split an emoji), then embeds them again: about half an hour on one core for a large history. Lexical search works throughout; semantic and hybrid search say `N of M chunks embedded` until it's done. `chatgpt import-legacy` is gone. The TS CLI's database, `~/.local/share/chatgpt-cli/index.db`, is no longer read; delete it when you no longer want it.

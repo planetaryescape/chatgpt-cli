@@ -3,23 +3,18 @@
 
 //! The environment for driving the real binary and the daemon it starts:
 //! HOME and the XDG directories in a temp dir, so nothing touches the
-//! developer's own browser, daemon or TS index. Every test stops its daemon,
+//! developer's own browser or daemon. Every test stops its daemon,
 //! even when it fails.
 
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use fake_chatgpt::{COOKIE, FakeChatGpt};
-use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 pub struct Env {
     pub home: tempfile::TempDir,
     pub fake: Option<FakeChatGpt>,
-    /// The TS index to import from (it need not exist).
-    pub legacy: PathBuf,
-    /// A TS CLI stand-in: `CHATGPT_TS_CLI`, run by `/bin/sh`.
-    pub ts_cli: Option<PathBuf>,
     pub extra_env: Vec<(String, String)>,
     /// Stand-in `codex` and `claude` (the debug binary playing them), first
     /// on `PATH`, so no test ever reaches the real ones.
@@ -37,16 +32,12 @@ impl Env {
             .prefix("cg")
             .tempdir_in("/tmp")
             .unwrap();
-        // As the TS CLI lays it out: `$XDG_DATA_HOME/chatgpt-cli/index.db`.
-        let legacy = home.path().join("ts/chatgpt-cli/index.db");
         let tools = home.path().join("tools");
         let model_log = home.path().join("model-calls");
         fake_tools(&tools, &model_log, "ok", &["codex", "claude"]);
         Self {
             home,
             fake: None,
-            legacy,
-            ts_cli: None,
             extra_env: Vec::new(),
             tools,
             model_log,
@@ -91,7 +82,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", home.join("xdg-config"))
             // The embedding model's cache: never the developer's.
             .env("XDG_CACHE_HOME", home.join("xdg-cache"))
-            .env("CHATGPT_LEGACY_DB", &self.legacy)
             .env("CHATGPT_TEST_FAST_RETRY", "1")
             // Vectors without the model, and never a download from the
             // internet (a test that wants the real path overrides both).
@@ -100,10 +90,8 @@ impl Env {
             .env_remove("CHATGPT_INSTANCE")
             .env_remove("CHATGPT_BROWSER")
             .env_remove("CHATGPT_BROWSER_PROFILE")
-            .env_remove("CHATGPT_BRIDGED")
             .env_remove("CHATGPT_DAEMON_VERSION")
             .env_remove("CHATGPT_REQUEST_TIMEOUT_MS")
-            .env_remove("CHATGPT_TS_SYNC")
             // Jev: never the developer's key or TypeSafe itself.
             .env_remove("TYPESAFE_API_KEY")
             .env("TYPESAFE_BASE_URL", "http://127.0.0.1:9")
@@ -126,18 +114,6 @@ impl Env {
                 command
                     .env("CHATGPT_BASE_URL", "http://127.0.0.1:9")
                     .env_remove("CHATGPT_TEST_COOKIE");
-            }
-        }
-        match &self.ts_cli {
-            Some(script) => {
-                command
-                    .env("CHATGPT_TS_CLI", script)
-                    .env("CHATGPT_BUN", "/bin/sh");
-            }
-            None => {
-                command
-                    .env_remove("CHATGPT_TS_CLI")
-                    .env_remove("CHATGPT_BUN");
             }
         }
         for (name, value) in &self.extra_env {
@@ -219,30 +195,12 @@ impl Env {
         self.data_dir().join("run/daemon.sock")
     }
 
-    /// The daemon's own index, to write fixtures into (judgments: the TS
-    /// import no longer brings them). It exists once the daemon started.
+    /// The daemon's own index, to write fixtures into. It exists once the
+    /// daemon started.
     pub fn index_db(&self) -> rusqlite::Connection {
         let db = rusqlite::Connection::open(self.data_dir().join("chatgpt.db")).unwrap();
         db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
         db
-    }
-
-    /// A TS index at `self.legacy` with the TS CLI's schema.
-    pub fn legacy_db(&self) -> rusqlite::Connection {
-        std::fs::create_dir_all(self.legacy.parent().unwrap()).unwrap();
-        let db = rusqlite::Connection::open(&self.legacy).unwrap();
-        db.execute_batch(TS_SCHEMA).unwrap();
-        db
-    }
-
-    /// A TS CLI stand-in script with `body` as its shell code.
-    pub fn fake_ts_cli(&mut self, body: &str) -> PathBuf {
-        let dir = self.home.path().join("ts-cli/src");
-        std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("cli.ts");
-        std::fs::write(&script, body).unwrap();
-        self.ts_cli = Some(script.clone());
-        script
     }
 }
 
@@ -525,10 +483,6 @@ pub fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
-/// The TS CLI's tables, which the daemon's first migration copies column
-/// for column.
-pub const TS_SCHEMA: &str = include_str!("../../../store/migrations/0001_index.sql");
-
 /// Jev answers that make a confident delete.
 pub fn delete_answers(topic: &str) -> String {
     serde_json::json!({
@@ -549,8 +503,7 @@ pub fn brainstorm_answers(topic: &str) -> String {
     .to_string()
 }
 
-/// This repository's QUESTIONS_VERSION: the daemon reads the built-in
-/// versions when no TS CLI is installed.
+/// This build's QUESTIONS_VERSION (`Profile::builtin`).
 pub const QUESTIONS_VERSION: &str = "2026-09-28.9";
 
 pub fn judge(db: &rusqlite::Connection, id: &str, update_time: &str, answers: &str) {
@@ -560,79 +513,6 @@ pub fn judge(db: &rusqlite::Connection, id: &str, update_time: &str, answers: &s
         rusqlite::params![id, update_time, QUESTIONS_VERSION, answers],
     )
     .unwrap();
-}
-
-/// This repository, for the TS CLI the parity harnesses run.
-pub fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// bun on PATH, if any: the parity harnesses skip without it.
-pub fn bun() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("bun"))
-        .find(|candidate| candidate.is_file())
-}
-
-/// Copy the Rust index's chats into the TS index (the same rows in the
-/// same order, and the same `synced_at`), so both CLIs read the same data.
-/// Returns how many chats it copied.
-pub fn copy_chats(rust_index: &Path, ts_index: &Path) -> usize {
-    let rust = Connection::open_with_flags(rust_index, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    let ts = Connection::open(ts_index).unwrap();
-    ts.execute("delete from conversations", []).unwrap();
-    let mut rows = rust
-        .prepare("select id, title, create_time, update_time, is_archived, pinned, project_id from conversations order by rowid")
-        .unwrap();
-    let mut insert = ts
-        .prepare("insert into conversations values (?, ?, ?, ?, ?, ?, ?)")
-        .unwrap();
-    let mut copied = 0;
-    let mut query = rows.query([]).unwrap();
-    while let Some(row) = query.next().unwrap() {
-        let values: Vec<rusqlite::types::Value> = (0..7).map(|i| row.get(i).unwrap()).collect();
-        insert.execute(rusqlite::params_from_iter(values)).unwrap();
-        copied += 1;
-    }
-    let synced: String = rust
-        .query_row(
-            "select value from meta where key = 'synced_at'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    ts.execute(
-        "insert or replace into meta values ('synced_at', ?)",
-        [synced],
-    )
-    .unwrap();
-    copied
-}
-
-/// Copy the TS index's judgments, follow-ups, Luna reviews and memory
-/// classifications into the Rust index as they are, so both CLIs read the
-/// same verdicts: the import no longer brings them (D9). Returns how many
-/// judgments it copied.
-pub fn copy_judgments(ts_index: &Path, rust_index: &Path) -> usize {
-    let rust = Connection::open(rust_index).unwrap();
-    rust.busy_timeout(std::time::Duration::from_secs(10))
-        .unwrap();
-    rust.execute("attach database ? as ts", [ts_index.display().to_string()])
-        .unwrap();
-    rust.execute_batch(
-        "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at)
-            select id, update_time, version, content_kind, answers, classified_at from ts.judgments;
-         insert or replace into deep_judgments select * from ts.deep_judgments;
-         insert or replace into luna_judgments select * from ts.luna_judgments;
-         insert or replace into memory_judgments select * from ts.memory_judgments;",
-    )
-    .unwrap();
-    let copied: i64 = rust
-        .query_row("select count(*) from ts.judgments", [], |row| row.get(0))
-        .unwrap();
-    rust.execute("detach database ts", []).unwrap();
-    usize::try_from(copied).unwrap()
 }
 
 /// Write stand-in `tools` into `dir`: scripts that run the debug binary as

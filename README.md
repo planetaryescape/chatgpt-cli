@@ -6,33 +6,24 @@ Search, export and manage your ChatGPT history from the terminal. `chatgpt` uses
 
 ## Quick start
 
-You need macOS, [Bun](https://bun.sh) 1.3 or later, and a browser logged in to [chatgpt.com](https://chatgpt.com). Supported browsers are Safari, Chrome, Firefox, Dia, Arc, Brave and Edge.
+You need macOS and a browser logged in to [chatgpt.com](https://chatgpt.com). Supported browsers are Safari, Chrome, Firefox, Dia, Arc, Brave and Edge. Install the latest release into `~/.local/bin`:
 
 ```sh
-git clone https://github.com/planetaryescape/chatgpt-cli.git
-cd chatgpt-cli
-bun install --frozen-lockfile
-bun link
+curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh
 chatgpt sync
 chatgpt list --limit 10
 ```
 
-The CLI uses your macOS default browser. To choose another browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync`. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. `sync` builds the local conversation index; later runs pick up changes. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
+The installer checks the release's SHA-256 before installing, and warns when another `chatgpt` comes earlier on your PATH. To pick a release or a place, pipe into `sh -s -- --version v0.1.5 --prefix <dir>` (installs into `<dir>/bin`).
 
-### The Rust CLI (preview)
+The CLI uses your macOS default browser. To choose another browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync`. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
 
-A Rust `chatgpt` is replacing the TS one. It runs every command but `review` and `tui` itself (classification included), through a background daemon that keeps the index, the search index and its embeddings fresh, judges new chats with Jev once you configure a Jev key, and holds your session (no Keychain prompt per command), and hands `review` and `tui` to the TS CLI installed above. Install a release into `~/.local/bin`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh
-```
-
-`bun link` puts the TS CLI's `chatgpt` in `~/.bun/bin`; the installer warns when that comes first on your PATH. See [how the Rust CLI works](docs/explanation/rust-daemon.md).
+Every command talks to a background daemon, which the first command starts. It reads your browser session once and keeps the token in memory (no Keychain prompt per command), keeps the local index, the search index and its embeddings fresh, and judges new chats with Jev once you configure a Jev key. `list` and `search` answer from the index without touching the network. `chatgpt daemon status` shows what it's doing, and `chatgpt daemon install` starts it at login. See [how it works](docs/explanation/rust-daemon.md).
 
 ## What you can do
 
 ```sh
-chatgpt search "garden lighting"                      # full-text search, indexed after each sync
+chatgpt search "garden lighting"                      # full-text search, indexed in the background
 chatgpt search-index                                  # wait for the search index to catch up
 chatgpt search --semantic "ideas for a small garden"   # local embedding search
 chatgpt search --hybrid "garden lighting"              # combine both
@@ -65,7 +56,7 @@ Suggestions are advisory. The dry runs show the selected chats before anything c
 
 ## Data and privacy
 
-The CLI reads the ChatGPT session from your browser and exchanges it for an access token in memory. It stores the conversation index, cached transcripts, judgments and search vectors in `~/.local/share/chatgpt-cli/index.db`; optional model keys live in `~/.config/chatgpt-cli/config.json`. Neither location belongs in Git.
+The CLI reads the ChatGPT session from your browser and exchanges it for an access token in memory. The daemon stores the conversation index, cached transcripts, judgments and search vectors in `~/Library/Application Support/chatgpt-cli/chatgpt.db`; optional model keys live in `~/.config/chatgpt-cli/config.json`. Neither location belongs in Git.
 
 Local embedding does not send transcript text to Hugging Face. Classification and summarisation **do** send the relevant chat or saved-memory content to the configured model providers. Read [data, files and credentials](docs/reference/data.md) before using those features on sensitive conversations.
 
@@ -81,12 +72,12 @@ Local embedding does not send transcript text to Hugging Face. Classification an
 
 ## Contributing
 
-Bug reports and pull requests are welcome, especially when a ChatGPT web app change breaks an observed endpoint. Include the command, expected and actual behavior, and a redacted response shape or error. Keep cookies, tokens, HAR files and conversation text out of issues and commits.
+Bug reports and pull requests are welcome, especially when a ChatGPT web app change breaks an observed endpoint. Include the command, expected and actual behaviour, and a redacted response shape or error. Keep cookies, tokens, HAR files and conversation text out of issues and commits.
 
 ```sh
-bun install --frozen-lockfile
-bun run typecheck
-bun test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo nextest run
 ```
 
-Tests use fixtures and do not need a ChatGPT account. API, rendering and classification changes also need a live check against your own account; record the observed behavior without publishing private data. See the [maintainer guide](docs/maintainers.md) for the change procedure.
+Tests use fixtures and do not need a ChatGPT account. API, rendering and classification changes also need a live check against your own account; record the observed behaviour without publishing private data. See the [maintainer guide](docs/maintainers.md) for the change procedure.

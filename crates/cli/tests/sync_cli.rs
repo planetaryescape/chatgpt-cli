@@ -325,18 +325,10 @@ fn full_sync_recovers_chats_the_lists_omit_and_drops_confirmed_deletions() {
 #[test]
 fn a_metadata_only_move_keeps_the_judgment_current() {
     let env = Env::with_fake(chats());
-    let db = env.legacy_db();
     let old = "2026-09-27T10:00:00.000000Z";
-    // The TS CLI cached the transcript from the single-chat endpoint.
-    db.execute(
-        "insert into transcripts values ('a-outline', ?, 2, ?, 1, 20)",
-        rusqlite::params![
-            old,
-            "# Love Book Outline\n\nhttps://chatgpt.com/c/a-outline · 2026-01-01 · gpt-4\n\n---\n\n## Me\n\nHello from a-outline\n"
-        ],
-    )
-    .unwrap();
     env.cmd().arg("sync").assert().success();
+    // The indexer caches the transcript the reconcile checks.
+    assert_eq!(env.wait_for_indexer()["indexed"], 5);
     judge(
         &env.index_db(),
         "a-outline",
@@ -432,64 +424,6 @@ fn chrono_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
-}
-
-#[test]
-fn the_ts_sync_runs_after_an_explicit_sync_and_its_titles_show_up() {
-    let mut env = Env::with_fake(chats());
-    let db = env.legacy_db();
-    drop(db);
-    let calls = env.home.path().join("ts-calls");
-    // A manual title the TS TUI would have written, applied by its sync,
-    // and a judgment, which the import no longer brings (D9).
-    let sql = env.home.path().join("judge.sql");
-    std::fs::write(
-        &sql,
-        format!(
-            "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at) \
-             values ('d-project', '2026-09-25T10:00:00.000000Z', '{}', 'full', '{}', 'now'); \
-             insert or replace into local_titles values ('d-project', '2026-09-25T10:00:00.000000Z', 2, 'manual', 'Titled in the TUI', '', '2026-09-30T00:00:00.000Z');",
-            support::QUESTIONS_VERSION,
-            delete_answers("other")
-        ),
-    )
-    .unwrap();
-    env.fake_ts_cli(&format!(
-        r#"echo "$@" >> '{calls}'
-case " $* " in
-  *" sync "*)
-    sqlite3 "$CHATGPT_LEGACY_DB" < '{sql}'
-    echo 'Sync done in 0.1s: 0 new, 1 updated, 0 newly archived, 0 unarchived, 0 deleted. `sync --full` also drops chats deleted in the browser.' >&2
-    ;;
-esac
-"#,
-        calls = calls.display(),
-        sql = sql.display(),
-    ));
-    let output = env.cmd().arg("sync").output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("TS sync: Sync done in 0.1s: 0 new, 1 updated"),
-        "{stderr}"
-    );
-    assert!(
-        std::fs::read_to_string(&calls)
-            .unwrap()
-            .lines()
-            .any(|line| line == "sync")
-    );
-    assert!(ids(&env, &["list", "--suggest", "delete"]).is_empty());
-    assert!(
-        env.stdout(&["list", "--title", "TUI"])
-            .contains("Titled in the TUI")
-    );
-    let status = env.status();
-    assert_eq!(status["ts_sync"]["last_ok"], true);
 }
 
 #[test]

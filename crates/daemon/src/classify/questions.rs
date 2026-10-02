@@ -1,14 +1,13 @@
-//! Jev's questions, as `JSON.stringify` sends them:
+//! Jev's questions, as the request body sends them:
 //!
-//! - [`chats`]: `QUESTIONS` from `src/classify/questions.ts`;
-//! - [`deep`]: `DEEP_QUESTIONS` from `deep-questions.ts`, the follow-up
-//!   for chats the first pass left unsure;
-//! - [`memories`]: `MEMORY_QUESTIONS` from `memories.ts`;
+//! - [`chats`]: `questions.json`, the first pass;
+//! - [`deep`]: `deep_questions.json`, the follow-up for chats the first
+//!   pass left unsure;
+//! - [`memories`]: `memory_questions.json`, the saved-memory quick pass.
 //!
-//! all from the TS CLI @ 1b8c950, written out with
-//! `bun -e 'import {QUESTIONS} from "./src/classify/questions.ts"; console.log(JSON.stringify(QUESTIONS, null, 2))'`
-//! (and likewise for the others). The TS parity harnesses check both CLIs
-//! send the same request bodies.
+//! These files are the questions' source. They were first written out from
+//! the TS CLI's `src/classify/` @ 1b8c950, and the TS parity harnesses (in
+//! tag v0.1.5) checked both CLIs sent the same request bodies.
 //!
 //! Changing a question means a new version in `Profile::builtin`
 //! (`questions_version`, `deep_questions_version`, `memory_version`).
@@ -102,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn the_questions_are_the_ts_clis_sets() {
+    fn the_question_sets_are_complete() {
         assert_eq!(
             names(chats()),
             [
@@ -142,33 +141,6 @@ mod tests {
             names(memories()),
             ["lasting_value", "expired", "superseded", "redundant"]
         );
-    }
-
-    /// The files are this repository's TS questions: a change to either
-    /// side fails here (bridge-era: the TS sources go at stage 6).
-    #[test]
-    fn the_files_match_this_repositorys_ts_sources() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/classify");
-        for (file, constant) in [
-            ("questions.ts", "QUESTIONS_VERSION = \"2026-09-28.9\""),
-            (
-                "deep-questions.ts",
-                "DEEP_QUESTIONS_VERSION = \"2026-09-27.2\"",
-            ),
-            (
-                "memories.ts",
-                "MEMORY_CLASSIFICATION_VERSION = \"2026-09-28.5\"",
-            ),
-        ] {
-            let Ok(source) = std::fs::read_to_string(src.join(file)) else {
-                return;
-            };
-            assert!(source.contains(constant), "{file} changed its version");
-        }
-        let profile = crate::policy::Profile::builtin();
-        assert_eq!(profile.questions_version, "2026-09-28.9");
-        assert_eq!(profile.deep_questions_version, "2026-09-27.2");
-        assert_eq!(profile.memory_version, "2026-09-28.5");
     }
 
     #[test]

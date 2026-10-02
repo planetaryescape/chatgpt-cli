@@ -1,8 +1,8 @@
 # Embeddings in the Rust daemon
 
-Semantic and hybrid `search` rank chunks by how close their embedding is to the query's. The TS CLI makes embeddings with Transformers.js, which runs `Xenova/all-MiniLM-L6-v2` at revision `751bff37…` (its 8-bit quantised ONNX file, `dtype: q8`) on onnxruntime-node 1.21. It mean-pools the token vectors and normalises the result to 384 dimensions, 16 texts per call (`src/search/embeddings.ts`).
+Semantic and hybrid `search` rank chunks by how close their embedding is to the query's. The TS CLI this one replaced made embeddings with Transformers.js, which ran `Xenova/all-MiniLM-L6-v2` at revision `751bff37…` (its 8-bit quantised ONNX file, `dtype: q8`) on onnxruntime-node 1.21. It mean-pooled the token vectors and normalised the result to 384 dimensions, 16 texts per call.
 
-The Rust daemon runs the same ONNX file with [tract](https://github.com/sonos/tract), a pure-Rust inference engine, one text at a time, in a low-priority worker process. This page records why, with the measurements behind it.
+The Rust daemon runs the same ONNX file with [tract](https://github.com/sonos/tract), a pure-Rust inference engine, one text at a time, in a low-priority worker process. This page records why, with the measurements behind it, taken while both CLIs existed (the TS sources and scripts are in tag `v0.1.5`).
 
 ## The choice
 
@@ -27,7 +27,7 @@ tract costs speed and size. 28 chunks a second embeds BK's 47,000 chunks in abou
 On 2026-10-02, on BK's Apple-silicon Mac (12 performance and 4 efficiency cores), with release builds and the model at max length 512:
 
 - 50 real chunks, sampled from the TS index by a fixed hash of their ids (92 to 837 characters), embedded as the TS CLI embeds them: `title + "\n" + body`.
-- TS vectors from `scripts/dump-embeddings.ts`, which runs the TS CLI's own `LocalEmbedder`: `bun scripts/dump-embeddings.ts [--batch 1] < texts.json > vectors.json`.
+- TS vectors from `scripts/dump-embeddings.ts` (in tag `v0.1.5`), which ran the TS CLI's own `LocalEmbedder`.
 - Each candidate in a throwaway crate, 500 embeddings for speed and one process each for peak memory (`/usr/bin/time -l`); `Cargo.toml` and the sizes above came from single-backend builds.
 
 Neither the texts nor the vectors are kept.
@@ -73,10 +73,10 @@ On BK's account (2026-10-02, a fresh instance and an empty model cache), the dae
 | `onnx/model_quantized.onnx` | 22,972,370 | `afdb6f1a0e45b715d0bb9b11772f032c399babd23bfc31fed1c170afc848bdb1` (Hugging Face's LFS id for the file) |
 | `tokenizer.json` | 711,661 | `da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0` |
 
-They come from `https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/751bff37182d3f1213fa05d7196b954e230abad9/<file>` and are cached where the TS CLI caches them: `$XDG_CACHE_HOME/chatgpt-cli/models/Xenova/all-MiniLM-L6-v2/<revision>/`, else `~/.cache/…`. A machine where the TS CLI already ran `search-index` downloads nothing. The daemon downloads a missing or damaged file in the background, checks its size and checksum, and only then moves it into place. The worker checks the checksums again when it loads the model.
+They come from `https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/751bff37182d3f1213fa05d7196b954e230abad9/<file>` and are cached in `$XDG_CACHE_HOME/chatgpt-cli/models/Xenova/all-MiniLM-L6-v2/<revision>/`, else `~/.cache/…` (where the TS CLI cached them, so a machine that ran it downloads nothing). The daemon downloads a missing or damaged file in the background, checks its size and checksum, and only then moves it into place. The worker checks the checksums again when it loads the model.
 
 A failed download (offline, a proxy, a changed file) never stops lexical search. `chatgpt daemon status` shows why embedding waits, a semantic search says the same, and the daemon tries again 15 minutes later on its own. `chatgpt search-index` tries at once.
 
 ## Versions
 
-Vectors carry the `MODEL_VERSION` that made them (`crates/embed/src/lib.rs`). The Rust one is the TS CLI's with `:tract-batch1` added, since the two runtimes' vectors are close but not equal. They never mix: Rust vectors live only in the daemon's index, and the daemon never reads or writes the TS CLI's. Change the Rust `MODEL_VERSION` with the model, its revision, its pooling, the runtime or the batch size; the daemon then embeds every chunk again in the background.
+Vectors carry the `MODEL_VERSION` that made them (`crates/embed/src/lib.rs`). The Rust one is the TS CLI's with `:tract-batch1` added, since the two runtimes' vectors are close but not equal. Change the Rust `MODEL_VERSION` with the model, its revision, its pooling, the runtime or the batch size; the daemon then embeds every chunk again in the background.

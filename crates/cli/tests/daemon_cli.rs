@@ -143,3 +143,33 @@ fn logs_show_the_daemons_lines() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
+
+/// A 0.1.5 client keeps a newer daemon, and its `import-legacy` sends a
+/// request this daemon no longer has: it gets a clear error at once.
+#[test]
+fn a_retired_request_from_an_older_client_gets_an_error_not_a_hang() {
+    use std::io::{Read, Write};
+    let env = Env::new();
+    env.status();
+    let body = r#"{"id":1,"payload":{"type":"request","method":"import_legacy"}}"#;
+    let mut socket = std::os::unix::net::UnixStream::connect(env.socket()).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    socket
+        .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
+        .unwrap();
+    socket.write_all(body.as_bytes()).unwrap();
+    let mut length = [0u8; 4];
+    socket
+        .read_exact(&mut length)
+        .expect("an answer, not a hang");
+    let mut frame = vec![0u8; u32::from_be_bytes(length) as usize];
+    socket.read_exact(&mut frame).unwrap();
+    let answer: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+    assert_eq!(answer["payload"]["status"], "error", "{answer}");
+    assert_eq!(
+        answer["payload"]["error"]["kind"], "unsupported",
+        "{answer}"
+    );
+}

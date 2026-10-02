@@ -1,5 +1,5 @@
 //! The daemon's index: SQLite in WAL mode, written by one connection and
-//! read by another, so a long write (an import) never holds up `list`.
+//! read by another, so a long write never holds up `list`.
 //!
 //! rusqlite rather than sqlx (docs/issues/sqlite-crate-choice.md): the cookie
 //! readers already use rusqlite 0.40, only one `libsqlite3-sys` can be in the
@@ -8,10 +8,8 @@
 
 mod conversations;
 mod judgments;
-mod legacy;
 mod local_titles;
 mod meta;
-mod native;
 mod reconcile;
 mod schema;
 mod search;
@@ -28,7 +26,6 @@ pub use judgments::{
     JudgmentRow, MemoryJudgmentRow, NewDeepJudgment, NewJudgment, NewLunaJudgment,
     NewMemoryJudgment, Unjudged,
 };
-pub use legacy::{ImportCounts, LEGACY_TABLES, TableCounts};
 pub use local_titles::{ManualTitle, local_title_source, set_local_title, set_luna_title};
 pub use reconcile::Candidate;
 pub use search::{ChunkVersions, LexicalRow, Transcript, Unindexed};
@@ -116,7 +113,6 @@ pub use judgments::{
     memory_judgment, save_deep_judgment, save_judgment, save_luna_judgment, save_memory_judgment,
     save_memory_judgment_unless_newer, save_summary, summary, unjudged,
 };
-pub use legacy::import_legacy;
 pub use meta::{account, bind_account, get_meta, set_meta};
 pub use reconcile::{candidates, preserve};
 pub use search::{
@@ -124,8 +120,6 @@ pub use search::{
 };
 pub use vectors::{chunk_body, each_vector, pending_vectors, save_vectors, vector_coverage};
 
-#[cfg(test)]
-mod native_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

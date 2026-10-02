@@ -3,7 +3,8 @@
 # (POSIX sh, so `curl -fsSL .../install.sh | sh` works where sh is dash;
 # sha256 checked before anything is installed). Changes: macOS only, a
 # --prefix, a local --archive, and a warning when another `chatgpt` earlier
-# on PATH would run instead (the TS CLI's `bun link` puts one in ~/.bun/bin).
+# on PATH would run instead (the retired TS CLI's `bun link` left one in
+# ~/.bun/bin).
 set -eu
 
 repo="planetaryescape/chatgpt-cli"
@@ -136,7 +137,7 @@ case ":$PATH:" in
   *":$bin_dir:"*)
     if [ -n "$first" ] && [ "$first" != "$bin_dir/chatgpt" ]; then
       echo "warning: $first comes earlier on your PATH, so \`chatgpt\` still runs it, not $bin_dir/chatgpt." >&2
-      echo "         Remove it (for the TS CLI's link: rm \"$first\"), or put $bin_dir earlier on PATH." >&2
+      echo "         Remove it (for the retired TS CLI's link: rm \"$first\"), or put $bin_dir earlier on PATH." >&2
     fi
     ;;
   *)

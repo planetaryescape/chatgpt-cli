@@ -1,5 +1,7 @@
 # Indexer and TS import can race on a stale transcript
 
+**Resolved after 0.1.5 (stage 6b).** The import from the TS CLI's index is gone, and with it the writer that could replace a transcript inside the indexer's window. The ambiguous `reconcile::check` result it relied on is still listed in `export-search-followups.md`.
+
 Found by independent review on 2026-10-02, at c414e8e.
 
 After a metadata-only change moves a chat from `t1` to `t2`, the indexer snapshots the stale `t1` transcript and calls `reconcile::check`. If a TS import replaces that transcript before `preserve` runs, the in-transaction guard correctly refuses. This can happen even when the replacement has identical content and only the model header differs. `save_batch` then treats the refusal as "content changed" and saves the fetched transcript at `t2`. The judgments, summaries and local titles stay at `t1`, and no later reconcile picks the chat up again, because its transcript is now current.

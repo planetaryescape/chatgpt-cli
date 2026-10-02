@@ -71,36 +71,6 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
         "session: {}",
         status.session.as_deref().unwrap_or("not read yet")
     ));
-    let ts = &status.ts_sync;
-    lines.push(match (&ts.cli, &ts.unavailable) {
-        (Some(cli), _) => format!("TS CLI: {cli}"),
-        (None, Some(why)) => format!("TS CLI: unavailable ({why})"),
-        (None, None) => "TS CLI: unknown".to_owned(),
-    });
-    if let (Some(at), Some(message)) = (ts.last_run_at, &ts.last_message) {
-        let outcome = match ts.last_ok {
-            Some(true) => "ok",
-            Some(false) => "failed",
-            None => "not run",
-        };
-        lines.push(format!("TS sync: {outcome} {} ({message})", ago(at, now)));
-    }
-    let import = &status.legacy_import;
-    if let Some(at) = import.last_at {
-        let detail = match (&import.last_error, &import.last) {
-            (Some(error), _) => format!("failed: {error}"),
-            (None, Some(report)) => {
-                let changed: u64 = report
-                    .tables
-                    .iter()
-                    .map(|table| table.inserted + table.updated + table.deleted)
-                    .sum();
-                format!("{changed} row(s) changed from {}", report.path)
-            }
-            (None, None) => String::new(),
-        };
-        lines.push(format!("TS import: {} {detail}", ago(at, now)));
-    }
     let classification = &status.classification;
     lines.push(format!(
         "classification: questions {}, Luna {}, from {}",

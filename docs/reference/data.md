@@ -6,14 +6,15 @@ Where `chatgpt` keeps data, which credentials it reads, and what it sends to whi
 
 | Path | Contents |
 |---|---|
-| `~/.local/share/chatgpt-cli/index.db` | SQLite database: the chat index, cached transcripts, search index and embeddings, summaries and Jev judgments. Set `XDG_DATA_HOME` to move it to `$XDG_DATA_HOME/chatgpt-cli/index.db` |
+| `~/Library/Application Support/chatgpt-cli/` | The daemon's directory (0700): `chatgpt.db`, the SQLite database (0600) with the chat index, cached transcripts, search index and embeddings, summaries, judgments and local titles; `run/` (socket, pid file and lock); and `logs/` (one log a day, seven kept). `CHATGPT_INSTANCE=<name>` uses `chatgpt-cli-<name>` instead; debug builds use `chatgpt-cli-dev` |
 | `~/.cache/chatgpt-cli/models` | Downloaded local embedding model. Set `XDG_CACHE_HOME` to move it to `$XDG_CACHE_HOME/chatgpt-cli/models` |
-| `~/Library/Application Support/chatgpt-cli/` | The Rust CLI's daemon (0700): `chatgpt.db` (its index: the chat list plus the judgments, titles, summaries and transcripts it imports read-only from the TS `index.db`), `run/` (socket, pid file and lock) and `logs/` (one log a day, seven kept). Debug builds use `chatgpt-cli-dev` |
 | `~/.config/chatgpt-cli/config.json` | Optional Jev, OpenAI, and Anthropic API keys saved by `chatgpt configure`, owner-readable only. Set `XDG_CONFIG_HOME` to move it |
 
-Delete the database to start over; `chatgpt sync`, `chatgpt search-index` and `chatgpt classify` rebuild their respective data.
+Stop the daemon (`chatgpt daemon stop`) and delete the database to start over; `chatgpt sync` rebuilds the chat index, the daemon rebuilds the search index and embeddings in the background, and `chatgpt classify` makes judgments again.
 
-`chatgpt memory list` and `memory summary` read ChatGPT live. `memory classify` also reads live entries, then stores model judgments and reasons in `index.db`; it does not cache saved-memory text there.
+The TS CLI that preceded this one kept its own database at `~/.local/share/chatgpt-cli/index.db`. Nothing reads it any more; delete it when you no longer want it.
+
+`chatgpt memory list` and `memory summary` read ChatGPT live. `memory classify` also reads live entries, then stores model judgments and reasons in `chatgpt.db`; it does not cache saved-memory text there.
 
 ### Tables
 
@@ -31,27 +32,28 @@ Delete the database to start over; `chatgpt sync`, `chatgpt search-index` and `c
 | `search_fts` | transcript passage | SQLite FTS5 index of title and body, maintained by triggers |
 | `search_indexed` | chat | update time and versions of the completed text index |
 | `search_vectors` | passage | embedding model version and 384-dimensional float vector |
-| `meta` | setting | `synced_at` |
+| `meta` | setting | `synced_at`, the account the index belongs to, the background Jev's state |
 
 A cached row counts only while its `update_time` matches the chat's and its version matches the code's constant. Stale rows are ignored, then overwritten.
 
 Inspect it directly:
 
 ```sh
-sqlite3 ~/.local/share/chatgpt-cli/index.db "select model, count(*) from summaries group by model"
+sqlite3 ~/Library/Application\ Support/chatgpt-cli/chatgpt.db "select model, count(*) from summaries group by model"
 ```
 
 ## Environment variables
 
 | Variable | Used for | Default |
 |---|---|---|
-| `TYPESAFE_API_KEY` | Jev, during `classify` | configured `jev` key; otherwise required |
+| `TYPESAFE_API_KEY` | Jev, during `classify` and `--check` (the background Jev uses only the configured key) | configured `jev` key; otherwise required |
 | `OPENAI_API_KEY` | Luna review, local titles, and first summary provider | configured key, then Codex CLI if absent |
 | `ANTHROPIC_API_KEY` | summary fallback | configured key, then Claude CLI if absent |
 | `CHATGPT_BROWSER` | select a browser session (`dia`, `chrome`, `safari`, `firefox`, `arc`, `brave`, `edge`) | macOS default browser |
 | `CHATGPT_BROWSER_PROFILE` | select a Chromium or Firefox profile directory | browser's last used or first session profile |
 | `XDG_CONFIG_HOME` | where `config.json` lives | `~/.config` |
-| `XDG_DATA_HOME` | where `index.db` lives | `~/.local/share` |
+| `CHATGPT_INSTANCE` | another daemon and index, `chatgpt-cli-<name>` (one account per instance) | the installed instance |
+| `CHATGPT_LOG` | the daemon's log filter (`RUST_LOG` syntax) | `info` |
 | `XDG_CACHE_HOME` | where the embedding model is cached | `~/.cache` |
 | `PAGER` | `v` (view) in `chatgpt review` | `less` |
 
@@ -60,12 +62,12 @@ sqlite3 ~/.local/share/chatgpt-cli/index.db "select model, count(*) from summari
 | Credential | Source | Needed by |
 |---|---|---|
 | ChatGPT session | Local browser cookie store; Chromium cookies are decrypted with that browser's macOS Keychain item, Firefox cookies are in `cookies.sqlite`, and Safari cookies are in `Cookies.binarycookies` | every command that talks to ChatGPT |
-| ChatGPT access token | exchanged from the session at `/api/auth/session` on each run, kept in memory only | same |
+| ChatGPT access token | exchanged from the session at `/api/auth/session` by the daemon, kept in its memory only, and exchanged again when ChatGPT rejects it | same |
 | TypeSafe key | `TYPESAFE_API_KEY` or configured `jev` key | chat and memory classification, `--check` |
 | OpenAI key or Codex login | `OPENAI_API_KEY`, configured `openai` key, then existing `codex` login | summarising long chats, Luna review and local titles |
 | Anthropic key or Claude login | `ANTHROPIC_API_KEY`, configured `anthropic` key, then existing `claude` login | summary fallback |
 
-`chatgpt configure` writes only the API keys you enter to `config.json` with mode `0600`. The ChatGPT session is read fresh from the selected browser on each run; logging out there also logs `chatgpt` out. The selected browser is not saved in `config.json`.
+`chatgpt configure` writes only the API keys you enter to `config.json` with mode `0600`. The daemon reads the ChatGPT session from the selected browser once, and again when ChatGPT rejects its token; logging out there also logs `chatgpt` out. The selected browser is not saved in `config.json`.
 
 ## What goes where
 

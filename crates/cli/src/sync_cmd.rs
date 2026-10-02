@@ -1,12 +1,12 @@
-//! `sync` and `import-legacy`.
+//! `sync`.
 
 use std::process::ExitCode;
 
 use chatgpt_core::Paths;
 use chatgpt_launcher::ClientError;
-use chatgpt_protocol::{ImportReport, Request, ResponseData, SessionChoice, SyncMode, SyncReport};
+use chatgpt_protocol::{Request, ResponseData, SessionChoice, SyncMode, SyncReport};
 
-use crate::output::{ProgressLines, data, note, unexpected};
+use crate::output::{ProgressLines, note, unexpected};
 
 pub async fn sync(
     paths: &Paths,
@@ -56,28 +56,4 @@ fn summary(report: &SyncReport) -> String {
             report.added, report.updated, report.newly_archived, report.unarchived, report.deleted
         ),
     }
-}
-
-pub async fn import_legacy(paths: &Paths) -> Result<ExitCode, ClientError> {
-    let ResponseData::Imported(report) =
-        chatgpt_launcher::ask(paths, Request::ImportLegacy, |_| {}).await?
-    else {
-        return Err(unexpected());
-    };
-    data(&import_text(&report));
-    Ok(ExitCode::SUCCESS)
-}
-
-fn import_text(report: &ImportReport) -> String {
-    let mut text = format!("Imported from {}\n", report.path);
-    for table in &report.tables {
-        match &table.skipped {
-            Some(why) => text.push_str(&format!("{}: skipped, {why}\n", table.table)),
-            None => text.push_str(&format!(
-                "{}: {} rows, {} inserted, {} updated, {} deleted\n",
-                table.table, table.rows, table.inserted, table.updated, table.deleted
-            )),
-        }
-    }
-    text
 }

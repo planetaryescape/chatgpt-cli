@@ -15,4 +15,4 @@ Jev scores lasting value, expiry, supersession, and full redundancy, using the m
 
 When Jev sees strong lasting value without expiry or duplication but Luna suggests delete, the final result stays review. This disagreement guard protects meaningful personal context from a single model's narrow reading.
 
-The SQLite cache keys each result to the memory text and timestamp, related-entry text, rubric version (`MEMORY_CLASSIFICATION_VERSION`), and current UTC month. Bump the version when changing questions, thresholds, or Luna instructions. A new month rechecks temporary facts that may have expired since the prior run.
+The SQLite cache keys each result to the memory text and timestamp, related-entry text, rubric version (`memory_version` in `Profile::builtin`), and current UTC month. Bump the version when changing questions, thresholds, or Luna instructions. A new month rechecks temporary facts that may have expired since the prior run.
