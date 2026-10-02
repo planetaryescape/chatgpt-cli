@@ -113,6 +113,11 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
     if let Some(error) = &status.search_index.last_error {
         lines.push(format!("search index error: {error}"));
     }
+    let embeddings = &status.embeddings;
+    lines.push(embeddings_line(embeddings));
+    if let Some(error) = &embeddings.last_error {
+        lines.push(format!("embedding error: {error}"));
+    }
     lines.join("\n") + "\n"
 }
 
@@ -133,6 +138,24 @@ fn search_index_line(index: &chatgpt_protocol::SearchIndexStatus) -> String {
         parts.push(waiting.clone());
     }
     format!("search index: {}", parts.join(", "))
+}
+
+/// How far the background embedder has got, and why it waits.
+fn embeddings_line(embeddings: &chatgpt_protocol::EmbeddingStatus) -> String {
+    let mut parts = vec![format!(
+        "{} of {} chunks embedded",
+        embeddings.embedded, embeddings.chunks
+    )];
+    if embeddings.in_progress {
+        parts.push("embedding now".to_owned());
+    }
+    if embeddings.failed > 0 {
+        parts.push(format!("{} skipped", embeddings.failed));
+    }
+    if let Some(waiting) = &embeddings.waiting {
+        parts.push(waiting.clone());
+    }
+    format!("embeddings: {}", parts.join(", "))
 }
 
 pub async fn stop(paths: &Paths) -> Result<ExitCode, ClientError> {

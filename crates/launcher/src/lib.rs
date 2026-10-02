@@ -660,6 +660,7 @@ mod tests {
             legacy_import: Default::default(),
             classification: Default::default(),
             search_index: Default::default(),
+            embeddings: Default::default(),
         }
     }
 

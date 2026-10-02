@@ -4,23 +4,19 @@
 //! while the indexer catches up it answers from what's indexed and says how
 //! much that is.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use chatgpt_core::ErrorKind;
-use chatgpt_core::js::{collapse_spaces, trim};
 use chatgpt_protocol::{SearchHit, SearchResults};
-use chatgpt_store::LexicalRow;
+use chatgpt_store::ChunkVersions;
 use regex::Regex;
 use rusqlite::Connection;
 
+use super::{bun_text, excerpt, in_snapshot, with_display_titles};
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::reads::require_synced;
-
-/// The longest snippet, in UTF-16 code units (`excerpt`).
-const SNIPPET_UNITS: usize = 200;
 
 /// `/[\p{L}\p{N}]+/gu`. With the `u` flag JS matches by code point and
 /// these classes mean what they mean in Rust's `regex`, so this one needs
@@ -45,46 +41,16 @@ fn fts_query(query: &str) -> Result<String, Failure> {
     Ok(terms.join(" AND "))
 }
 
-/// `excerpt`: whitespace collapsed, trimmed, cut to 200 UTF-16 units. A cut
-/// through an emoji leaves half of it, which the TS CLI prints as U+FFFD.
-fn excerpt(text: &str) -> String {
-    let collapsed = collapse_spaces(text);
-    let units: Vec<u16> = trim(&collapsed)
-        .encode_utf16()
-        .take(SNIPPET_UNITS)
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
-/// Bun reads text that isn't UTF-8 (a snippet of a chunk holding half an
-/// emoji; see `chunks.rs`) as `""` under this many bytes, and with each
-/// invalid sequence as U+FFFD from this many on. Observed with Bun 1.3.14.
-const BUN_LOSSY_FROM_BYTES: usize = 64;
-
-/// What Bun reads back for a snippet.
-fn snippet_text(row: &LexicalRow) -> Cow<'_, str> {
-    match std::str::from_utf8(&row.snippet) {
-        Ok(text) => Cow::Borrowed(text),
-        Err(_) if row.snippet.len() >= BUN_LOSSY_FROM_BYTES => {
-            String::from_utf8_lossy(&row.snippet)
-        }
-        Err(_) => Cow::Borrowed(""),
-    }
-}
-
-/// `search <query>` without `--semantic`, `--hybrid` or `--remote`.
-/// `archived`: `None` for `--all`.
-pub fn search(
+/// `SearchStore.lexical`: each chat's best chunk, best first, at most
+/// `limit`, with the title its chunks were indexed with. `archived`: `None`
+/// for both.
+pub fn lexical_hits(
     db: &Connection,
     query: &str,
     limit: u64,
     archived: Option<bool>,
-    profile: &Profile,
-) -> Result<SearchResults, Failure> {
-    let synced_at = require_synced(db)?;
-    let versions = super::versions(profile);
-    let (chats, indexed) =
-        chatgpt_store::coverage(db, archived, versions).map_err(Failure::store)?;
+    versions: ChunkVersions,
+) -> Result<Vec<SearchHit>, Failure> {
     let fts = fts_query(query)?;
     let rows = chatgpt_store::lexical(
         db,
@@ -96,36 +62,53 @@ pub fn search(
     .map_err(Failure::store)?;
     let mut seen = HashSet::new();
     let mut hits = Vec::new();
-    for row in &rows {
+    for row in rows {
         if hits.len() as u64 == limit {
             break;
         }
-        if !seen.insert(row.id.as_str()) {
+        if !seen.insert(row.id.clone()) {
             continue;
         }
-        let snippet = match snippet_text(row).as_ref() {
+        let (snippet, snippet_cut) = match bun_text(&row.snippet).as_ref() {
             "" => excerpt(&row.title),
             text => excerpt(text),
         };
-        // The display title, as `index.get(id)[0]` gives it.
-        let title = chatgpt_store::get(db, &row.id, profile.local_title_version)
-            .map_err(Failure::store)?
-            .first()
-            .map_or_else(|| row.title.clone(), |chat| chat.display_title().to_owned());
         hits.push(SearchHit {
-            id: row.id.clone(),
-            title,
-            updated: row.updated.clone(),
+            id: row.id,
+            title: row.title,
+            updated: row.updated,
             archived: row.archived,
-            score: -row.bm25,
+            score: Some(-row.bm25),
             snippet,
+            snippet_cut,
         });
     }
-    Ok(SearchResults {
-        hits,
-        synced_at,
-        chats,
-        indexed,
+    Ok(hits)
+}
+
+/// `search <query>` without `--semantic`, `--hybrid` or `--remote`.
+/// `archived`: `None` for `--all`.
+pub fn search(
+    db: &Connection,
+    query: &str,
+    limit: u64,
+    archived: Option<bool>,
+    profile: &Profile,
+) -> Result<SearchResults, Failure> {
+    in_snapshot(db, |db| {
+        let synced_at = require_synced(db)?;
+        let versions = super::versions(profile);
+        let (chats, indexed) =
+            chatgpt_store::coverage(db, archived, versions).map_err(Failure::store)?;
+        let hits = lexical_hits(db, query, limit, archived, versions)?;
+        Ok(SearchResults {
+            hits: with_display_titles(db, hits, profile)?,
+            synced_at,
+            chats,
+            indexed,
+            chunks: 0,
+            embedded: 0,
+        })
     })
 }
 
@@ -144,34 +127,5 @@ mod tests {
             empty.message,
             "Search query needs at least one letter or number."
         );
-    }
-
-    #[test]
-    fn snippets_that_are_not_utf8_read_back_as_bun_reads_them() {
-        let row = |snippet: Vec<u8>| LexicalRow {
-            id: "a".into(),
-            title: "Title".into(),
-            updated: String::new(),
-            archived: false,
-            bm25: -1.0,
-            snippet,
-        };
-        let short = row(b"hello rust \xED\xA0\xBD".to_vec());
-        assert_eq!(snippet_text(&short), "");
-        let mut long = b"a".repeat(61);
-        long.extend(b"\xED\xA0\xBD");
-        assert_eq!(
-            snippet_text(&row(long)),
-            format!("{}\u{FFFD}\u{FFFD}\u{FFFD}", "a".repeat(61))
-        );
-        assert_eq!(snippet_text(&row(b"fine".to_vec())), "fine");
-    }
-
-    #[test]
-    fn excerpts_collapse_space_and_cut_at_200_utf16_units() {
-        assert_eq!(excerpt("  a \n\n b\t"), "a b");
-        let long = format!("{}👍tail", "x".repeat(199));
-        assert_eq!(excerpt(&long), format!("{}\u{FFFD}", "x".repeat(199)));
-        assert_eq!(excerpt(&"é".repeat(300)).chars().count(), 200);
     }
 }

@@ -22,7 +22,8 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `crates/protocol/` | Rust: the CLI–daemon IPC messages and codec |
 | `crates/launcher/` | Rust: finding, starting, restarting and stopping the daemon, and talking to it |
 | `crates/store/` | Rust: the daemon's SQLite index and the import from the TS index |
-| `crates/daemon/` | Rust: the daemon (sync, policy, `list`/`stats` reads, TS sync while bridged) |
+| `crates/daemon/` | Rust: the daemon (sync, policy, `list`/`stats` reads, search indexing, embedding and search, TS sync while bridged) |
+| `crates/embed/` | Rust: the embedding model's pinned files, the tract embedder, and the worker process the daemon runs it in |
 | `crates/cli/` | Rust: the `chatgpt` binary, its native commands and the bridge to the TS CLI |
 | `crates/fake-chatgpt/` | Rust: a fake chatgpt.com for tests |
 | `third_party/impit/` | impit with one patch: no environment writes after startup (`third_party/README.md`) |
@@ -53,7 +54,7 @@ cargo clippy --all-targets -- -D warnings
 cargo nextest run        # or cargo test
 ```
 
-`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; `crates/cli/tests/parity_export_search.rs` does the same for `export` (against the TS `renderTranscript`) and lexical `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). Both skip without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
+`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; `crates/cli/tests/parity_export_search.rs` does the same for `export` (against the TS `renderTranscript`) and every `search` mode over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`): semantic and hybrid with both CLIs on a stand-in embedder, `--remote` against one fake endpoint. Both skip without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
 
 impit is a git dependency that only impersonates Chrome when apify's forks of `h2`, `rustls`, `hyper-util` and `tower-http` are in the graph (`[patch.crates-io]` in `Cargo.toml`), built with `--cfg reqwest_unstable` (`.cargo/config.toml`, which a `RUSTFLAGS` variable overrides). Cargo drops a patch with only a warning when the graph wants a newer version, so `hyper` and `reqwest` stay pinned in `Cargo.lock` to impit's own lockfile versions, and `crates/chatgpt/tests/fingerprint_patches.rs` fails if a fork falls out. Re-check that test after any `cargo update`.
 
@@ -65,7 +66,7 @@ bun run docs:cli
 
 This rewrites `docs/reference/cli.md` from the CLI's `--help`. `bun test` fails when that file is out of date, so run this after changing any command, flag or description in `src/cli.ts`.
 
-Search index changes that alter passage text should bump `CHUNK_VERSION` in `src/search/chunks.ts`, and the Rust port's in `crates/daemon/src/search/chunks.rs`, which keeps the TS chunking (and Bun's bytes for a split emoji) exactly. Changes to the model, revision, pooling or quantization should change `MODEL_VERSION` in `src/search/embeddings.ts`. Run `bun src/cli.ts search-index`, then check lexical, semantic and hybrid results on the real account; fixture tests do not measure retrieval quality or runtime.
+Search index changes that alter passage text should bump `CHUNK_VERSION` in `src/search/chunks.ts`, and the Rust port's in `crates/daemon/src/search/chunks.rs`, which keeps the TS chunking (and Bun's bytes for a split emoji) exactly. Changes to the model, revision, pooling or quantization should change `MODEL_VERSION` in `src/search/embeddings.ts`, and the Rust port's in `crates/embed/src/lib.rs` (which also changes with the runtime or batch size; [Embeddings in the Rust daemon](explanation/embeddings.md)). `bun scripts/dump-embeddings.ts` dumps the TS CLI's vectors for comparing the two. Run `bun src/cli.ts search-index`, then check lexical, semantic and hybrid results on the real account; fixture tests do not measure retrieval quality or runtime.
 
 ## Change classification
 

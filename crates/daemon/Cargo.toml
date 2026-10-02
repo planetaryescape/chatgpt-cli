@@ -8,6 +8,7 @@ description = "The chatgpt daemon: holds the session, keeps the index fresh, ans
 [dependencies]
 chatgpt = { workspace = true }
 chatgpt-core = { workspace = true }
+chatgpt-embed = { workspace = true }
 chatgpt-protocol = { workspace = true }
 chatgpt-store = { workspace = true }
 chrono = { workspace = true }

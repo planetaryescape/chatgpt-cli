@@ -1,6 +1,6 @@
 //! The native commands' arguments, matching the TS CLI's flags
-//! (`src/cli.ts` @ 1b8c950) for `sync`, `list`, `stats`, `export` and
-//! lexical `search`.
+//! (`src/cli.ts` @ 1b8c950) for `sync`, `list`, `stats`, `export`,
+//! `search` and `search-index`.
 
 use clap::{Args, Parser, Subcommand};
 
@@ -14,10 +14,6 @@ pub const BRIDGED: &[(&str, &str)] = &[
     (
         "memory",
         "List and delete saved memories, or read the memory summary",
-    ),
-    (
-        "search-index",
-        "Build or refresh the local text and semantic search index",
     ),
     ("project", "Create, list and manage chat projects"),
     (
@@ -65,13 +61,10 @@ pub const NATIVE: &[&str] = &[
     "export",
     "show",
     "search",
+    "search-index",
     "daemon",
     "import-legacy",
 ];
-
-/// `search` flags whose modes the TS CLI still runs: a `search` with one of
-/// them is bridged.
-pub const BRIDGED_SEARCH_FLAGS: &[&str] = &["--semantic", "--hybrid", "--remote"];
 
 fn bridged_help() -> String {
     let width = BRIDGED
@@ -126,10 +119,9 @@ pub enum Command {
     #[command(visible_alias = "show")]
     Export(ExportArgs),
     /// Search the local transcript index; use --semantic or --hybrid for meaning-based matches
-    #[command(
-        after_help = "--semantic, --hybrid and --remote run in the TS CLI: `chatgpt search <query> --semantic --help` shows its options."
-    )]
     Search(SearchArgs),
+    /// Build or refresh the local text and semantic search index
+    SearchIndex(ScopeArgs),
     /// Start, stop and inspect the background daemon
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -213,6 +205,15 @@ pub struct ExportArgs {
 #[derive(Args)]
 pub struct SearchArgs {
     pub query: String,
+    /// Rank by local embedding similarity
+    #[arg(long)]
+    pub semantic: bool,
+    /// Combine full-text and semantic ranking
+    #[arg(long)]
+    pub hybrid: bool,
+    /// Use ChatGPT's server-side search instead
+    #[arg(long)]
+    pub remote: bool,
     /// Search archived conversations instead of active ones
     #[arg(long)]
     pub archived: bool,
@@ -225,6 +226,17 @@ pub struct SearchArgs {
     /// Maximum conversations
     #[arg(long, value_name = "n", default_value = "20")]
     pub limit: String,
+}
+
+/// `search-index`'s scope.
+#[derive(Args)]
+pub struct ScopeArgs {
+    /// Index archived conversations instead of active ones
+    #[arg(long)]
+    pub archived: bool,
+    /// Index both active and archived conversations
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Subcommand)]
@@ -255,4 +267,15 @@ pub enum DaemonCommand {
     Install,
     /// Stop starting the daemon at login (removes the LaunchAgent)
     Uninstall,
+    /// Run the search embedding model on stdin and stdout (started by the
+    /// daemon)
+    #[command(hide = true)]
+    EmbedWorker {
+        /// The model's files
+        #[arg(long, value_name = "dir", required_unless_present = "fake")]
+        model_dir: Option<std::path::PathBuf>,
+        /// A stand-in embedder, for tests (debug builds only)
+        #[arg(long)]
+        fake: bool,
+    },
 }

@@ -145,6 +145,10 @@ pub struct State {
     pub batch_bodies: Vec<Vec<String>>,
     /// Answer this many next batch reads with a 500.
     pub fail_batch: u32,
+    /// `global/search` items, served in order (at most the asked `limit`).
+    pub search_items: Vec<Value>,
+    /// The body of every `global/search` request, in order.
+    pub search_bodies: Vec<Value>,
 }
 
 pub struct FakeChatGpt {
@@ -167,6 +171,7 @@ enum Route {
     Detail,
     Batch,
     Memories,
+    GlobalSearch,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -329,6 +334,13 @@ impl Respond for Handler {
                     .set_body_json(items)
                     .set_delay(std::time::Duration::from_millis(state.batch_delay_ms))
             }
+            Route::GlobalSearch => {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let limit = body["limit"].as_u64().unwrap_or(0) as usize;
+                let items: Vec<Value> = state.search_items.iter().take(limit).cloned().collect();
+                state.search_bodies.push(body);
+                ResponseTemplate::new(200).set_body_json(json!({ "items": items }))
+            }
             Route::Memories => match &state.memories {
                 Some(memories) => {
                     ResponseTemplate::new(200).set_body_json(json!({ "memories": memories }))
@@ -374,6 +386,10 @@ impl FakeChatGpt {
                 (
                     Mock::given(method("GET")).and(path("/backend-api/memories")),
                     Route::Memories,
+                ),
+                (
+                    Mock::given(method("POST")).and(path("/backend-api/global/search")),
+                    Route::GlobalSearch,
                 ),
             ];
             for (mock, route) in routes {

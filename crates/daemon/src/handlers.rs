@@ -6,7 +6,7 @@ use chatgpt_core::ErrorKind;
 use chatgpt_protocol::Progress;
 use chatgpt_protocol::{
     DaemonStatus, ErrorPayload, Filter, PROTOCOL_VERSION, Request, Response, ResponseData,
-    SessionChoice, StatsReport,
+    SearchMode, SessionChoice, StatsReport,
 };
 use rusqlite::Connection;
 use tokio::sync::mpsc::UnboundedSender;
@@ -123,18 +123,47 @@ pub async fn handle(
             limit,
             archived,
             all,
-        } => read(state, move |db, profile, _| {
+            mode,
+        } => {
             let scope = (!all).then_some(archived);
-            search::query::search(db, &query, limit, scope, profile)
-        })
-        .await
-        .map(ResponseData::SearchHits),
-        Request::Unknown => Err(Failure::new(
-            ErrorKind::Unsupported,
-            "this daemon doesn't know that request; run `chatgpt daemon stop` and try again",
-        )),
+            match mode {
+                SearchMode::Lexical => {
+                    read(state, move |db, profile, _| {
+                        search::query::search(db, &query, limit, scope, profile)
+                    })
+                    .await
+                }
+                SearchMode::Semantic | SearchMode::Hybrid => {
+                    search::semantic::search(state, query, limit, scope, mode).await
+                }
+                SearchMode::Unknown => Err(unknown_request()),
+            }
+            .map(ResponseData::SearchHits)
+        }
+        Request::RemoteSearch {
+            query,
+            limit,
+            archived,
+            all,
+            session,
+        } => search::remote::search(state, query, limit, (!all).then_some(archived), session)
+            .await
+            .map(ResponseData::SearchHits),
+        Request::SearchIndex { archived, all } => {
+            search::catch_up::search_index(state, archived, all, progress)
+                .await
+                .map(ResponseData::SearchIndexed)
+        }
+        Request::Unknown => Err(unknown_request()),
     };
     answered.map_err(Failure::payload).into()
+}
+
+fn unknown_request() -> Failure {
+    Failure::new(
+        ErrorKind::Unsupported,
+        "this daemon doesn't know that request; run `chatgpt daemon stop` and try again",
+    )
 }
 
 /// Run a read on the store's reader connection with the current versions.
@@ -205,5 +234,6 @@ async fn status(state: &State) -> DaemonStatus {
         legacy_import: state.import_status(),
         classification: state.profile().info(),
         search_index: state.indexer.status(),
+        embeddings: state.embedder.status(),
     }
 }

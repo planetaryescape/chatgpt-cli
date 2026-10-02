@@ -10,6 +10,7 @@ members = [
     "crates/daemon",
     "crates/cli",
     "crates/fake-chatgpt",
+    "crates/embed",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ chatgpt-protocol = { path = "crates/protocol" }
 chatgpt-launcher = { path = "crates/launcher" }
 chatgpt-store = { path = "crates/store" }
 chatgpt-daemon = { path = "crates/daemon" }
+chatgpt-embed = { path = "crates/embed" }
 fake-chatgpt = { path = "crates/fake-chatgpt" }
 
 aes = "0.8"
@@ -79,6 +81,13 @@ sha2 = "0.10"
 # A bigger send buffer for the daemon socket (SOCKET_BUFFER_BYTES).
 socket2 = "0.6"
 thiserror = "2"
+# The search embedding model's tokenizer (tokenizer.json, BERT WordPiece).
+# Without its default features: no oniguruma or esaxx C/C++ code.
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+# Runs the TS CLI's quantised ONNX embedding model in pure Rust, so the
+# release builds for both Mac architectures need no ONNX Runtime library
+# (docs/explanation/embeddings.md).
+tract-onnx = { version = "0.23", default-features = false }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
@@ -105,3 +114,20 @@ hyper-util = { git = "https://github.com/apify/hyper-util", rev = "9b7795dfd7158
 # only when the value differs (third_party/README.md, docs/issues/impit-set-var-race.md).
 [patch."https://github.com/apify/impit"]
 impit = { path = "third_party/impit" }
+
+# The embedding model's maths, optimised in debug builds too: unoptimised, a
+# dev daemon takes seconds per chunk instead of milliseconds.
+[profile.dev.package.tract-linalg]
+opt-level = 3
+
+[profile.dev.package.tract-core]
+opt-level = 3
+
+[profile.dev.package.tract-data]
+opt-level = 3
+
+[profile.dev.package.tokenizers]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3

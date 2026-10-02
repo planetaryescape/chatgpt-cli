@@ -1,0 +1,20 @@
+[package]
+name = "chatgpt-embed"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "The search embedding model: the pinned files, the embedder, and the worker process the daemon runs it in."
+
+[dependencies]
+dirs = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokenizers = { workspace = true }
+tract-onnx = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DaemonStatus, ExportedChat, ImportReport, ListRows, SearchResults, StatsReport, SyncReport,
+    DaemonStatus, ExportedChat, ImportReport, ListRows, SearchIndexReport, SearchResults,
+    StatsReport, SyncReport,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,6 +44,7 @@ pub enum ResponseData {
     /// are streamed (docs/issues/export-frame-limit.md).
     ExportTooLarge,
     SearchHits(SearchResults),
+    SearchIndexed(SearchIndexReport),
     #[serde(other)]
     Unknown,
 }

@@ -99,6 +99,19 @@ impl Indexer {
         self.wake();
     }
 
+    /// `search-index`: fetch what's missing now, as the TS CLI's does,
+    /// without waiting for a pass.
+    pub fn fetch_now(&self) {
+        self.pass_succeeded();
+    }
+
+    /// Chats set aside because ChatGPT didn't return them.
+    pub fn unavailable_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.inner().unavailable.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     pub fn foreground(&self) -> Foreground<'_> {
         self.foreground.fetch_add(1, Ordering::SeqCst);
         Foreground(&self.foreground)
@@ -196,6 +209,10 @@ async fn index(state: &State) -> Result<(), String> {
             .map_err(|failure| failure.message)?;
     }
     count(state, versions).await?;
+    if pruned + cached.len() > 0 {
+        // Chunks to embed, or vectors gone with their chunks.
+        state.embedder.wake();
+    }
     let missing = retryable(state, missing);
     if pruned + cached.len() + missing.len() > 0 {
         tracing::info!(
@@ -252,6 +269,9 @@ async fn index(state: &State) -> Result<(), String> {
         fetched += saved;
         state.indexer.inner().fetched += saved;
         count(state, versions).await?;
+        if saved > 0 {
+            state.embedder.wake();
+        }
     }
     tracing::info!(fetched, "search indexing done");
     Ok(())
@@ -425,8 +445,8 @@ fn rate_limited(state: &State, error: ApiError) -> String {
 }
 
 /// Wait while a `sync` or `export` reads ChatGPT, so neither queues behind
-/// a long indexing run.
-async fn yield_to_requests(state: &State) {
+/// a long indexing or embedding run.
+pub(super) async fn yield_to_requests(state: &State) {
     while state.indexer.foreground.load(Ordering::SeqCst) > 0 || state.syncer.is_running() {
         tokio::time::sleep(YIELD_POLL).await;
     }

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Filter;
+use crate::{Filter, SearchMode};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
@@ -46,11 +46,33 @@ pub enum Request {
         #[serde(default)]
         session: SessionChoice,
     },
-    /// Lexical `search` over the indexed transcripts. Never touches the
-    /// network; answers from what the background indexer has done so far.
+    /// Local `search` over the indexed transcripts. Never touches the
+    /// network; answers from what the background indexer and embedder have
+    /// done so far.
     Search {
         query: String,
         limit: u64,
+        #[serde(default)]
+        archived: bool,
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        mode: SearchMode,
+    },
+    /// `search --remote`: ChatGPT's own search, asked now.
+    RemoteSearch {
+        query: String,
+        limit: u64,
+        #[serde(default)]
+        archived: bool,
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        session: SessionChoice,
+    },
+    /// `search-index`: wait for the indexer and the embedder to catch up,
+    /// with progress events, and report on the scope.
+    SearchIndex {
         #[serde(default)]
         archived: bool,
         #[serde(default)]
