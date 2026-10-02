@@ -11,7 +11,8 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 fail-fast = false
 
 # The TS parity harnesses start the daemon and hundreds of TS CLI runs each;
-# under a full parallel run they take 30-50s.
+# under a full parallel run they take 30-50s. classify_cli moves 2 MB chats
+# through debug builds, which a loaded machine slows to about a minute.
 [[profile.default.overrides]]
-filter = "binary(parity_ts) | binary(parity_export_search) | binary(parity_mutations) | binary(parity_classify)"
+filter = "binary(parity_ts) | binary(parity_export_search) | binary(parity_mutations) | binary(parity_classify) | binary(classify_cli)"
 slow-timeout = { period = "60s", terminate-after = 3 }

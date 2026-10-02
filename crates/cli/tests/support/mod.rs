@@ -170,7 +170,9 @@ impl Env {
     /// test that counts requests to the fake counts only its own. Returns
     /// the indexer's status.
     pub fn wait_for_indexer(&self) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // Generous: a test's 2 MB chat through a debug build's HTTP stack
+        // on a busy machine can take most of a minute.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             let index = self.status()["search_index"].clone();
             if index["in_progress"] == false {
