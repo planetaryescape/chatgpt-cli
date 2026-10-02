@@ -13,6 +13,7 @@ mod meta;
 mod reconcile;
 mod schema;
 mod search;
+mod vectors;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -25,6 +26,7 @@ pub use judgments::{JudgmentRow, MemoryJudgmentRow};
 pub use legacy::{ImportCounts, LEGACY_TABLES, TableCounts};
 pub use reconcile::Candidate;
 pub use search::{ChunkVersions, LexicalRow, Transcript, Unindexed};
+pub use vectors::{NewVector, PendingChunk, VectorRow};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -110,8 +112,11 @@ pub use reconcile::{candidates, preserve};
 pub use search::{
     coverage, lexical, prune_search, replace_chunks, save_indexed, transcript, unindexed,
 };
+pub use vectors::{chunk_body, each_vector, pending_vectors, save_vectors, vector_coverage};
 
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vector_tests;
