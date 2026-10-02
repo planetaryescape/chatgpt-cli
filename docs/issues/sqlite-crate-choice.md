@@ -1,6 +1,6 @@
 # Only one SQLite binding crate can be in the Rust build
 
-**Decided 2026-10-01 (stage 1): rusqlite 0.40 everywhere.** The store (`crates/store`) uses the same rusqlite as the cookie readers: one SQLite binding, synchronous queries the daemon runs in `spawn_blocking`, and a writer and a reader connection over WAL.
+**Resolved: decided 2026-10-01 (stage 1), rusqlite 0.40 everywhere.** The store (`crates/store`) uses the same rusqlite as the cookie readers: one SQLite binding, synchronous queries the daemon runs in `spawn_blocking`, and a writer and a reader connection over WAL.
 
 Recorded on 2026-10-01 for the stage 1 store. Stage 1 decides; F1 changes nothing.
 
