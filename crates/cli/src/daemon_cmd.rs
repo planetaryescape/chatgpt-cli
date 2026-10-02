@@ -60,6 +60,7 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
     if let Some(next) = sync.next_at {
         lines.push(format!("next pass: in {}s", (next - now).max(0)));
     }
+    lines.push(full_sync_line(sync, now));
     if let Some(backoff) = &status.backoff {
         lines.push(format!(
             "backing off: {}s more ({})",
@@ -90,6 +91,22 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
         lines.push(format!("embedding error: {error}"));
     }
     lines.join("\n") + "\n"
+}
+
+/// When the last full pass ran, and when the daily one may run again.
+fn full_sync_line(sync: &chatgpt_protocol::SyncStatus, now: i64) -> String {
+    let last = sync
+        .last_full_at
+        .map_or_else(|| "never".to_owned(), |at| ago(at, now));
+    match sync.next_full_at {
+        Some(next) if next > now => format!(
+            "full sync: {last}; next once idle, in {}",
+            ago(now - (next - now), now).trim_end_matches(" ago")
+        ),
+        Some(_) => format!("full sync: {last}; next once idle"),
+        // A daemon from before the daily full sync.
+        None => format!("full sync: {last}"),
+    }
 }
 
 /// The background Jev: on or off, today's tally, the last run.

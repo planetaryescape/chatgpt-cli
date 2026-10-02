@@ -55,12 +55,17 @@ impl State {
                 let age_ms = (chrono::Utc::now().timestamp_millis() - at).max(0);
                 std::time::Duration::from_millis(u64::try_from(age_ms).unwrap_or(0))
             });
+        let last_full = store
+            .read(|db| chatgpt_store::get_meta(db, crate::sync::FULL_SYNCED_KEY))
+            .ok()
+            .flatten()
+            .and_then(|at| at.parse().ok());
         Self {
             paths,
             store: Arc::new(store),
             sessions,
             reporter,
-            syncer: Syncer::new(synced_age),
+            syncer: Syncer::new(synced_age, last_full),
             indexer: Indexer::default(),
             embedder: Embedder::default(),
             auto_jev: AutoJev::default(),

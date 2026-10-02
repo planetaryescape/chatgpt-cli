@@ -61,6 +61,14 @@ pub struct SyncStatus {
     /// Unix seconds: when the next background pass is due.
     #[serde(default)]
     pub next_at: Option<i64>,
+    /// Unix seconds: when a full pass (which drops chats deleted in the
+    /// browser) last succeeded…
+    #[serde(default)]
+    pub last_full_at: Option<i64>,
+    /// …and the earliest the daily one runs again in the background, once
+    /// nobody is using the CLI.
+    #[serde(default)]
+    pub next_full_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

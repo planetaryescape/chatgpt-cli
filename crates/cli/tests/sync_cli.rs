@@ -452,3 +452,106 @@ fn a_sync_hears_the_rate_limit_it_waits_on() {
         "{stderr}"
     );
 }
+
+fn numbered(count: usize) -> Vec<Chat> {
+    (0..count)
+        .map(|n| {
+            Chat::new(
+                &format!("n-{n:03}"),
+                &format!("Chat {n}"),
+                &format!("2026-09-{:02}T10:{:02}:00.000000Z", 1 + n / 60, n % 60),
+            )
+        })
+        .collect()
+}
+
+/// Single-chat reads the fake answered.
+fn single_reads(env: &Env) -> usize {
+    env.fake()
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("GET /backend-api/conversation/"))
+        .count()
+}
+
+fn indexed_count(env: &Env) -> i64 {
+    env.index_db()
+        .query_row("select count(*) from conversations", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_short_active_list_is_read_again_before_checking_chats_one_by_one() {
+    let env = Env::with_fake(numbered(150));
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    let reads_before = single_reads(&env);
+    // The next active listing ends after its first page of 100.
+    env.fake().state().short_listings = 1;
+    let output = env.cmd().args(["sync", "--full"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "The active list had 100 chat(s) where the index has 150; listing it again found 50 more."
+        ),
+        "{stderr}"
+    );
+    assert_eq!(single_reads(&env), reads_before, "no chat was read one by one");
+    assert_eq!(indexed_count(&env), 150);
+}
+
+/// Background passes, full ones included, every half second once nobody
+/// has used the CLI for half a second.
+fn quick_schedule(chats: Vec<Chat>) -> Env {
+    let mut env = Env::with_fake(chats);
+    env.extra_env
+        .push(("CHATGPT_TEST_SCHEDULE_MS".into(), "500".into()));
+    env.cmd().arg("sync").assert().success();
+    env
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} never happened");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn the_daily_full_sync_drops_a_chat_deleted_while_active() {
+    let env = quick_schedule(chats());
+    let first_full = env.status()["sync"]["last_full_at"].as_i64().unwrap();
+    env.fake()
+        .state()
+        .chats
+        .retain(|chat| chat.id != "e-old");
+    // Only a full pass drops it; `daemon status` doesn't count as use.
+    wait_until("the background full sync", || indexed_count(&env) == 4);
+    let sync = env.status()["sync"].clone();
+    assert!(sync["last_full_at"].as_i64().unwrap() >= first_full, "{sync}");
+    assert!(sync["next_full_at"].as_i64().is_some(), "{sync}");
+    assert!(
+        env.stdout(&["daemon", "status"]).contains("full sync: "),
+        "status shows it"
+    );
+}
+
+#[test]
+fn the_daily_full_sync_reads_only_a_few_left_out_chats_one_by_one() {
+    let env = quick_schedule(numbered(60));
+    env.wait_for_indexer();
+    let reads_before = single_reads(&env);
+    {
+        let mut fake = env.fake().state();
+        fake.omitted_from_lists = fake.chats.iter().map(|chat| chat.id.clone()).collect();
+    }
+    wait_until("a refused background full sync", || {
+        env.status()["sync"]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("chatgpt sync --full"))
+    });
+    assert_eq!(single_reads(&env), reads_before, "nothing was read one by one");
+    assert_eq!(indexed_count(&env), 60, "the index is unchanged");
+}
