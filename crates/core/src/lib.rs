@@ -5,6 +5,7 @@
 
 mod duration;
 mod error;
+pub mod js;
 mod js_number;
 pub mod legacy;
 mod paths;
