@@ -3,7 +3,9 @@
 //! CLI and the Rust CLI over the same data and required identical output.
 //! Their last run recorded what the TS CLI printed into `golden/*.jsonl`,
 //! one command a line: `args`, then `stdout`, `stderr`, or a `file` written
-//! with `contents`, and `code` (0 for success, else a failure). These tests
+//! with `contents`. Every line also has `code`, the exit status this CLI
+//! must give: the TS CLI's, except where the Rust CLI's exit codes differ
+//! on purpose (invalid input exits 2 where the TS CLI exited 1). These tests
 //! build the same data for the Rust CLI alone and require the same output,
 //! so it stays pinned without bun.
 //!
@@ -331,15 +333,9 @@ fn replay(env: &Env, name: &str) -> usize {
         let written = entry["file"]
             .as_str()
             .map(|file| std::fs::read_to_string(out_dir.join(file)).unwrap());
-        if let Some(code) = entry["code"].as_i64() {
-            assert_eq!(
-                output.status.success(),
-                code == 0,
-                "{args:?} exited {}: {stderr}",
-                output.status
-            );
-        }
+        let code = output.status.code();
         if update {
+            entry["code"] = Value::from(code);
             for (field, now) in [
                 ("stdout", Some(stdout)),
                 ("stderr", Some(stderr)),
@@ -350,6 +346,14 @@ fn replay(env: &Env, name: &str) -> usize {
                 }
             }
         } else {
+            let expected = entry["code"].as_i64();
+            assert!(expected.is_some(), "{args:?} has no expected exit code");
+            assert_eq!(
+                code.map(i64::from),
+                expected,
+                "{args:?} exited {}: {stderr}",
+                output.status
+            );
             if let Some(expected) = entry["stdout"].as_str() {
                 assert_eq!(stdout, expected, "{args:?}");
             }
