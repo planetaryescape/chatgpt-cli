@@ -435,6 +435,7 @@ async fn embed_pending(state: &State) -> Result<(), String> {
                             chatgpt_store::record_vector_failure(
                                 db,
                                 chunk.id,
+                                &chunk.text,
                                 MODEL_VERSION,
                                 retry_at,
                             )

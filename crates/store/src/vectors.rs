@@ -131,17 +131,26 @@ pub fn save_vectors(
 }
 
 /// Set chunk `chunk_id` aside until `retry_at` (unix seconds): the model
-/// failed on it.
+/// failed on `text`, its `title || '\n' || body` when it was read. Only
+/// while the chunk still holds that text, as [`save_vectors`] checks: the
+/// indexer may have replaced it meanwhile, and SQLite may have given its id
+/// to a healthy chunk. Returns whether it was set aside.
 pub fn record_vector_failure(
     connection: &Connection,
     chunk_id: i64,
+    text: &str,
     model_version: &str,
     retry_at: i64,
-) -> Result<()> {
-    connection
-        .prepare_cached("insert or replace into search_vector_failures values (?, ?, ?)")?
-        .execute(params![chunk_id, model_version, retry_at])?;
-    Ok(())
+) -> Result<bool> {
+    let recorded = connection
+        .prepare_cached(
+            "insert or replace into search_vector_failures (chunk_id, model_version, retry_at)
+             select ?1, ?2, ?3 where exists (
+                select 1 from search_chunks
+                where id = ?1 and title || char(10) || body = ?4)",
+        )?
+        .execute(params![chunk_id, model_version, retry_at, text])?;
+    Ok(recorded > 0)
 }
 
 /// How many chunks are set aside for `model_version` after `now`.

@@ -279,7 +279,7 @@ fn a_failed_chunk_waits_until_its_retry_time() {
     };
     let ids = pending(100);
     store
-        .write(|db| record_vector_failure(db, ids[0], MODEL, 200))
+        .write(|db| record_vector_failure(db, ids[0], &text_of(db, ids[0])?, MODEL, 200))
         .unwrap();
     assert_eq!(pending(100), [ids[1]], "set aside");
     assert_eq!(pending(200), ids, "due again");
@@ -299,7 +299,7 @@ fn a_failed_chunk_waits_until_its_retry_time() {
     // And a vector saved for a chunk clears its failure.
     let ids = pending(100);
     store
-        .write(|db| record_vector_failure(db, ids[0], MODEL, 200))
+        .write(|db| record_vector_failure(db, ids[0], &text_of(db, ids[0])?, MODEL, 200))
         .unwrap();
     assert_eq!(embed_all_at(&store, V), 1);
     store
@@ -318,4 +318,56 @@ fn a_failed_chunk_waits_until_its_retry_time() {
         })
         .unwrap();
     assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 0);
+}
+
+/// A chunk's `title || '\n' || body`, as the embedder reads it.
+fn text_of(db: &Connection, chunk_id: i64) -> Result<String> {
+    Ok(db.query_row(
+        "select title || char(10) || body from search_chunks where id = ?",
+        [chunk_id],
+        |r| r.get(0),
+    )?)
+}
+
+// A failure read from one chunk never lands on another that took its id:
+// the indexer replaced the chunk while the model ran, and SQLite handed the
+// rowid to a healthy one.
+#[test]
+fn a_failure_is_recorded_only_for_the_text_that_failed() {
+    let (_dir, store) = store_with(&[chat("a", "t1", false)]);
+    chunk(&store, "a", "t1", &["broken"]);
+    let (id, failed_text) = store
+        .read(|db| {
+            let pending = pending_vectors(db, V, MODEL, 0, 10, 0)?;
+            Ok((pending[0].id, pending[0].text.clone()))
+        })
+        .unwrap();
+    // Replaced meanwhile; the replacement reuses the rowid.
+    chunk(&store, "a", "t1", &["healthy"]);
+    let reused = store
+        .read(|db| Ok(pending_vectors(db, V, MODEL, 0, 10, 0)?[0].id))
+        .unwrap();
+    assert_eq!(reused, id, "SQLite reused the rowid");
+    assert!(
+        !store
+            .write(|db| record_vector_failure(db, id, &failed_text, MODEL, 200))
+            .unwrap()
+    );
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 0);
+    assert_eq!(
+        store
+            .read(|db| pending_vectors(db, V, MODEL, 0, 10, 100))
+            .unwrap()
+            .len(),
+        1,
+        "the healthy chunk is still pending"
+    );
+    // The text that did fail, still there, is set aside.
+    let text = store.read(|db| text_of(db, id)).unwrap();
+    assert!(
+        store
+            .write(|db| record_vector_failure(db, id, &text, MODEL, 200))
+            .unwrap()
+    );
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 1);
 }
