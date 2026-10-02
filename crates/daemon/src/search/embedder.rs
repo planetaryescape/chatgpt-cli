@@ -270,7 +270,12 @@ async fn model_ready(state: &State, model: &WorkerModel) -> bool {
             return false;
         }
     }
-    state.embedder.inner().waiting = Some("downloading the embedding model".to_owned());
+    let doing = if chatgpt_embed::model::present(dir) {
+        "checking the embedding model"
+    } else {
+        "downloading the embedding model"
+    };
+    state.embedder.inner().waiting = Some(doing.to_owned());
     let ready = super::model::ensure(dir).await;
     let mut inner = state.embedder.inner();
     match ready {
