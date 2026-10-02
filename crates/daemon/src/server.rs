@@ -147,7 +147,8 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
         if let Err(failure) = crate::ts_sync::import(&background).await {
             tracing::info!("no import at startup: {}", failure.message);
         }
-        // Chunk what the cache already holds; fetching waits for a pass.
+        // Chunk what the cache already holds (also when there was nothing
+        // to import); fetching waits for a pass.
         background.indexer.wake();
         crate::sync::run_scheduled(background).await;
     });

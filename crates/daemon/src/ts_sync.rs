@@ -306,6 +306,8 @@ pub async fn import(state: &State) -> Result<ImportReport, Failure> {
                 "imported the TS index"
             );
             state.record_import(Ok(report.clone()));
+            // Imported transcripts can be chunked without fetching.
+            state.indexer.wake();
             Ok(report)
         }
         Err(failure) => {

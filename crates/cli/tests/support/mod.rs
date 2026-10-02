@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use fake_chatgpt::{COOKIE, FakeChatGpt};
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 pub struct Env {
@@ -210,4 +211,52 @@ pub fn judge(db: &rusqlite::Connection, id: &str, update_time: &str, answers: &s
         rusqlite::params![id, update_time, QUESTIONS_VERSION, answers],
     )
     .unwrap();
+}
+
+/// This repository, for the TS CLI the parity harnesses run.
+pub fn repo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// bun on PATH, if any: the parity harnesses skip without it.
+pub fn bun() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("bun"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Copy the Rust index's chats into the TS index (the same rows in the
+/// same order, and the same `synced_at`), so both CLIs read the same data.
+/// Returns how many chats it copied.
+pub fn copy_chats(rust_index: &Path, ts_index: &Path) -> usize {
+    let rust = Connection::open_with_flags(rust_index, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let ts = Connection::open(ts_index).unwrap();
+    ts.execute("delete from conversations", []).unwrap();
+    let mut rows = rust
+        .prepare("select id, title, create_time, update_time, is_archived, pinned, project_id from conversations order by rowid")
+        .unwrap();
+    let mut insert = ts
+        .prepare("insert into conversations values (?, ?, ?, ?, ?, ?, ?)")
+        .unwrap();
+    let mut copied = 0;
+    let mut query = rows.query([]).unwrap();
+    while let Some(row) = query.next().unwrap() {
+        let values: Vec<rusqlite::types::Value> = (0..7).map(|i| row.get(i).unwrap()).collect();
+        insert.execute(rusqlite::params_from_iter(values)).unwrap();
+        copied += 1;
+    }
+    let synced: String = rust
+        .query_row(
+            "select value from meta where key = 'synced_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    ts.execute(
+        "insert or replace into meta values ('synced_at', ?)",
+        [synced],
+    )
+    .unwrap();
+    copied
 }

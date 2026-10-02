@@ -17,7 +17,7 @@ use rusqlite::Connection;
 
 use crate::handlers::Failure;
 use crate::policy::Profile;
-use crate::reads::NOT_SYNCED;
+use crate::reads::require_synced;
 
 /// The longest snippet, in UTF-16 code units (`excerpt`).
 const SNIPPET_UNITS: usize = 200;
@@ -81,9 +81,7 @@ pub fn search(
     archived: Option<bool>,
     profile: &Profile,
 ) -> Result<SearchResults, Failure> {
-    let synced_at = chatgpt_store::synced_at(db)
-        .map_err(Failure::store)?
-        .ok_or_else(|| Failure::new(ErrorKind::NotSynced, NOT_SYNCED))?;
+    let synced_at = require_synced(db)?;
     let versions = super::versions(profile);
     let (chats, indexed) =
         chatgpt_store::coverage(db, archived, versions).map_err(Failure::store)?;

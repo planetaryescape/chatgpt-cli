@@ -35,8 +35,8 @@ pub fn transcript_chunks(markdown: &str) -> Vec<Vec<u16>> {
             if end < text.len() {
                 let boundary =
                     last_index_of(&text, b'\n', end).max(last_index_of(&text, b' ', end));
-                if boundary.is_some_and(|at| at > start + MAX_CHUNK_CHARS / 2) {
-                    end = boundary.unwrap_or(end);
+                if let Some(at) = boundary.filter(|&at| at > start + MAX_CHUNK_CHARS / 2) {
+                    end = at;
                 }
             }
             let chunk = trim_units(&text[start..end]);
@@ -77,7 +77,7 @@ fn trim_units(units: &[u16]) -> &[u16] {
         .iter()
         .rposition(|unit| !space(unit))
         .map_or(start, |at| at + 1);
-    &units[start..end.max(start)]
+    &units[start..end]
 }
 
 /// The bytes Bun (1.3) gives SQLite for a JS string. Valid UTF-16 becomes

@@ -108,8 +108,7 @@ pub use legacy::import_legacy;
 pub use meta::{account, get_meta, set_account, set_meta};
 pub use reconcile::{candidates, preserve};
 pub use search::{
-    coverage, lexical, prune_search, replace_chunks, save_indexed, save_transcript, transcript,
-    unindexed,
+    coverage, lexical, prune_search, replace_chunks, save_indexed, transcript, unindexed,
 };
 
 #[cfg(test)]

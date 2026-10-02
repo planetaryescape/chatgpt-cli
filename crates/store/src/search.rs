@@ -93,7 +93,7 @@ pub fn transcript(
 }
 
 /// `ClassificationStore.saveTranscript`.
-pub fn save_transcript(connection: &Connection, transcript: &Transcript) -> Result<()> {
+fn save_transcript(connection: &Connection, transcript: &Transcript) -> Result<()> {
     connection
         .prepare_cached("insert or replace into transcripts values (?, ?, ?, ?, ?, ?)")?
         .execute(params![
@@ -258,8 +258,8 @@ pub fn lexical(
             from search_fts join search_chunks sc on sc.id = search_fts.rowid
             join conversations c on c.id = sc.conversation_id and c.update_time = sc.update_time
             where search_fts match ? and sc.render_version = ? and sc.chunk_version = ?
-            and (? is null or c.is_archived = ?)
-            order by score limit ?",
+            and (?4 is null or c.is_archived = ?4)
+            order by score limit ?5",
     )?;
     let rows = statement
         .query_map(
@@ -267,7 +267,6 @@ pub fn lexical(
                 fts_query,
                 versions.render,
                 versions.chunk,
-                scope,
                 scope,
                 i64::try_from(max_rows).unwrap_or(i64::MAX)
             ],

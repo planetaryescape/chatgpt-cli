@@ -158,8 +158,7 @@ impl Syncer {
         self.schedule()
             .backoff
             .as_ref()
-            .map(|(until, _)| until.saturating_duration_since(Instant::now()))
-            .filter(|left| !left.is_zero())
+            .and_then(|(until, _)| remaining(*until))
     }
 }
 
@@ -182,6 +181,20 @@ impl Schedule {
         });
         after_pass.max(after_backoff)
     }
+}
+
+/// How long to back off after `error`'s rate limit: what ChatGPT asked,
+/// clamped to [`MIN_BACKOFF`, `MAX_BACKOFF`].
+pub(crate) fn backoff_for(error: &ApiError) -> Duration {
+    error
+        .retry_after
+        .unwrap_or(MIN_BACKOFF)
+        .clamp(MIN_BACKOFF, MAX_BACKOFF)
+}
+
+/// Time left until `until`, `None` once it has passed.
+pub(crate) fn remaining(until: Instant) -> Option<Duration> {
+    Some(until.saturating_duration_since(Instant::now())).filter(|left| !left.is_zero())
 }
 
 fn secs(duration: Duration) -> i64 {
@@ -278,10 +291,7 @@ pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport,
             Err(error) => {
                 schedule.status.last_error = Some(error.message.clone());
                 if error.is_rate_limit() {
-                    let wait = error
-                        .retry_after
-                        .unwrap_or(MIN_BACKOFF)
-                        .clamp(MIN_BACKOFF, MAX_BACKOFF);
+                    let wait = backoff_for(error);
                     schedule.backoff = Some((
                         Instant::now() + wait,
                         Backoff {

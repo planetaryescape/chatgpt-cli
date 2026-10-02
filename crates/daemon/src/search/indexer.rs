@@ -31,23 +31,21 @@ use super::chunks::{bun_sqlite_text, transcript_chunks};
 use crate::api::{ApiError, BATCH_MAX, BatchItem};
 use crate::render::cached_transcript;
 use crate::state::{State, now_unix};
+use crate::sync::{backoff_for, remaining};
 
 const BATCH_GAP: Duration = Duration::from_millis(500);
 /// Cached transcripts chunked per write, so the writer is never held long.
 const LOCAL_GROUP: usize = 20;
 /// How long a chat ChatGPT didn't return waits before it's asked for again.
 const RETRY_UNAVAILABLE: Duration = Duration::from_secs(60 * 60);
-/// A rate limit is waited out for at least a minute and at most an hour,
-/// as the sync's backoff is.
-const MIN_BACKOFF: Duration = Duration::from_secs(60);
-const MAX_BACKOFF: Duration = Duration::from_secs(60 * 60);
 /// How often a paused run checks whether the request it yields to is done.
 const YIELD_POLL: Duration = Duration::from_millis(100);
 
+#[derive(Default)]
 pub struct Indexer {
     wake: Notify,
     inner: Mutex<Inner>,
-    /// User requests that read ChatGPT (`sync`, `export`) in flight.
+    /// Exports in flight (a running sync shows in `Syncer::is_running`).
     foreground: AtomicUsize,
 }
 
@@ -55,7 +53,11 @@ pub struct Indexer {
 struct Inner {
     in_progress: bool,
     fetched: u64,
-    failed: u64,
+    /// Every chat in the index, and how many have current chunks, as of
+    /// the last count: `daemon status` (asked before every command) reads
+    /// these instead of counting.
+    chats: u64,
+    indexed: u64,
     last_finished_at: Option<i64>,
     last_error: Option<String>,
     waiting: Option<String>,
@@ -72,16 +74,6 @@ pub struct Foreground<'a>(&'a AtomicUsize);
 impl Drop for Foreground<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-impl Default for Indexer {
-    fn default() -> Self {
-        Self {
-            wake: Notify::new(),
-            inner: Mutex::new(Inner::default()),
-            foreground: AtomicUsize::new(0),
-        }
     }
 }
 
@@ -106,15 +98,14 @@ impl Indexer {
         Foreground(&self.foreground)
     }
 
-    /// `chats` and `indexed` come from the index; the rest is this run's.
-    pub fn status(&self, chats: u64, indexed: u64) -> SearchIndexStatus {
+    pub fn status(&self) -> SearchIndexStatus {
         let inner = self.inner();
         SearchIndexStatus {
-            chats,
-            indexed,
+            chats: inner.chats,
+            indexed: inner.indexed,
             in_progress: inner.in_progress,
             fetched: inner.fetched,
-            failed: inner.failed,
+            failed: u64::try_from(inner.unavailable.len()).unwrap_or(u64::MAX),
             last_finished_at: inner.last_finished_at,
             last_error: inner.last_error.clone(),
             waiting: inner.waiting.clone(),
@@ -122,10 +113,7 @@ impl Indexer {
     }
 
     fn backoff_left(&self) -> Option<Duration> {
-        self.inner()
-            .backoff_until
-            .map(|until| until.saturating_duration_since(Instant::now()))
-            .filter(|left| !left.is_zero())
+        self.inner().backoff_until.and_then(remaining)
     }
 }
 
@@ -153,7 +141,9 @@ pub async fn run(state: Arc<State>) {
                 inner.last_error = Some(message);
             }
             // Nothing waiting or set aside: an earlier error no longer applies.
-            Ok(()) if inner.waiting.is_none() && inner.failed == 0 => inner.last_error = None,
+            Ok(()) if inner.waiting.is_none() && inner.unavailable.is_empty() => {
+                inner.last_error = None;
+            }
             Ok(()) => {}
         }
     }
@@ -194,6 +184,7 @@ async fn index(state: &State) -> Result<(), String> {
             .await
             .map_err(|failure| failure.message)?;
     }
+    count(state, versions).await?;
     let missing = retryable(state, missing);
     if pruned + cached.len() + missing.len() > 0 {
         tracing::info!(
@@ -203,15 +194,16 @@ async fn index(state: &State) -> Result<(), String> {
             "search indexing"
         );
     }
-    if missing.is_empty() {
-        state.indexer.inner().waiting = None;
+    let why = if missing.is_empty() {
+        None
+    } else {
+        cannot_fetch(state)
+    };
+    let stop = missing.is_empty() || why.is_some();
+    state.indexer.inner().waiting = why;
+    if stop {
         return Ok(());
     }
-    if let Some(why) = cannot_fetch(state) {
-        state.indexer.inner().waiting = Some(why);
-        return Ok(());
-    }
-    state.indexer.inner().waiting = None;
     let api = crate::sync::pinned_api(state, state.syncer.choice())
         .await
         .map_err(|error| rate_limited(state, error))?;
@@ -248,6 +240,7 @@ async fn index(state: &State) -> Result<(), String> {
         let saved = save_batch(state, batch.to_vec(), items, versions).await?;
         fetched += saved;
         state.indexer.inner().fetched += saved;
+        count(state, versions).await?;
     }
     tracing::info!(fetched, "search indexing done");
     Ok(())
@@ -284,17 +277,36 @@ async fn save_batch(
     }
     unavailable(state, &failed);
     let saved = u64::try_from(ready.len()).unwrap_or(u64::MAX);
+    // Chunked before taking the writer.
+    let ready: Vec<_> = ready
+        .into_iter()
+        .map(|(chat, transcript)| {
+            let bodies = chunk_bytes(&transcript.markdown);
+            (chat, transcript, bodies)
+        })
+        .collect();
     state
         .db_write(move |db| {
-            for (chat, transcript) in &ready {
-                let bodies = chunk_bytes(&transcript.markdown);
-                chatgpt_store::save_indexed(db, transcript, chat, versions, &bodies)?;
+            for (chat, transcript, bodies) in &ready {
+                chatgpt_store::save_indexed(db, transcript, chat, versions, bodies)?;
             }
             Ok(())
         })
         .await
         .map_err(|failure| failure.message)?;
     Ok(saved)
+}
+
+/// Refresh the counts `daemon status` shows.
+async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
+    let (chats, indexed) = state
+        .db_write(move |db| chatgpt_store::coverage(db, None, versions))
+        .await
+        .map_err(|failure| failure.message)?;
+    let mut inner = state.indexer.inner();
+    inner.chats = chats;
+    inner.indexed = indexed;
+    Ok(())
 }
 
 fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
@@ -320,7 +332,6 @@ fn retryable(state: &State, missing: Vec<Unindexed>) -> Vec<Unindexed> {
                 .is_none_or(|(update_time, _)| *update_time != chat.update_time)
         })
         .collect();
-    inner.failed = u64::try_from(inner.unavailable.len()).unwrap_or(u64::MAX);
     ready
 }
 
@@ -331,7 +342,10 @@ fn unavailable(state: &State, chats: &[Unindexed]) {
             .unavailable
             .insert(chat.id.clone(), (chat.update_time.clone(), Instant::now()));
     }
-    inner.failed = u64::try_from(inner.unavailable.len()).unwrap_or(u64::MAX);
+}
+
+fn rate_limit_note(left: Duration) -> String {
+    format!("rate limited; fetching again in {}s", left.as_secs())
 }
 
 /// Why this run can't fetch now, if it can't.
@@ -340,10 +354,7 @@ fn cannot_fetch(state: &State) -> Option<String> {
         return Some("transcripts are fetched after the next sync".to_owned());
     }
     if let Some(left) = state.indexer.backoff_left() {
-        return Some(format!(
-            "rate limited; fetching again in {}s",
-            left.as_secs()
-        ));
+        return Some(rate_limit_note(left));
     }
     if let Some(left) = state.syncer.backoff_left() {
         return Some(format!(
@@ -357,16 +368,11 @@ fn cannot_fetch(state: &State) -> Option<String> {
 /// Back off from fetching for as long as ChatGPT asked (clamped).
 fn rate_limited(state: &State, error: ApiError) -> String {
     if error.is_rate_limit() {
-        let wait = error
-            .retry_after
-            .unwrap_or(MIN_BACKOFF)
-            .clamp(MIN_BACKOFF, MAX_BACKOFF);
+        // As long as the sync's backoff would be.
+        let wait = backoff_for(&error);
         let mut inner = state.indexer.inner();
         inner.backoff_until = Some(Instant::now() + wait);
-        inner.waiting = Some(format!(
-            "rate limited; fetching again in {}s",
-            wait.as_secs()
-        ));
+        inner.waiting = Some(rate_limit_note(wait));
         inner.last_error = Some(error.message.clone());
     }
     error.message

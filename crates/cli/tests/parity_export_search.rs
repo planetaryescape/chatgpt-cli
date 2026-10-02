@@ -27,18 +27,7 @@ use fake_chatgpt::Chat;
 use fake_chatgpt::fixtures::{KINDS, rich_chats};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
-use support::Env;
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn bun() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("bun"))
-        .find(|candidate| candidate.is_file())
-}
+use support::{Env, bun, copy_chats, repo};
 
 /// Renders with the TS sources: `{ id: { markdown, slug } }` for the
 /// single-chat answers, and the batch items cached into the TS index.
@@ -118,37 +107,6 @@ impl Ts {
     }
 }
 
-/// The Rust index's chats, copied into the TS index (the same rows, the
-/// same order, the same `synced_at`).
-fn copy_chats(rust_index: &Path, ts_index: &Path) {
-    let rust = Connection::open_with_flags(rust_index, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    let ts = Connection::open(ts_index).unwrap();
-    ts.execute("delete from conversations", []).unwrap();
-    let mut rows = rust
-        .prepare("select id, title, create_time, update_time, is_archived, pinned, project_id from conversations order by rowid")
-        .unwrap();
-    let mut insert = ts
-        .prepare("insert into conversations values (?, ?, ?, ?, ?, ?, ?)")
-        .unwrap();
-    let mut query = rows.query([]).unwrap();
-    while let Some(row) = query.next().unwrap() {
-        let values: Vec<rusqlite::types::Value> = (0..7).map(|i| row.get(i).unwrap()).collect();
-        insert.execute(rusqlite::params_from_iter(values)).unwrap();
-    }
-    let synced: String = rust
-        .query_row(
-            "select value from meta where key = 'synced_at'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    ts.execute(
-        "insert or replace into meta values ('synced_at', ?)",
-        [synced],
-    )
-    .unwrap();
-}
-
 fn transcripts(db: &Path) -> Vec<(String, String, String, i64, i64)> {
     let db = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     let mut statement = db
@@ -215,7 +173,10 @@ fn export_and_search_match_the_ts_cli_on_the_same_chats() {
     drop(ts_db);
     env.cmd().arg("sync").assert().success();
     wait_indexed(&env, chats.len());
-    copy_chats(&env.data_dir().join("chatgpt.db"), &env.legacy);
+    assert_eq!(
+        copy_chats(&env.data_dir().join("chatgpt.db"), &env.legacy),
+        chats.len()
+    );
 
     // Render the same trees with the TS sources.
     let work = env.home.path().join("parity");

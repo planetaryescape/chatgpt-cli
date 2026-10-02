@@ -7,18 +7,29 @@
 //! transcript: the cache is filled from the batch endpoint, which names no
 //! model, so its header would differ from the export's.
 
+use std::sync::LazyLock;
+
 use chatgpt_core::ErrorKind;
 use chatgpt_protocol::{ExportedChat, SessionChoice};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::api::Api;
 use crate::handlers::Failure;
 use crate::js;
-use crate::reads::NOT_SYNCED;
+use crate::reads::require_synced;
 use crate::render::{Conversation, render_transcript};
 use crate::state::State;
 
-const UUID: &str = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+/// `/[0-9a-f]{8}-…-[0-9a-f]{12}/i`, through `js::regex` like every JS regex.
+static UUID: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used, reason = "a fixed pattern that compiles")]
+    js::regex(
+        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        true,
+    )
+    .unwrap()
+});
 
 fn invalid(message: String) -> Failure {
     Failure::new(ErrorKind::InvalidInput, message)
@@ -47,7 +58,7 @@ pub async fn export(
         .conversation(&id)
         .await?
         .ok_or_else(|| Failure::new(ErrorKind::Api, format!("404 from {path}")))?;
-    let is_archived = value.get("is_archived").is_some_and(truthy);
+    let is_archived = value.get("is_archived").is_some_and(js::truthy);
     if !all && is_archived != archived {
         return Err(invalid(format!(
             "Conversation is {}.",
@@ -75,9 +86,7 @@ async fn resolve(
             "Shared links (/share/…) aren't supported; use the chat's own /c/… link.".to_owned(),
         ));
     }
-    let uuid = js::regex(UUID, true)
-        .map_err(|error| Failure::new(ErrorKind::Internal, error.to_string()))?;
-    if let Ok(Some(found)) = uuid.find(&reference) {
+    if let Ok(Some(found)) = UUID.find(&reference) {
         return Ok((found.as_str().to_lowercase(), None));
     }
     let local_title_version = state.profile().local_title_version;
@@ -102,9 +111,7 @@ fn select_one(
     all: bool,
     local_title_version: u32,
 ) -> Result<(String, Option<String>), Failure> {
-    let synced_at = chatgpt_store::synced_at(db)
-        .map_err(Failure::store)?
-        .ok_or_else(|| Failure::new(ErrorKind::NotSynced, NOT_SYNCED))?;
+    let synced_at = require_synced(db)?;
     let matches = chatgpt_store::get(db, prefix, local_title_version).map_err(Failure::store)?;
     let target = match matches.as_slice() {
         [] => {
@@ -129,35 +136,11 @@ fn select_one(
     Ok((target.id.clone(), Some(synced_at)))
 }
 
-/// `Boolean(value)`.
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
-}
-
-/// How a template literal prints a JSON value (`${value}`), for the header.
-fn template(value: Option<&Value>) -> String {
-    match value {
-        None => "undefined".to_owned(),
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Null) => "null".to_owned(),
-        Some(Value::Number(number)) => number
-            .as_f64()
-            .map_or_else(|| number.to_string(), chatgpt_core::js_number_string),
-        Some(other) => other.to_string(),
-    }
-}
-
 /// `renderTranscript` for the single-chat endpoint's answer, and the title
 /// (for `-o`'s file name and `-c`'s note).
 fn render(value: &Value) -> Result<(String, String), Failure> {
     let failed = |why: String| Failure::new(ErrorKind::Decode, why);
-    let mut convo: Conversation = serde_json::from_value(value.clone()).map_err(|error| {
+    let convo = Conversation::deserialize(value).map_err(|error| {
         failed(format!(
             "ChatGPT's conversation wasn't what the CLI expects ({:?} error)",
             error.classify()
@@ -170,11 +153,9 @@ fn render(value: &Value) -> Result<(String, String), Failure> {
         .and_then(Value::as_f64)
         .and_then(js::iso_from_seconds)
         .ok_or_else(|| failed("Invalid time value".to_owned()))?;
-    let title = template(value.get("title"));
-    convo.title = Some(title.clone());
-    let id = template(value.get("conversation_id"));
+    let id = js::template(value.get("conversation_id"));
     let markdown = render_transcript(&id, &convo, &created[..10]).map_err(failed)?;
-    Ok((markdown, title))
+    Ok((markdown, convo.title))
 }
 
 #[cfg(test)]
@@ -206,9 +187,9 @@ mod tests {
 
     #[test]
     fn archive_state_is_read_as_js_truthiness() {
-        assert!(!truthy(&Value::Null));
-        assert!(!truthy(&json!(0)));
-        assert!(truthy(&json!(true)));
-        assert!(!truthy(&json!("")));
+        assert!(!js::truthy(&Value::Null));
+        assert!(!js::truthy(&json!(0)));
+        assert!(js::truthy(&json!(true)));
+        assert!(!js::truthy(&json!("")));
     }
 }

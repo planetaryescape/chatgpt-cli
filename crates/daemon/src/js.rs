@@ -142,6 +142,33 @@ pub fn regex(
 
 pub use chatgpt_core::js::{number, trim};
 
+/// How a template literal prints a JSON value (`${value}`): `undefined` for
+/// a missing one, `null`, strings as they are, numbers as JS prints them.
+pub fn template(value: Option<&serde_json::Value>) -> String {
+    use serde_json::Value;
+    match value {
+        None => "undefined".to_owned(),
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) => "null".to_owned(),
+        Some(Value::Number(number)) => number
+            .as_f64()
+            .map_or_else(|| number.to_string(), chatgpt_core::js_number_string),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// `Boolean(value)`.
+pub fn truthy(value: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
 /// `Date.prototype.toISOString` for a time in milliseconds since 1970:
 /// `YYYY-MM-DDTHH:MM:SS.sssZ`. `None` where JS throws "Invalid time value".
 pub fn iso_from_millis(millis: i64) -> Option<String> {

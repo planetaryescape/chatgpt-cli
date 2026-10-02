@@ -5,14 +5,14 @@
 use std::process::ExitCode;
 
 use chatgpt_core::js::{collapse_spaces, number, trim};
-use chatgpt_core::{ErrorKind, js_number_string};
+use chatgpt_core::js_number_string;
 use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{Request, ResponseData, SearchHit};
 use unicode_width::UnicodeWidthStr;
 
 use crate::args::SearchArgs;
 use crate::output::{data, json, note, unexpected};
-use crate::reads::stale_note;
+use crate::reads::{invalid, stale_note};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Format {
@@ -21,10 +21,6 @@ enum Format {
     Csv,
     Table,
     Ids,
-}
-
-fn invalid(message: &str) -> ClientError {
-    ClientError::new(ErrorKind::InvalidInput, message)
 }
 
 /// `Number(limit)`, a safe integer of at least 1.
