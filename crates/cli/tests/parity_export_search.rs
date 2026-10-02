@@ -405,7 +405,8 @@ const PARITY_PLUGIN: &str = r#"
 import { plugin } from "bun";
 const base = process.env.PARITY_FAKE_BASE;
 const cookie = process.env.PARITY_FAKE_COOKIE;
-const eq = cookie.indexOf("=");
+const eq = cookie?.indexOf("=") ?? -1;
+if (!base || !cookie || eq < 1) throw new Error("PARITY_FAKE_BASE and PARITY_FAKE_COOKIE (name=value) must be set");
 const FAKE_EMBEDDINGS = `
 export const MODEL_VERSION = "fake-embedder";
 export const EMBEDDING_DIM = 384;
