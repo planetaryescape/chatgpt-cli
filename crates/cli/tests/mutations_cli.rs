@@ -404,3 +404,41 @@ fn another_accounts_session_changes_nothing() {
         ["a-new", "p-pinned", "b-old", "c-old"]
     );
 }
+
+#[test]
+fn a_sync_running_during_a_change_never_undoes_it() {
+    let env = synced();
+    {
+        let mut state = env.fake().state();
+        // a-new changed since the sync, so the pass's listing has it as
+        // active; the archived listing has z-archived. Both are read before
+        // the changes below and land after them.
+        let chat = state
+            .chats
+            .iter_mut()
+            .find(|chat| chat.id == "a-new")
+            .unwrap();
+        chat.update_time = "2026-09-29T10:00:00.000000Z".into();
+        state.list_delay_ms = 1500;
+    }
+    let sync = env
+        .std_cmd()
+        .arg("sync")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // The active list is read; the archived list is in flight.
+    std::thread::sleep(std::time::Duration::from_millis(1800));
+    let (code, _, stderr) = run(&env, &["delete", "z-archived", "--archived", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let (code, _, stderr) = run(&env, &["archive", "a-new", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(sync.wait_with_output().unwrap().status.success());
+    env.fake().state().list_delay_ms = 0;
+    assert_eq!(
+        ids(&env, &["list", "--archived"]),
+        ["a-new"],
+        "deleted stays deleted; archived stays archived"
+    );
+}

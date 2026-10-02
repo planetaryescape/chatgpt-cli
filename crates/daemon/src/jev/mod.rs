@@ -202,7 +202,11 @@ impl Classifier<'_> {
         let mut todo = Vec::new();
         for chat in targets {
             match cached.get(&chat.id) {
-                Some(row) if !due_for_time_review(row, &today)? => {
+                // An unreadable one is judged again.
+                Some(row)
+                    if crate::policy::readable(row, &GUARD_PROFILE)
+                        && !due_for_time_review(row, &today)? =>
+                {
                     judgments.insert(chat.id.clone(), row.clone());
                 }
                 _ => todo.push(chat),
@@ -280,13 +284,18 @@ impl Classifier<'_> {
             .copied()
             .filter(|chat| is_long(chat) && summaries.contains_key(&chat.id))
             .collect();
-        let need_summary = ready
+        let need_summary: Vec<&str> = ready
             .iter()
             .filter(|chat| is_long(chat) && !summaries.contains_key(&chat.id))
-            .count();
-        if need_summary > 0 {
+            .map(|chat| chat.id.as_str())
+            .collect();
+        if !need_summary.is_empty() {
+            // Stage 5 ports the summariser; until then `classify` (still
+            // the TS CLI's) writes summaries, and the import brings them.
             self.reporter.note(format!(
-                "{need_summary} long chat(s) need a summary, which only `chatgpt classify` writes for now; skipping them in step 3."
+                "{} long chat(s) need a summary, which only `chatgpt classify` writes for now; skipping them in step 3. To include them, run `chatgpt classify {}`, then `chatgpt import-legacy`, and check again.",
+                need_summary.len(),
+                need_summary.join(" ")
             ));
         }
 
@@ -576,6 +585,7 @@ impl Judge<'_> {
             .system_one(&state, questions::questions())
             .await
             .map_err(|error| error.to_string())?;
+        questions::validate(&result.answers)?;
         let judgment = NewJudgment {
             id: chat.id.clone(),
             update_time: chat.update_time.clone(),

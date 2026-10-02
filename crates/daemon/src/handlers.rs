@@ -16,7 +16,7 @@ use crate::filters::InvalidFilter;
 use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
-use crate::sync::{PassOptions, run_pass};
+use crate::sync::{PassOptions, pinned_api, run_pass};
 use crate::{export, jev, memories, mutate, projects, reads, search, select, ts_sync};
 
 /// A failed request, worded for people: no response body, cookie or token.
@@ -195,16 +195,22 @@ pub async fn handle(
         } => mutate::set_title(state, reference, title, archived, all)
             .await
             .map(|(id, synced_at)| ResponseData::TitleSaved { id, synced_at }),
-        Request::Projects { session } => Api::new(Arc::clone(&state.sessions), session)
-            .projects()
-            .await
-            .map(|projects| ResponseData::Projects { projects })
-            .map_err(Failure::from),
-        Request::CreateProject { name, session } => Api::new(Arc::clone(&state.sessions), session)
-            .create_project(&name)
-            .await
-            .map(ResponseData::ProjectCreated)
-            .map_err(Failure::from),
+        // Projects and memories belong to the index's account too: every
+        // read and write of them uses its pinned session, so a session
+        // renewed into another account is refused before anything is sent.
+        Request::Projects { session } => {
+            async { Ok(pinned_api(state, session).await?.projects().await?) }
+                .await
+                .map(|projects| ResponseData::Projects { projects })
+        }
+        Request::CreateProject { name, session } => async {
+            Ok(pinned_api(state, session)
+                .await?
+                .create_project(&name)
+                .await?)
+        }
+        .await
+        .map(ResponseData::ProjectCreated),
         Request::MoveToProject {
             project,
             targets,
@@ -213,16 +219,16 @@ pub async fn handle(
         } => projects::move_chats(state, project, targets, remove, session, progress)
             .await
             .map(ResponseData::Outcome),
-        Request::Memories { session } => Api::new(Arc::clone(&state.sessions), session)
-            .memory_objects()
-            .await
-            .map(|memories| ResponseData::Memories { memories })
-            .map_err(Failure::from),
-        Request::MemorySummary { session } => Api::new(Arc::clone(&state.sessions), session)
-            .memory_summary()
-            .await
-            .map(|summary| ResponseData::MemorySummary { summary })
-            .map_err(Failure::from),
+        Request::Memories { session } => {
+            async { Ok(pinned_api(state, session).await?.memory_objects().await?) }
+                .await
+                .map(|memories| ResponseData::Memories { memories })
+        }
+        Request::MemorySummary { session } => {
+            async { Ok(pinned_api(state, session).await?.memory_summary().await?) }
+                .await
+                .map(|summary| ResponseData::MemorySummary { summary })
+        }
         Request::DeleteMemories { ids, session } => memories::delete(state, ids, session)
             .await
             .map(ResponseData::Outcome),

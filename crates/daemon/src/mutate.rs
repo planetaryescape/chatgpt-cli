@@ -124,6 +124,7 @@ pub async fn apply(
     let state = Arc::clone(state);
     let reporter = Reporter::for_client(progress);
     let task = tokio::spawn(async move {
+        let _no_pass = state.syncer.exclusive().await;
         let _foreground = state.indexer.foreground();
         let step = reporter.step(doing, Some(targets.len()));
         let tally = Tally::default();
@@ -210,6 +211,7 @@ pub async fn rename(
             .db(move |db| Ok(select::one(db, &reference, archived, all, &profile)))
             .await??;
         let api = crate::sync::pinned_api(&state, session).await?;
+        let _no_pass = state.syncer.exclusive().await;
         api.rename(&chat.id, &title).await?;
         let id = chat.id.clone();
         state

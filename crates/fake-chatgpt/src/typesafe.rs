@@ -23,6 +23,8 @@ pub struct TypeSafeState {
     pub bodies: Vec<String>,
     /// Answer this many next requests with this status.
     pub fail: Option<(u32, u16)>,
+    /// Answer with a score that isn't a number (it echoes text instead).
+    pub malformed: bool,
 }
 
 pub struct FakeTypeSafe {
@@ -97,8 +99,12 @@ impl Respond for Handler {
             .pointer("/state/conversation/title")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let mut answers = answers_for(title);
+        if state.malformed {
+            answers["worth_keeping"]["score"] = json!("SENTINEL private transcript fragment");
+        }
         ResponseTemplate::new(200).set_body_json(json!({
-            "answers": answers_for(title),
+            "answers": answers,
             "usage": { "input_tokens": INPUT_TOKENS },
             "model": "jev-test",
         }))

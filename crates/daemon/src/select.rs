@@ -66,8 +66,7 @@ pub fn targets(
             .map_err(Failure::invalid)?
             .excluding_unsure(chosen.exclude_unsure);
         let judgments = if jev.narrows() {
-            chatgpt_store::current_judgments(db, &profile.questions_version)
-                .map_err(Failure::store)?
+            crate::policy::current_judgments(db, profile).map_err(Failure::store)?
         } else {
             std::collections::HashMap::new()
         };

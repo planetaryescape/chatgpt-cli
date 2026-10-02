@@ -27,7 +27,9 @@ fn config_path() -> Option<PathBuf> {
 
 /// The key, or the TS CLI's message for why there's none.
 pub fn api_key(forwarded: Option<&Secret>) -> Result<ApiKey, String> {
-    if let Some(key) = forwarded.and_then(|secret| ApiKey::new(secret.expose())) {
+    if let Some(secret) = forwarded
+        && let Some(key) = ApiKey::new(secret.expose()).map_err(|error| error.to_string())?
+    {
         return Ok(key);
     }
     let Some(path) = config_path() else {
@@ -57,7 +59,9 @@ fn read_config_key(path: &std::path::Path) -> Result<Option<ApiKey>, String> {
     for name in ["jev", "openai", "anthropic"] {
         match object.get(name) {
             None => {}
-            Some(Value::String(value)) if name == "jev" => jev = ApiKey::new(value),
+            Some(Value::String(value)) if name == "jev" => {
+                jev = ApiKey::new(value).map_err(|error| error.to_string())?;
+            }
             Some(Value::String(_)) => {}
             Some(_) => return Err(format!("Invalid {name} key in {shown}.")),
         }
@@ -96,7 +100,9 @@ mod tests {
     }
 
     #[test]
-    fn a_forwarded_key_comes_first_and_a_blank_one_counts_as_none() {
+    fn a_forwarded_key_comes_first_and_a_broken_one_is_refused_unseen() {
         assert!(api_key(Some(&Secret::new(" k ".into()))).is_ok());
+        let error = api_key(Some(&Secret::new("SENTINEL\nKEY".into()))).expect_err("refused");
+        assert!(!error.contains("SENTINEL"), "{error}");
     }
 }

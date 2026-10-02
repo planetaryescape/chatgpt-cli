@@ -32,11 +32,26 @@ const PATH: &str = "/v1/systemone";
 #[derive(Clone)]
 pub struct ApiKey(String);
 
+/// A key that can't go in an HTTP header (a line break, a control
+/// character). The message never shows the key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the Jev API key has characters an HTTP header can't carry (a line break?); check TYPESAFE_API_KEY or `chatgpt configure jev`"
+)]
+pub struct InvalidKey;
+
 impl ApiKey {
-    /// The key, trimmed; `None` when blank.
-    pub fn new(value: &str) -> Option<Self> {
+    /// The key, trimmed; `Ok(None)` when blank. Refused, without echoing
+    /// it, when it can't be sent as a header: the HTTP library's own error
+    /// would quote the whole header value.
+    pub fn new(value: &str) -> Result<Option<Self>, InvalidKey> {
         let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| Self(trimmed.to_owned()))
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        let key = Self(trimmed.to_owned());
+        reqwest::header::HeaderValue::from_str(&key.bearer()).map_err(|_| InvalidKey)?;
+        Ok(Some(key))
     }
 
     fn bearer(&self) -> String {
@@ -257,7 +272,11 @@ fn transport_error(error: &impit::errors::ImpitError, timeout: Duration) -> Erro
         | ImpitError::ReadTimeout
         | ImpitError::WriteTimeout
         | ImpitError::PoolTimeout => Error::Timeout(timeout),
-        // impit's messages name the failure, not the request.
+        // Its message would quote the header, which may be the key.
+        ImpitError::InvalidHeaderValue(_) => {
+            Error::Connection("a request header has characters HTTP does not allow".to_owned())
+        }
+        // impit's other messages name the failure, not the request.
         other => Error::Connection(other.to_string()),
     }
 }

@@ -148,6 +148,14 @@ impl Syncer {
         self.schedule().last_ts_sync = Some(Instant::now());
     }
 
+    /// Hold off sync passes while a change writes ChatGPT and the index,
+    /// after waiting out a running one: a pass whose listing predates the
+    /// change would otherwise write the chat's old state back (a deleted
+    /// chat re-added, an archive undone).
+    pub async fn exclusive(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.running.lock().await
+    }
+
     /// Whether a pass is running now.
     pub fn is_running(&self) -> bool {
         self.running.try_lock().is_err()

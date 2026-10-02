@@ -32,6 +32,7 @@ pub async fn move_chats(
     // Its own task, so a client that goes away never leaves a chat moved in
     // ChatGPT but not in the index.
     let task = tokio::spawn(async move {
+        let _no_pass = state.syncer.exclusive().await;
         let _foreground = state.indexer.foreground();
         let label = if remove {
             "Removing chats from project"

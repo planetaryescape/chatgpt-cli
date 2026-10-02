@@ -254,3 +254,50 @@ fn suggest_reuses_current_judgments_and_leaves_unsure_ones_out() {
     );
     assert_eq!(typesafe.calls(), 1, "only the stale one");
 }
+
+#[test]
+fn malformed_answers_are_never_saved_or_quoted_and_stored_ones_count_as_unjudged() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_jev(&typesafe, Some(API_KEY));
+    // An unreadable judgment already in the index (from the TS import).
+    let db = env.legacy_db();
+    judge(
+        &db,
+        "b-maybe",
+        "2024-03-01T09:00:00.000000Z",
+        r#"{"worth_keeping":{"score":"SENTINEL stored"}}"#,
+    );
+    drop(db);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    let rows: Vec<Value> = serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
+    let maybe = rows.iter().find(|row| row["id"] == "b-maybe").unwrap();
+    assert!(maybe.get("jev").is_none(), "counted as unjudged: {maybe}");
+    assert!(
+        env.stdout(&["stats"])
+            .starts_with("4 chat(s), 0 judged, 4 not yet judged\n")
+    );
+
+    typesafe.state().malformed = true;
+    let (code, stderr) = run(&env, &["delete", "a-junk", "--check", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("failed: a-junk Junk ping: Jev's answer to worth_keeping isn't a score from 0 to 3 with a confidence; nothing was saved\n"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("SENTINEL"), "{stderr}");
+    assert!(stderr.ends_with("Nothing matched.\n"), "{stderr}");
+    let rows: Vec<Value> = serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
+    assert!(
+        rows.iter().all(|row| row.get("jev").is_none()),
+        "nothing saved"
+    );
+
+    // The stored one is judged again, as an unjudged chat would be.
+    typesafe.state().malformed = false;
+    let (_, stderr) = run(&env, &["archive", "b-maybe", "--check", "-n"]);
+    assert!(
+        stderr.starts_with("1 chat(s): 0 already judged, 1 new or changed to judge.\n"),
+        "{stderr}"
+    );
+}

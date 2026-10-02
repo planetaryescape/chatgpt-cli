@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chatgpt_protocol::{Outcome, SessionChoice};
 
-use crate::api::Api;
 use crate::handlers::Failure;
 use crate::mutate::{DELAY, StopOnDrop};
 use crate::state::State;
@@ -20,7 +19,7 @@ pub async fn delete(
 ) -> Result<Outcome, Failure> {
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
-    let api = Api::new(Arc::clone(&state.sessions), session);
+    let api = crate::sync::pinned_api(state, session).await?;
     let task = tokio::spawn(async move {
         let mut outcome = Outcome::default();
         for (number, id) in ids.iter().enumerate() {

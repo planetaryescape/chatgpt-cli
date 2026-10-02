@@ -304,6 +304,27 @@ fn refine(base: &Verdict, a: &DeepAnswers) -> Verdict {
     unresolved
 }
 
+/// The current judgments `profile` reads, without unreadable ones.
+pub fn current_judgments(
+    db: &rusqlite::Connection,
+    profile: &Profile,
+) -> chatgpt_store::Result<std::collections::HashMap<String, JudgmentRow>> {
+    let mut judgments = chatgpt_store::current_judgments(db, &profile.questions_version)?;
+    judgments.retain(|_, row| readable(row, profile));
+    Ok(judgments)
+}
+
+/// Whether a stored judgment can be read. One that can't (answers of the
+/// wrong shape) counts as no judgment, so it never fails a whole `list`;
+/// the log names its chat, never its content.
+pub fn readable(row: &JudgmentRow, profile: &Profile) -> bool {
+    let read = Judged::new(row, profile).and_then(|judged| judged.verdict());
+    if read.is_err() {
+        tracing::warn!(id = %row.id, "a stored Jev judgment is unreadable; treating the chat as unjudged");
+    }
+    read.is_ok()
+}
+
 /// A judgment with its answers read once, and the versions that decide
 /// which follow-ups count.
 pub struct Judged<'a> {

@@ -18,7 +18,12 @@ fn fast() -> RetryPolicy {
 }
 
 fn client(server: &MockServer) -> Client {
-    Client::new(&server.uri(), ApiKey::new(" key-123 ").unwrap(), fast()).unwrap()
+    Client::new(
+        &server.uri(),
+        ApiKey::new(" key-123 ").unwrap().unwrap(),
+        fast(),
+    )
+    .unwrap()
 }
 
 fn answer() -> ResponseTemplate {
@@ -146,10 +151,24 @@ async fn an_answer_of_another_shape_is_a_decode_error_without_its_text() {
 
 #[test]
 fn the_key_never_shows_in_debug_output() {
-    let key = ApiKey::new("ts-live-abcdef").unwrap();
+    let key = ApiKey::new("ts-live-abcdef").unwrap().unwrap();
     assert_eq!(format!("{key:?}"), "ApiKey(<redacted>)");
     let client = Client::new("http://127.0.0.1:9/", key, RetryPolicy::default()).unwrap();
     let debug = format!("{client:?}");
     assert!(!debug.contains("abcdef"), "{debug}");
-    assert!(ApiKey::new("  ").is_none());
+    assert!(ApiKey::new("  ").unwrap().is_none());
+}
+
+#[test]
+fn a_key_that_cant_be_a_header_is_refused_without_being_echoed() {
+    for sentinel in ["SENTINEL-ab\ncd-KEY", "SENTINEL-ab\rcd", "SENTINEL\u{7f}x"] {
+        let error = ApiKey::new(sentinel).unwrap_err();
+        let shown = format!("{error} {error:?}");
+        assert!(!shown.contains("SENTINEL"), "{shown}");
+    }
+    let error = transport_error(
+        &impit::errors::ImpitError::InvalidHeaderValue("Bearer SENTINEL".into()),
+        Duration::from_secs(1),
+    );
+    assert!(!error.to_string().contains("SENTINEL"), "{error}");
 }

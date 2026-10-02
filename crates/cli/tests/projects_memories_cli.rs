@@ -352,3 +352,41 @@ fn memories_delete_after_a_preview_and_must_be_confirmed() {
         "error: Pass saved memory ids, or `-` to read ids from stdin.\n"
     );
 }
+
+#[test]
+fn projects_and_memories_are_refused_for_another_accounts_session() {
+    // The daemon reads test cookies from its own environment.
+    let mut env = Env::with_fake(vec![Chat::new(
+        "a-loose",
+        "Loose chat",
+        "2026-09-27T10:00:00.000000Z",
+    )]);
+    env.extra_env.push((
+        "CHATGPT_TEST_COOKIE_CHROME".into(),
+        fake_chatgpt::OTHER_COOKIE.into(),
+    ));
+    env.fake().state().memories = Some(vec![
+        json!({ "id": "mem-aaa", "content": "x", "updated_at": "2026-09-01" }),
+    ]);
+    env.cmd().arg("sync").assert().success();
+    for args in [
+        &["--browser", "chrome", "project", "create", "New"][..],
+        &["--browser", "chrome", "project", "list"][..],
+        &["--browser", "chrome", "memory", "delete", "mem-aaa", "-y"][..],
+        &["--browser", "chrome", "memory", "summary"][..],
+    ] {
+        let (code, _, stderr) = run(&env, args);
+        assert_ne!(code, Some(0), "{args:?}");
+        assert!(
+            stderr.contains("this index holds another ChatGPT account's chats"),
+            "{args:?}: {stderr}"
+        );
+    }
+    let calls = env.fake().calls();
+    assert!(
+        calls.iter().all(|call| !call.contains("/projects")
+            && !call.contains("/memories")
+            && !call.contains("sidebar")),
+        "{calls:?}"
+    );
+}
