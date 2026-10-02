@@ -48,7 +48,7 @@ pub async fn export(
         _ => None,
     };
     if let Some(path) = &output {
-        std::fs::write(&path, &chat.markdown)
+        std::fs::write(path, &chat.markdown)
             .map_err(|error| io_error(std::path::Path::new(&path), &error))?;
         note(&format!("wrote {path} ({kb})"));
     }
