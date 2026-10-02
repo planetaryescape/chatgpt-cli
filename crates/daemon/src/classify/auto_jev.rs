@@ -255,7 +255,7 @@ async fn baseline(state: &State) -> Result<String, String> {
             }
             // Only chats updated after it count: the newest one already
             // existed when it was enabled.
-            let since = chatgpt_store::active_watermark(db)?.unwrap_or_default();
+            let since = chatgpt_store::newest_active_update_time(db)?.unwrap_or_default();
             chatgpt_store::set_meta(db, SINCE_KEY, &since)?;
             Ok(since)
         })

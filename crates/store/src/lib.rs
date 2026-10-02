@@ -139,8 +139,9 @@ pub use conversations::{
 };
 pub use judgments::{
     current_judgments, fresh_update_time, has_deep_judgment, has_luna_judgment, judgment,
-    memory_judgment, save_deep_judgment, save_judgment, save_luna_judgment, save_memory_judgment,
-    save_memory_judgment_unless_newer, save_summary, summary, unjudged,
+    memory_judgment, newest_active_update_time, save_deep_judgment, save_judgment,
+    save_luna_judgment, save_memory_judgment, save_memory_judgment_unless_newer, save_summary,
+    summary, unjudged,
 };
 pub use meta::{account, bind_account, get_meta, set_meta};
 pub use reconcile::{candidates, preserve};

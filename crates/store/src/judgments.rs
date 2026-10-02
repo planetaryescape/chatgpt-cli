@@ -344,6 +344,19 @@ pub struct Unjudged<'a> {
 const ISO_KEY: &str =
     "(substr({0}, 1, 19) || substr(trim(substr({0}, 20), '.Z') || '000000000', 1, 9))";
 
+/// The newest active chat's `update_time`, by [`ISO_KEY`]: the background
+/// Jev's baseline, which [`unjudged`] compares against the same way.
+pub fn newest_active_update_time(connection: &Connection) -> Result<Option<String>> {
+    let sql = format!(
+        "select update_time from conversations where is_archived = 0 order by {} desc limit 1",
+        ISO_KEY.replace("{0}", "update_time")
+    );
+    Ok(connection
+        .prepare_cached(&sql)?
+        .query_row([], |row| row.get(0))
+        .optional()?)
+}
+
 /// [`Unjudged`]'s chats, newest first: `(id, update_time)`.
 pub fn unjudged(connection: &Connection, query: Unjudged<'_>) -> Result<Vec<(String, String)>> {
     let sql = format!(

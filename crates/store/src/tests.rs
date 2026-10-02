@@ -345,3 +345,21 @@ fn chats_new_since_the_background_jev_baseline_compare_by_time_not_text() {
     );
     assert_eq!(new_since("").len(), 4, "no baseline: every chat");
 }
+
+#[test]
+fn the_background_jev_baseline_is_the_newest_chat_by_time_not_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let chats = [
+        chat("a-earlier", "2026-10-01T14:05:59.206Z"),
+        // Newer by 100 µs, though it sorts first as text.
+        chat("b-newest", "2026-10-01T14:05:59.2061Z"),
+    ];
+    store
+        .write(|db| replace_all(db, &chats, "2026-10-02T00:00:00.000Z"))
+        .unwrap();
+    assert_eq!(
+        store.read(newest_active_update_time).unwrap().as_deref(),
+        Some("2026-10-01T14:05:59.2061Z")
+    );
+}
