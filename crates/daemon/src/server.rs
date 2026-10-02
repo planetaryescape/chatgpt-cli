@@ -28,6 +28,8 @@ use crate::state::State;
 
 /// `sun_path` is 104 bytes on macOS (108 on Linux), including the final NUL.
 const MAX_SOCKET_PATH_BYTES: usize = 103;
+/// See its use in `serve`.
+const STALL_STARTUP_ENV: &str = "CHATGPT_TEST_STALL_STARTUP";
 
 /// Why the daemon stopped for good.
 pub(crate) enum Fatal {
@@ -80,6 +82,13 @@ pub(crate) async fn serve(paths: Paths) -> Result<(), Fatal> {
         chatgpt_core::pid_file_contents(pid, &started).as_bytes(),
     )
     .map_err(|error| describe(&paths.pid_file(), &error))?;
+    // Debug builds only: stall here once (the marker file goes first), as a
+    // daemon stuck opening its index would, for the launcher's tests.
+    if let Some(marker) = chatgpt_core::debug_env(STALL_STARTUP_ENV)
+        && std::fs::remove_file(marker).is_ok()
+    {
+        std::future::pending::<()>().await;
+    }
     // Open the index before binding: a daemon that can't start (an index a
     // newer chatgpt migrated) then never has a socket, and the client that
     // started it reads its exit status instead.

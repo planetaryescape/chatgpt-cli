@@ -173,3 +173,66 @@ fn a_retired_request_from_an_older_client_gets_an_error_not_a_hang() {
         "{answer}"
     );
 }
+
+fn paths(env: &Env) -> chatgpt_core::Paths {
+    chatgpt_core::Paths::under(
+        chatgpt_core::Instance::Named("dev".into()),
+        &env.home.path().join("Library/Application Support"),
+        None,
+    )
+}
+
+fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(work)
+}
+
+/// Clients A and B both find the same old daemon. A replaces it first; B's
+/// stop, of the daemon it observed, must leave A's new one running.
+#[test]
+fn a_client_stops_only_the_old_daemon_it_saw_not_one_started_since() {
+    let env = Env::new();
+    let mut old = daemon_reporting(&env, "0.0.1");
+    let seen = old.id();
+    let fresh = env.status()["pid"].as_u64().unwrap();
+    assert!(old.wait().unwrap().success());
+
+    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), seen)).unwrap();
+    assert_eq!(stopped, None, "B stopped A's new daemon");
+    assert!(pid_exists(fresh));
+    assert_eq!(env.status()["pid"], fresh);
+
+    let stopped = block_on(chatgpt_launcher::stop_if_still(
+        &paths(&env),
+        u32::try_from(fresh).unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(stopped, Some(u32::try_from(fresh).unwrap()));
+    assert!(!pid_exists(fresh));
+}
+
+#[test]
+fn a_daemon_stuck_starting_up_is_stopped_and_started_again() {
+    let mut env = Env::new();
+    let marker = env.home.path().join("stall-once");
+    std::fs::write(&marker, "").unwrap();
+    env.extra_env.extend([
+        (
+            "CHATGPT_TEST_STALL_STARTUP".to_owned(),
+            marker.display().to_string(),
+        ),
+        ("CHATGPT_TEST_READY_TIMEOUT_MS".to_owned(), "2000".to_owned()),
+    ]);
+    let output = env
+        .cmd()
+        .args(["daemon", "status", "--json"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("stuck starting up"), "{stderr}");
+    assert!(!marker.exists(), "the first daemon stalled");
+}
