@@ -13,8 +13,8 @@ use futures_util::StreamExt;
 use super::access::Access;
 use super::costs::{CostMeter, format_usd};
 use super::pipeline::{
-    Approved, CONCURRENCY, CONFIRM_ABOVE_TOKENS, SummaryGate, cached_summaries, download,
-    ensure_summary, failure_line, is_long, jev_state, profile, summary_kind,
+    Approved, Basis, CHANGED, CONCURRENCY, CONFIRM_ABOVE_TOKENS, SummaryGate, cached_summaries,
+    download, ensure_summary, failure_line, is_long, jev_state, profile, summary_kind,
 };
 use super::summarise;
 use crate::handlers::Failure;
@@ -312,14 +312,28 @@ impl DeepClassifier<'_> {
             answers: crate::js::stringify(&result.answers),
             classified_at: crate::js::now_iso(),
         };
+        let basis = Basis::of(transcript);
         let _no_pass = self.state.syncer.exclusive().await;
         self.state
             .db_write(move |db| {
+                let Some(now) = basis.current(db, &row.id)? else {
+                    return Ok(None);
+                };
+                let row = NewDeepJudgment {
+                    update_time: now,
+                    ..row
+                };
+                // The first pass it follows up, at the same time.
+                let Some(judged) =
+                    chatgpt_store::judgment(db, &row.id, &row.update_time, &row.questions_version)?
+                else {
+                    return Ok(None);
+                };
                 chatgpt_store::save_deep_judgment(db, &row)?;
-                chatgpt_store::judgment(db, &row.id, &row.update_time, &row.questions_version)
+                chatgpt_store::judgment(db, &judged.id, &judged.update_time, &judged.version)
             })
             .await
             .map_err(|failure| failure.message)?
-            .ok_or_else(|| "the judgment it follows up is gone".to_owned())
+            .ok_or_else(|| CHANGED.to_owned())
     }
 }

@@ -79,7 +79,7 @@ pub async fn classify(
         // Waits out the background Jev on these chats, then keeps it off
         // them until this run ends.
         let _claim = state.flight.claim(&ids).await;
-        let targets = chats(&state, ids).await?;
+        let targets = chats(&state, ids.clone()).await?;
         let classifier = Classifier {
             state: &state,
             reporter: &reporter,
@@ -94,6 +94,9 @@ pub async fn classify(
         };
         let classified = classifier.classify(&targets, options).await?;
         let mut judgments = classified.judgments;
+        // Each stage reads the chats afresh: a sync may have moved them (and
+        // their caches) forward while the one before was waiting on a model.
+        let targets = chats(&state, ids.clone()).await?;
         let mut unsure = Vec::new();
         for chat in &targets {
             if let Some(row) = judgments.get(&chat.id) {
@@ -121,8 +124,10 @@ pub async fn classify(
             judgments.extend(std::mem::take(&mut deep.judgments));
             Some(deep)
         };
+        let targets = chats(&state, ids.clone()).await?;
         let luna_failures =
             review::review(&state, &reporter, &access, &targets, &mut judgments, redo).await?;
+        let targets = chats(&state, ids).await?;
         let title_failures = titles::generate(&state, &reporter, &access, &targets, false).await?;
         let (mut delete, mut archive, mut keep, mut still_unsure) = (0, 0, 0, 0);
         for row in judgments.values() {

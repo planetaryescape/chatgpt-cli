@@ -13,12 +13,12 @@
 //! a failure never quotes their output.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use serde_json::Value;
 
 use super::access::Access;
 use super::costs::{GPT_6_LUNA, HAIKU, price_of};
+use chatgpt_core::user_config::Provider;
 
 /// Bump when the instructions change, so cached summaries are made again.
 pub const SUMMARY_PROMPT_VERSION: u32 = 9;
@@ -63,10 +63,13 @@ pub fn codex_args() -> Vec<String> {
     args
 }
 
+/// A summariser in the fallback order. An API's client is built only when
+/// it's reached, so a broken key for one provider fails that provider
+/// alone, as a summariser that failed, and never the ones before it.
 enum Summariser {
-    OpenAi(Arc<model_api::OpenAi>),
+    OpenAi,
     Codex(PathBuf),
-    Anthropic(Arc<model_api::Anthropic>),
+    Anthropic,
     Claude(PathBuf),
 }
 
@@ -115,24 +118,25 @@ pub async fn codex_exec(
 impl Summariser {
     fn name(&self) -> &'static str {
         match self {
-            Self::OpenAi(_) => "gpt-6-luna (API)",
+            Self::OpenAi => "gpt-6-luna (API)",
             Self::Codex(_) => "gpt-6-luna",
-            Self::Anthropic(_) => "claude-haiku (API)",
+            Self::Anthropic => "claude-haiku (API)",
             Self::Claude(_) => "claude-haiku",
         }
     }
 }
 
-/// `installed()`: at most one per provider, in order.
+/// `installed()`: at most one per provider, in order, chosen by whether
+/// a key is configured (`findSecret`), as the TS CLI chooses.
 fn installed(access: &Access) -> Result<Vec<Summariser>, String> {
     let mut found = Vec::new();
-    if let Some(openai) = access.openai()? {
-        found.push(Summariser::OpenAi(openai));
+    if access.find(Provider::OpenAi)?.is_some() {
+        found.push(Summariser::OpenAi);
     } else if let Some(codex) = access.which("codex") {
         found.push(Summariser::Codex(codex));
     }
-    if let Some(anthropic) = access.anthropic()? {
-        found.push(Summariser::Anthropic(anthropic));
+    if access.find(Provider::Anthropic)?.is_some() {
+        found.push(Summariser::Anthropic);
     } else if let Some(claude) = access.which("claude") {
         found.push(Summariser::Claude(claude));
     }
@@ -198,7 +202,8 @@ pub async fn summarise(
 
 async fn run(summariser: &Summariser, access: &Access, input: &str) -> Result<Ran, String> {
     match summariser {
-        Summariser::OpenAi(openai) => {
+        Summariser::OpenAi => {
+            let openai = access.openai()?.ok_or("no OpenAI key")?;
             let reply = openai
                 .text(INSTRUCTIONS, input, None)
                 .await
@@ -214,7 +219,8 @@ async fn run(summariser: &Summariser, access: &Access, input: &str) -> Result<Ra
                 text: reply.text,
             })
         }
-        Summariser::Anthropic(anthropic) => {
+        Summariser::Anthropic => {
+            let anthropic = access.anthropic()?.ok_or("no Anthropic key")?;
             let reply = anthropic
                 .text(INSTRUCTIONS, input)
                 .await

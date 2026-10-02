@@ -463,6 +463,39 @@ pub async fn download(
     Ok(())
 }
 
+/// Why a late result wasn't saved.
+pub const CHANGED: &str = "the chat changed while it was being classified; run classify again";
+
+/// The content a model was given: the chat's cached transcript. A result
+/// lands only while the chat's current transcript is still this one, and
+/// then at the chat's current `update_time`, so a sync that moved the
+/// caches forward meanwhile (content unchanged) neither hides the result
+/// nor has it displace newer rows.
+#[derive(Clone, Debug)]
+pub struct Basis {
+    markdown: String,
+    render_version: u32,
+}
+
+impl Basis {
+    pub fn of(transcript: &Transcript) -> Self {
+        Self {
+            markdown: transcript.markdown.clone(),
+            render_version: transcript.render_version,
+        }
+    }
+
+    /// The chat's current `update_time`, or `None` if its content changed.
+    /// Call it under the pass lock, in the transaction that saves.
+    pub fn current(
+        &self,
+        db: &rusqlite::Connection,
+        id: &str,
+    ) -> chatgpt_store::Result<Option<String>> {
+        chatgpt_store::fresh_update_time(db, id, self.render_version, &self.markdown)
+    }
+}
+
 /// Leave to make new summaries, which only [`SummaryGate::confirm`] gives:
 /// a batch small enough not to ask about, `-y`, or the user's yes. No
 /// summary is made without one.
@@ -536,26 +569,22 @@ pub async fn ensure_summary(
         made.usd,
         made.tokens,
     );
-    let (id, update_time, summary, model) = (
-        chat.id.clone(),
-        chat.update_time.clone(),
-        made.summary.clone(),
-        made.model,
-    );
+    let (id, summary, model) = (chat.id.clone(), made.summary.clone(), made.model);
+    let basis = Basis::of(transcript);
     let _no_pass = state.syncer.exclusive().await;
-    state
+    let saved = state
         .db_write(move |db| {
-            chatgpt_store::save_summary(
-                db,
-                &id,
-                &update_time,
-                SUMMARY_PROMPT_VERSION,
-                &summary,
-                &model,
-            )
+            let Some(now) = basis.current(db, &id)? else {
+                return Ok(false);
+            };
+            chatgpt_store::save_summary(db, &id, &now, SUMMARY_PROMPT_VERSION, &summary, &model)?;
+            Ok(true)
         })
         .await
         .map_err(|failure| failure.message)?;
+    if !saved {
+        return Err(CHANGED.to_owned());
+    }
     Ok(made.summary)
 }
 
@@ -723,16 +752,24 @@ impl Judge<'_> {
             answers: crate::js::stringify(&result.answers),
             classified_at: crate::js::now_iso(),
         };
+        let basis = Basis::of(transcript);
         let _no_pass = self.state.syncer.exclusive().await;
         // Read back as every other judgment is read (the topic column
         // included).
         self.state
             .db_write(move |db| {
+                let Some(now) = basis.current(db, &judgment.id)? else {
+                    return Ok(None);
+                };
+                let judgment = NewJudgment {
+                    update_time: now,
+                    ..judgment
+                };
                 chatgpt_store::save_judgment(db, &judgment)?;
                 chatgpt_store::judgment(db, &judgment.id, &judgment.update_time, &judgment.version)
             })
             .await
             .map_err(|failure| failure.message)?
-            .ok_or_else(|| "the judgment wasn't saved".to_owned())
+            .ok_or_else(|| CHANGED.to_owned())
     }
 }

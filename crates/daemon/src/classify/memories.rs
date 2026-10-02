@@ -91,6 +91,8 @@ pub async fn classify(
             )
         })?;
     let as_of = utc_today();
+    // A row another run saves for other input after this moment wins.
+    let started = crate::js::now_iso();
     let related = related_indexes(&memories);
     let hashes: Vec<String> = memories
         .iter()
@@ -152,8 +154,9 @@ pub async fn classify(
     let step = reporter.step("Quick memory classification", Some(todo.len()));
     futures_util::stream::iter(todo.iter().copied())
         .for_each_concurrent(CONCURRENCY, |at| {
-            let (step, client, results, failures, hashes, as_of) =
-                (&step, &client, &results, &failures, &hashes, &as_of);
+            let (step, client, results, failures, hashes, as_of, started) = (
+                &step, &client, &results, &failures, &hashes, &as_of, &started,
+            );
             let memory = &memories[at];
             let related = related_json(at);
             async move {
@@ -178,7 +181,7 @@ pub async fn classify(
                         system_two: None,
                         classified_at: Some(crate::js::now_iso()),
                     };
-                    save(state, &memory.id, &row).await?;
+                    save(state, started, &memory.id, &row).await?;
                     Ok(row)
                 };
                 match quick.await {
@@ -258,7 +261,7 @@ pub async fn classify(
         let answered = ask_deep(batch, &results).await;
         match answered {
             Ok(decisions) => {
-                save_deep(state, &mut results, &decisions).await?;
+                failures.extend(save_deep(state, &started, &mut results, &decisions).await?);
                 reporter.note(format!(
                     "Luna reviewed {}/{} memories.",
                     (number * DEEP_BATCH + batch.len()).min(review.len()),
@@ -275,7 +278,8 @@ pub async fn classify(
                 for &at in batch {
                     let id = memories[at].id.as_str();
                     match ask_deep(&[at], &results).await {
-                        Ok(decisions) => save_deep(state, &mut results, &decisions).await?,
+                        Ok(decisions) => failures
+                            .extend(save_deep(state, &started, &mut results, &decisions).await?),
                         Err(why) => failures.push(format!("{id}: {why}")),
                     }
                 }
@@ -323,7 +327,12 @@ fn entry(memory: &SavedMemory) -> Value {
     entry
 }
 
-async fn save(state: &State, id: &str, row: &Row) -> Result<(), String> {
+/// Why a late result for a memory wasn't saved.
+const NEWER: &str = "another run classified this memory meanwhile; run memory classify again";
+
+/// Save a memory's row, unless another run saved it for other input since
+/// `started`.
+async fn save(state: &State, started: &str, id: &str, row: &Row) -> Result<(), String> {
     let new = NewMemoryJudgment {
         id: id.to_owned(),
         input_hash: row.hash.clone(),
@@ -332,19 +341,28 @@ async fn save(state: &State, id: &str, row: &Row) -> Result<(), String> {
         system_two: row.system_two.clone(),
         classified_at: row.classified_at.clone().unwrap_or_else(crate::js::now_iso),
     };
+    let started = started.to_owned();
     let _no_pass = state.syncer.exclusive().await;
-    state
-        .db_write(move |db| chatgpt_store::save_memory_judgment(db, &new))
+    let written = state
+        .db_write(move |db| chatgpt_store::save_memory_judgment_unless_newer(db, &new, &started))
         .await
-        .map_err(|failure| failure.message)
+        .map_err(|failure| failure.message)?;
+    if written {
+        Ok(())
+    } else {
+        Err(NEWER.to_owned())
+    }
 }
 
 /// `saveDeep`: Luna's decision joins each memory's row.
+/// The failures of the ones another run saved meanwhile.
 async fn save_deep(
     state: &State,
+    started: &str,
     results: &mut HashMap<String, Row>,
     decisions: &[Value],
-) -> Result<(), Failure> {
+) -> Result<Vec<String>, Failure> {
+    let mut lost = Vec::new();
     for decision in decisions {
         let Some(id) = decision.get("id").and_then(Value::as_str) else {
             continue;
@@ -353,11 +371,15 @@ async fn save_deep(
             continue;
         };
         row.system_two = Some(crate::js::stringify(decision));
-        save(state, id, row)
-            .await
-            .map_err(|message| Failure::new(chatgpt_core::ErrorKind::Internal, message))?;
+        match save(state, started, id, row).await {
+            Ok(()) => {}
+            Err(message) if message == NEWER => lost.push(format!("{id}: {NEWER}")),
+            Err(message) => {
+                return Err(Failure::new(chatgpt_core::ErrorKind::Internal, message));
+            }
+        }
     }
-    Ok(())
+    Ok(lost)
 }
 
 #[cfg(test)]

@@ -139,6 +139,27 @@ pub fn save_judgment(connection: &mut Connection, judgment: &NewJudgment) -> Res
     Ok(())
 }
 
+/// The chat's current `update_time`, if its cached transcript there (at
+/// `render_version`) is still `markdown`: a result computed from that
+/// content is current at that time, even when a sync moved the chat's
+/// caches forward meanwhile. `None` when the content changed (or isn't
+/// cached any more): a result from the old content mustn't land.
+pub fn fresh_update_time(
+    connection: &Connection,
+    id: &str,
+    render_version: u32,
+    markdown: &str,
+) -> Result<Option<String>> {
+    Ok(connection
+        .prepare_cached(
+            "select c.update_time from conversations c join transcripts t
+               on t.id = c.id and t.update_time = c.update_time and t.render_version = ?
+             where c.id = ? and t.markdown = ?",
+        )?
+        .query_row(params![render_version, id, markdown], |row| row.get(0))
+        .optional()?)
+}
+
 /// `ClassificationStore.summary`: the cached summary text of a long chat,
 /// for exactly this `update_time` and prompt version.
 pub fn summary(
@@ -344,6 +365,35 @@ pub fn unjudged(connection: &Connection, query: Unjudged<'_>) -> Result<Vec<(Str
         )?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
+}
+
+/// [`save_memory_judgment`], unless another run saved this memory's row
+/// for other input since `since` (an ISO time): a late result for an older
+/// input never displaces a newer one. Whether it was written.
+pub fn save_memory_judgment_unless_newer(
+    connection: &Connection,
+    row: &NewMemoryJudgment,
+    since: &str,
+) -> Result<bool> {
+    let written = connection
+        .prepare_cached(
+            "insert into memory_judgments values (?, ?, ?, ?, ?, ?)
+             on conflict (id) do update set input_hash = excluded.input_hash,
+                version = excluded.version, system_one = excluded.system_one,
+                system_two = excluded.system_two, classified_at = excluded.classified_at
+             where memory_judgments.input_hash = excluded.input_hash
+                or memory_judgments.classified_at < ?",
+        )?
+        .execute(params![
+            row.id,
+            row.input_hash,
+            row.version,
+            row.system_one,
+            row.system_two,
+            row.classified_at,
+            since
+        ])?;
+    Ok(written > 0)
 }
 
 /// A saved memory's cached classification.

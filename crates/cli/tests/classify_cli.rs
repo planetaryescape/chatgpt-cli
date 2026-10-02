@@ -865,3 +865,157 @@ fn transcript_and_memory_saves_wait_for_a_running_sync_pass() {
     );
     sync.wait().unwrap();
 }
+
+/// Bump a chat's update time in the fake ChatGPT, optionally with new text.
+fn touch(env: &Env, id: &str, time: &str, text: Option<&str>) {
+    let mut state = env.fake().state();
+    let chat = state.chats.iter_mut().find(|c| c.id == id).unwrap();
+    chat.update_time = time.into();
+    if let Some(text) = text {
+        chat.text = text.into();
+    }
+}
+
+#[test]
+fn a_late_judgment_lands_current_when_a_sync_moved_the_unchanged_chat() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    typesafe.state().delay_ms = 3000;
+    let classify = env
+        .std_cmd()
+        .args(["classify", "a-junk", "-y"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    // Its update time moves; its content doesn't. The sync's reconcile
+    // moves the caches forward while Jev is answering.
+    touch(&env, "a-junk", "2024-03-02T10:00:00.000000Z", None);
+    let synced = env.cmd().arg("sync").output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&synced.stderr).contains("Preserved 1 unchanged cache(s)"),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    let output = classify.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = list_json(&env);
+    assert_eq!(
+        row(&rows, "a-junk")["jev"]["suggestion"],
+        "delete",
+        "the verdict is current at the new time"
+    );
+}
+
+#[test]
+fn a_late_judgment_of_changed_content_is_not_saved() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    typesafe.state().delay_ms = 3000;
+    let classify = env
+        .std_cmd()
+        .args(["classify", "a-junk", "-y"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    touch(
+        &env,
+        "a-junk",
+        "2024-03-02T10:00:00.000000Z",
+        Some("Rewritten"),
+    );
+    env.cmd().arg("sync").assert().success();
+    let output = classify.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("failed: a-junk Junk ping: the chat changed while it was being classified; run classify again\n"),
+        "{stderr}"
+    );
+    let judgments: i64 = env
+        .index_db()
+        .query_row(
+            "select count(*) from judgments where id = 'a-junk'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(judgments, 0, "no verdict from the old content");
+}
+
+#[test]
+fn a_late_title_lands_current_when_a_sync_moved_the_unchanged_chat() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    env.set_tools("slowok", &["codex"]);
+    let titles = env
+        .std_cmd()
+        .args(["titles", "b-maybe"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    touch(&env, "b-maybe", "2024-03-02T09:00:00.000000Z", None);
+    env.cmd().arg("sync").assert().success();
+    let output = titles.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = list_json(&env);
+    assert_eq!(
+        row(&rows, "b-maybe")["display_title"],
+        "Luna: Maybe receipt"
+    );
+}
+
+#[test]
+fn a_broken_fallback_key_never_blocks_a_working_summariser() {
+    let typesafe = FakeTypeSafe::start();
+    let openai = FakeModelApi::openai();
+    let mut env = with_models(&typesafe);
+    env.extra_env.extend([
+        ("OPENAI_API_KEY".to_owned(), OPENAI_KEY.to_owned()),
+        ("CHATGPT_TEST_OPENAI_URL".to_owned(), openai.url.clone()),
+        // A key no HTTP header can carry.
+        (
+            "ANTHROPIC_API_KEY".to_owned(),
+            "ant-SENTINEL\nbroken".to_owned(),
+        ),
+    ]);
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    let (code, _, stderr) = run(&env, &["classify", "e-long", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("  summaries (gpt-6-luna (API))"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("SENTINEL"), "{stderr}");
+
+    // The broken one fails as a summariser would, unseen, and the chain
+    // goes on.
+    env.index_db().execute("delete from summaries", []).unwrap();
+    openai.state().fail = Some(500);
+    let (_, _, stderr) = run(&env, &["classify", "e-long", "--redo", "-y"]);
+    assert!(
+        stderr.contains("No summariser succeeded. gpt-6-luna (API): 127.0.0.1 returned 500 | claude-haiku (API): the Anthropic API key has characters an HTTP header can't carry (a line break?)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("SENTINEL"), "{stderr}");
+}

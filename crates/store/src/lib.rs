@@ -112,9 +112,9 @@ pub use conversations::{
     rename, replace_all, set_archived, set_project, synced_at,
 };
 pub use judgments::{
-    current_judgments, has_deep_judgment, has_luna_judgment, judgment, memory_judgment,
-    save_deep_judgment, save_judgment, save_luna_judgment, save_memory_judgment, save_summary,
-    summary, unjudged,
+    current_judgments, fresh_update_time, has_deep_judgment, has_luna_judgment, judgment,
+    memory_judgment, save_deep_judgment, save_judgment, save_luna_judgment, save_memory_judgment,
+    save_memory_judgment_unless_newer, save_summary, summary, unjudged,
 };
 pub use legacy::import_legacy;
 pub use meta::{account, bind_account, get_meta, set_meta};

@@ -12,7 +12,7 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use super::access::Access;
-use super::pipeline::{CONCURRENCY, failure_line, is_long, profile, utc_today};
+use super::pipeline::{Basis, CHANGED, CONCURRENCY, failure_line, is_long, profile, utc_today};
 use super::summarise::SUMMARY_PROMPT_VERSION;
 use crate::handlers::Failure;
 use crate::policy::{Judged, Verdict};
@@ -67,7 +67,8 @@ struct Review {
     jev: Verdict,
     product_review: bool,
     time_review: bool,
-    content: Result<(String, &'static str), String>,
+    /// What Luna reads, its kind, and the transcript it comes from.
+    content: Result<(String, &'static str, Basis), String>,
 }
 
 /// `classifyRemainingWithLuna(targets, judgments, store, { force })`: the
@@ -131,11 +132,14 @@ pub async fn review(
                             &chat.update_time,
                             SUMMARY_PROMPT_VERSION,
                         )?
-                        .map(|summary| (summary, "summary"))
+                        .map(|summary| (summary, "summary", Basis::of(&transcript)))
                         .ok_or_else(|| {
                             "No current summary for long chat; rerun classify.".to_owned()
                         }),
-                        Some(transcript) => Ok((transcript.markdown, "transcript")),
+                        Some(transcript) => {
+                            let basis = Basis::of(&transcript);
+                            Ok((transcript.markdown, "transcript", basis))
+                        }
                     };
                 found.push(Some(content));
             }
@@ -206,7 +210,8 @@ async fn review_one(
     if reporter.client_gone() {
         return Err("not reviewed: the command was interrupted".to_owned());
     }
-    let (content, content_kind) = review.content.as_ref().map_err(String::clone)?;
+    let (content, content_kind, basis) = review.content.as_ref().map_err(String::clone)?;
+    let basis = basis.clone();
     let mut input = json!({
         "title": review.chat.title,
         "as_of": today,
@@ -283,12 +288,28 @@ async fn review_one(
     let _no_pass = state.syncer.exclusive().await;
     state
         .db_write(move |db| {
+            let Some(now) = basis.current(db, &row.id)? else {
+                return Ok(None);
+            };
+            let row = NewLunaJudgment {
+                update_time: now,
+                ..row
+            };
+            // The judgment (and follow-up) it reviews, at the same time.
+            let Some(reviewed) =
+                chatgpt_store::judgment(db, &row.id, &row.update_time, &row.questions_version)?
+            else {
+                return Ok(None);
+            };
+            if reviewed.deep_version.clone().unwrap_or_default() != row.deep_version {
+                return Ok(None);
+            }
             chatgpt_store::save_luna_judgment(db, &row)?;
             chatgpt_store::judgment(db, &row.id, &row.update_time, &row.questions_version)
         })
         .await
         .map_err(|failure| failure.message)?
-        .ok_or_else(|| "the judgment it reviews is gone".to_owned())
+        .ok_or_else(|| CHANGED.to_owned())
 }
 
 #[cfg(test)]

@@ -334,3 +334,97 @@ fn the_first_account_to_bind_the_index_keeps_it() {
     );
     assert_eq!(store.read(account).unwrap().as_deref(), Some("user-a"));
 }
+
+#[test]
+fn a_late_memory_result_never_displaces_another_runs_newer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let row = |hash: &str, at: &str| NewMemoryJudgment {
+        id: "m".into(),
+        input_hash: hash.into(),
+        version: "v".into(),
+        system_one: format!("{{\"from\":\"{hash}\"}}"),
+        system_two: None,
+        classified_at: at.into(),
+    };
+    let since = "2026-10-02T10:00:00.000Z";
+    // Another run saved the memory's newer input after this run started.
+    assert!(
+        store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("new", "2026-10-02T10:05:00.000Z"),
+                since
+            ))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("old", "2026-10-02T10:06:00.000Z"),
+                since
+            ))
+            .unwrap()
+    );
+    let kept = store
+        .read(|db| memory_judgment(db, "m", "new", "v"))
+        .unwrap();
+    assert!(kept.is_some(), "the newer input's row stays");
+    // Its own input, or a row older than the run, it replaces.
+    assert!(
+        store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("new", "2026-10-02T10:07:00.000Z"),
+                since
+            ))
+            .unwrap()
+    );
+    assert!(
+        store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("other", "2026-10-02T10:08:00.000Z"),
+                "2026-10-02T11:00:00.000Z"
+            ))
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_result_is_current_only_while_the_chat_still_has_its_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    store
+        .write(|db| {
+            replace_all(db, &[chat("a", "t2")], "t")?;
+            db.execute(
+                "insert into transcripts values ('a', 't2', 2, '# same', 1, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    // Moved forward with its content unchanged: current at t2.
+    assert_eq!(
+        store
+            .read(|db| fresh_update_time(db, "a", 2, "# same"))
+            .unwrap()
+            .as_deref(),
+        Some("t2")
+    );
+    // Other content, or another render: not current.
+    assert_eq!(
+        store
+            .read(|db| fresh_update_time(db, "a", 2, "# old"))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .read(|db| fresh_update_time(db, "a", 3, "# same"))
+            .unwrap(),
+        None
+    );
+}

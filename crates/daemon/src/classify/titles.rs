@@ -12,7 +12,7 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 use super::access::Access;
-use super::pipeline::{failure_line, is_long};
+use super::pipeline::{Basis, CHANGED, failure_line, is_long};
 use super::summarise::SUMMARY_PROMPT_VERSION;
 use crate::handlers::Failure;
 use crate::progress::Reporter;
@@ -40,6 +40,8 @@ struct Item {
     chat: IndexedConversation,
     input: Value,
     tokens: i64,
+    /// The transcript the title is made from.
+    basis: Basis,
 }
 
 /// `batches`: at most twelve chats and 22k tokens each, a chat too big
@@ -126,6 +128,7 @@ pub async fn generate(
             continue;
         };
         let long = is_long(&transcript);
+        let basis = Basis::of(&transcript);
         let content = if long {
             summary
         } else {
@@ -153,6 +156,7 @@ pub async fn generate(
             chat,
             input,
             tokens,
+            basis,
         });
     }
     let ready_count = ready.len();
@@ -269,37 +273,55 @@ impl Run<'_> {
             return Err("Luna returned an invalid title or theme.".to_owned());
         }
         let version = super::pipeline::profile().local_title_version;
+        let mut written = 0;
         for item in items.iter() {
             let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-            let chat = group
+            let (chat, basis) = group
                 .iter()
                 .find(|candidate| candidate.chat.id == id)
-                .map(|candidate| candidate.chat.clone())
+                .map(|candidate| (candidate.chat.clone(), candidate.basis.clone()))
                 .ok_or("Luna returned an unknown id.")?;
+            let failed = failure_line(&chat, CHANGED);
             // `setLocalTitle`'s cleaning and check, then the theme's.
             let title = crate::mutate::clean_local_title(&field(item, "title"))?;
             let theme = chatgpt_core::js::collapse_spaces(&field(item, "theme"));
             let theme = chatgpt_core::js::utf16_prefix(&theme, 80).to_owned();
             let updated_at = crate::js::now_iso();
             let _no_pass = self.state.syncer.exclusive().await;
-            self.state
+            let fresh = self
+                .state
                 .db_write(move |db| {
+                    let Some(now) = basis.current(db, &chat.id)? else {
+                        return Ok(false);
+                    };
                     let row = ManualTitle {
                         id: &chat.id,
-                        update_time: &chat.update_time,
+                        update_time: &now,
                         version,
                         title: &title,
                         updated_at: &updated_at,
                     };
-                    chatgpt_store::set_luna_title(db, &row, &theme)
+                    // A manual title already there keeps its place, as the
+                    // TS CLI's title count counts it anyway.
+                    chatgpt_store::set_luna_title(db, &row, &theme)?;
+                    Ok(true)
                 })
                 .await
                 .map_err(|failure| failure.message)?;
+            if fresh {
+                written += 1;
+            } else {
+                // Only this chat's title is lost, not the batch's.
+                self.failures
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(failed);
+            }
         }
         *self
             .generated
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) += items.len();
+            .unwrap_or_else(PoisonError::into_inner) += written;
         Ok(())
     }
 }
@@ -322,6 +344,14 @@ mod tests {
             },
             input: Value::Null,
             tokens,
+            basis: Basis::of(&chatgpt_store::Transcript {
+                id: id.into(),
+                update_time: String::new(),
+                render_version: 2,
+                markdown: String::new(),
+                turns: 0,
+                approx_tokens: tokens,
+            }),
         }
     }
 
