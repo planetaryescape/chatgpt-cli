@@ -73,7 +73,7 @@ pub async fn classify(
     answers: Option<UnboundedReceiver<bool>>,
 ) -> Result<ClassifyOutcome, Failure> {
     let state = Arc::clone(state);
-    tokio::spawn(async move {
+    crate::progress::spawn(async move {
         let started = Instant::now();
         let reporter = Reporter::for_client(progress);
         let asker = answers.map(|answers| Asker::new(reporter.clone(), answers));
@@ -202,7 +202,7 @@ pub async fn titles(
     progress: Option<UnboundedSender<Progress>>,
 ) -> Result<ClassifyOutcome, Failure> {
     let state = Arc::clone(state);
-    tokio::spawn(async move {
+    crate::progress::spawn(async move {
         let reporter = Reporter::for_client(progress);
         let access = Access::for_client(access);
         let targets = chats(&state, ids).await?;
@@ -227,7 +227,7 @@ pub async fn memory_classify(
     progress: Option<UnboundedSender<Progress>>,
 ) -> Result<ClassifiedMemories, Failure> {
     let state = Arc::clone(state);
-    tokio::spawn(async move {
+    crate::progress::spawn(async move {
         let reporter = Reporter::for_client(progress);
         let access = Access::for_client(access);
         memories::classify(&state, &reporter, &access, session, redo).await

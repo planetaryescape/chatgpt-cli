@@ -41,7 +41,7 @@ pub fn now_unix() -> i64 {
 impl State {
     pub fn new(paths: Paths, store: Store) -> Self {
         let reporter = Reporter::default();
-        let sessions = Arc::new(Sessions::new(reporter.clone()));
+        let sessions = Arc::new(Sessions::default());
         let version = std::env::var(VERSION_OVERRIDE_ENV)
             .ok()
             .filter(|version| cfg!(debug_assertions) && !version.is_empty())

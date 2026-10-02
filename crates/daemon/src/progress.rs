@@ -97,6 +97,39 @@ impl Reporter {
     }
 }
 
+tokio::task_local! {
+    /// The reporter of the request whose task is running: the HTTP
+    /// client's retry notes (a rate-limit wait) go to the client whose
+    /// request waits, never to whichever client a shared reporter holds.
+    static REQUEST_NOTES: Reporter;
+}
+
+/// Run `work` with `reporter` as its request's: retry notes from inside it
+/// reach that reporter's client.
+pub async fn with_request_notes<F: std::future::Future>(reporter: Reporter, work: F) -> F::Output {
+    REQUEST_NOTES.scope(reporter, work).await
+}
+
+/// `tokio::spawn`, carrying the request's reporter into the new task (a
+/// task-local doesn't cross a spawn by itself).
+pub fn spawn<F>(work: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match REQUEST_NOTES.try_with(Reporter::clone) {
+        Ok(reporter) => tokio::spawn(with_request_notes(reporter, work)),
+        Err(_) => tokio::spawn(work),
+    }
+}
+
+/// A note for the client of the request running in this task, if any. A
+/// background task (the indexer, a scheduled pass) has none: the line only
+/// reaches the log, which the caller writes.
+pub fn request_note(line: String) {
+    let _ = REQUEST_NOTES.try_with(|reporter| reporter.note(line));
+}
+
 /// `Step` in progress.ts.
 pub struct Step {
     reporter: Reporter,
@@ -194,5 +227,35 @@ impl Asker {
         let mut answers = self.answers.lock().await;
         self.reporter.send(ProgressKind::Ask, prompt.to_owned());
         answers.recv().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retry_notes_reach_only_the_request_that_waits() {
+        // A sync's client is attached to the shared reporter.
+        let shared = Reporter::default();
+        let (sync_client, mut sync_lines) = tokio::sync::mpsc::unbounded_channel();
+        let _attached = shared.attach(sync_client);
+        // A background task (the indexer) retries: nobody hears it.
+        tokio::spawn(async { request_note("indexer's retry".into()) })
+            .await
+            .expect("ran");
+        // A change retries, inside a task it spawned: its own client hears.
+        let (change_client, mut change_lines) = tokio::sync::mpsc::unbounded_channel();
+        with_request_notes(Reporter::for_client(Some(change_client)), async {
+            spawn(async { request_note("change's retry".into()) })
+                .await
+                .expect("ran");
+        })
+        .await;
+        assert_eq!(
+            change_lines.try_recv().map(|progress| progress.line).ok(),
+            Some("change's retry".to_owned())
+        );
+        assert!(sync_lines.try_recv().is_err(), "the sync heard another's retry");
     }
 }

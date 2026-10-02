@@ -14,7 +14,6 @@ use chatgpt_core::ErrorKind;
 use chatgpt_protocol::SessionChoice;
 
 use crate::api::ApiError;
-use crate::progress::Reporter;
 
 /// Overrides chatgpt.com in debug builds, so tests can point a real daemon
 /// at a fake. Release builds ignore it: it would send the cookies elsewhere.
@@ -36,9 +35,9 @@ pub struct Session {
 /// session a running sync uses. Each choice has its own lock: reading one
 /// browser's cookies, which can wait on a Keychain prompt, holds up only
 /// calls for that browser.
+#[derive(Default)]
 pub struct Sessions {
     slots: Mutex<HashMap<SessionChoice, Arc<Slot>>>,
-    reporter: Reporter,
 }
 
 type Slot = tokio::sync::Mutex<Option<Arc<Session>>>;
@@ -52,13 +51,6 @@ fn debug_env(name: &str) -> Option<String> {
 }
 
 impl Sessions {
-    pub fn new(reporter: Reporter) -> Self {
-        Self {
-            slots: Mutex::new(HashMap::new()),
-            reporter,
-        }
-    }
-
     fn slot(&self, choice: &SessionChoice) -> Arc<Slot> {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(slots.entry(choice.clone()).or_default())
@@ -123,13 +115,15 @@ impl Sessions {
         } else {
             RetryPolicy::default()
         };
-        let reporter = self.reporter.clone();
         let http = HttpClient::new(base, Secret::new(cookie_header), policy)?.on_retry(
             move |event| {
                 tracing::info!(reason = ?event.reason, attempt = event.attempt, wait_ms = event.wait.as_millis() as u64, "retrying a ChatGPT request");
                 if event.reason == RetryReason::RateLimited {
                     // The skill's wording: "rate limited by ChatGPT; waiting …".
-                    reporter.note(format!(
+                    // Only the request that waits hears it: the session is
+                    // shared, so the indexer's retry mustn't reach a sync's
+                    // client, nor a sync's miss a waiting change's.
+                    crate::progress::request_note(format!(
                         "rate limited by ChatGPT; waiting {}s",
                         event.wait.as_secs_f64().round()
                     ));

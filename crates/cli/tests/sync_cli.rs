@@ -437,3 +437,18 @@ fn a_daemon_started_without_the_impit_variable_sets_it_and_syncs() {
         .success();
     assert_eq!(ids(&env, &["list", "--all"]).len(), 5);
 }
+
+#[test]
+fn a_sync_hears_the_rate_limit_it_waits_on() {
+    let env = Env::with_fake(chats());
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+    env.fake().state().rate_limit = Some((1, 0));
+    let output = env.cmd().arg("sync").output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("rate limited by ChatGPT; waiting 0s"),
+        "{stderr}"
+    );
+}

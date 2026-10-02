@@ -53,7 +53,7 @@ pub async fn check(
     }
     let state = Arc::clone(state);
     // Its own task: a judgment paid for is saved even if the client leaves.
-    tokio::spawn(async move {
+    crate::progress::spawn(async move {
         let reporter = Reporter::for_client(progress);
         let asker = answers.map(|answers| Asker::new(reporter.clone(), answers));
         let access = Access::for_client(access);

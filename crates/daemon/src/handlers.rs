@@ -84,6 +84,18 @@ pub async fn handle(
     progress: Option<UnboundedSender<Progress>>,
     answers: UnboundedReceiver<bool>,
 ) -> Response {
+    // The HTTP client's retry notes for this request's calls go to this
+    // request's client.
+    let notes = crate::progress::Reporter::for_client(progress.clone());
+    crate::progress::with_request_notes(notes, answer(state, request, progress, answers)).await
+}
+
+async fn answer(
+    state: &Arc<State>,
+    request: Request,
+    progress: Option<UnboundedSender<Progress>>,
+    answers: UnboundedReceiver<bool>,
+) -> Response {
     let answered = match request {
         Request::Status => Ok(ResponseData::Status(Box::new(status(state).await))),
         Request::Shutdown => Ok(ResponseData::Ack),
@@ -97,7 +109,7 @@ pub async fn handle(
                 choice: Some(session),
                 progress,
             };
-            tokio::spawn(async move { run_pass(&state, options).await })
+            crate::progress::spawn(async move { run_pass(&state, options).await })
                 .await
                 .map_err(Failure::join)
                 .and_then(|result| result)
