@@ -157,11 +157,19 @@ fn mean_normalized(hidden: &[f32], tokens: usize) -> Vec<f32> {
 pub struct FakeEmbedder {
     /// How long each text takes, to stand in for the model's speed.
     pub delay: std::time::Duration,
+    /// Only texts containing this take `delay`, if set.
+    pub slow_only: Option<String>,
 }
 
 impl Embedder for FakeEmbedder {
     fn embed(&mut self, text: &str) -> Result<Vec<f32>, EmbedError> {
-        std::thread::sleep(self.delay);
+        if self
+            .slow_only
+            .as_deref()
+            .is_none_or(|marker| text.contains(marker))
+        {
+            std::thread::sleep(self.delay);
+        }
         Ok(fake_vector(text))
     }
 }

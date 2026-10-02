@@ -29,8 +29,12 @@ pub enum Model {
     /// The pinned revision's directory.
     Files(PathBuf),
     /// [`FakeEmbedder`], for tests (the daemon asks for it only in debug
-    /// builds), taking this long per text.
-    Fake { delay: std::time::Duration },
+    /// builds), taking `delay` per text (or only per text containing
+    /// `slow_only`).
+    Fake {
+        delay: std::time::Duration,
+        slow_only: Option<String>,
+    },
 }
 
 /// A request's bytes.
@@ -123,7 +127,10 @@ fn load<'a>(
         Some(loaded) => loaded,
         None => embedder.insert(match model {
             Model::Files(dir) => Box::new(TractEmbedder::load(dir)?),
-            Model::Fake { delay } => Box::new(FakeEmbedder { delay: *delay }),
+            Model::Fake { delay, slow_only } => Box::new(FakeEmbedder {
+                delay: *delay,
+                slow_only: slow_only.clone(),
+            }),
         }),
     })
 }

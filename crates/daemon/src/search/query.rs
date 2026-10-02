@@ -13,7 +13,7 @@ use chatgpt_store::ChunkVersions;
 use regex::Regex;
 use rusqlite::Connection;
 
-use super::{bun_text, excerpt, with_display_titles};
+use super::{bun_text, excerpt, in_snapshot, with_display_titles};
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::reads::require_synced;
@@ -95,18 +95,20 @@ pub fn search(
     archived: Option<bool>,
     profile: &Profile,
 ) -> Result<SearchResults, Failure> {
-    let synced_at = require_synced(db)?;
-    let versions = super::versions(profile);
-    let (chats, indexed) =
-        chatgpt_store::coverage(db, archived, versions).map_err(Failure::store)?;
-    let hits = lexical_hits(db, query, limit, archived, versions)?;
-    Ok(SearchResults {
-        hits: with_display_titles(db, hits, profile)?,
-        synced_at,
-        chats,
-        indexed,
-        chunks: 0,
-        embedded: 0,
+    in_snapshot(db, |db| {
+        let synced_at = require_synced(db)?;
+        let versions = super::versions(profile);
+        let (chats, indexed) =
+            chatgpt_store::coverage(db, archived, versions).map_err(Failure::store)?;
+        let hits = lexical_hits(db, query, limit, archived, versions)?;
+        Ok(SearchResults {
+            hits: with_display_titles(db, hits, profile)?,
+            synced_at,
+            chats,
+            indexed,
+            chunks: 0,
+            embedded: 0,
+        })
     })
 }
 

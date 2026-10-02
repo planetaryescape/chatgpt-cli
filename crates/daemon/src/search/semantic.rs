@@ -13,7 +13,9 @@ use chatgpt_store::ChunkVersions;
 use indexmap::IndexMap;
 use rusqlite::Connection;
 
-use super::{Coverage, bun_text, coverage, excerpt, query::lexical_hits, with_display_titles};
+use super::{
+    Coverage, bun_text, coverage, excerpt, in_snapshot, query::lexical_hits, with_display_titles,
+};
 use crate::handlers::Failure;
 use crate::reads::require_synced;
 use crate::state::State;
@@ -195,15 +197,19 @@ pub async fn search(
     })?;
     let hits = state
         .db(move |db| {
-            Ok(match mode {
-                SearchMode::Hybrid => hybrid_hits(db, &query, &vector, limit, archived, versions),
-                SearchMode::Semantic => semantic_hits(db, &vector, limit, archived, versions),
-                SearchMode::Lexical | SearchMode::Unknown => Err(Failure::new(
-                    ErrorKind::Internal,
-                    "not a semantic search mode",
-                )),
-            }
-            .and_then(|hits| with_display_titles(db, hits, &profile)))
+            Ok(in_snapshot(db, |db| {
+                match mode {
+                    SearchMode::Hybrid => {
+                        hybrid_hits(db, &query, &vector, limit, archived, versions)
+                    }
+                    SearchMode::Semantic => semantic_hits(db, &vector, limit, archived, versions),
+                    SearchMode::Lexical | SearchMode::Unknown => Err(Failure::new(
+                        ErrorKind::Internal,
+                        "not a semantic search mode",
+                    )),
+                }
+                .and_then(|hits| with_display_titles(db, hits, &profile))
+            }))
         })
         .await??;
     Ok(SearchResults {

@@ -43,6 +43,10 @@ pub struct Worker {
     _child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// An exchange began and never finished (its caller was cancelled or
+    /// timed out): the next answer on the pipe belongs to it, not to the
+    /// next text. Such a worker must be replaced.
+    interrupted: bool,
 }
 
 /// macOS's utility QoS: lower priority, and efficiency cores when the
@@ -92,10 +96,25 @@ impl Worker {
             _child: child,
             stdin,
             stdout: BufReader::new(stdout),
+            interrupted: false,
         })
     }
 
+    pub fn interrupted(&self) -> bool {
+        self.interrupted
+    }
+
+    /// One text in, its answer out. If this future is dropped part way,
+    /// the worker stays [`interrupted`](Self::interrupted).
     pub async fn embed(&mut self, text: &str) -> Result<Vec<f32>, WorkerError> {
+        self.interrupted = true;
+        let answer = self.exchange(text).await;
+        // A broken pipe may be out of step too.
+        self.interrupted = matches!(answer, Err(WorkerError::Broken(_)));
+        answer
+    }
+
+    async fn exchange(&mut self, text: &str) -> Result<Vec<f32>, WorkerError> {
         let broken = |error: std::io::Error| WorkerError::Broken(format!("stopped: {error}"));
         if text.len() > MAX_TEXT_BYTES as usize {
             return Err(WorkerError::Text(

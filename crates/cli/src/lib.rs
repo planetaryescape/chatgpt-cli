@@ -120,7 +120,8 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
 }
 
 /// The embedding worker the daemon starts. The fake embedder is for tests
-/// of debug builds only; `CHATGPT_TEST_EMBED_DELAY_MS` slows it down.
+/// of debug builds only; `CHATGPT_TEST_EMBED_DELAY_MS` slows it down, for
+/// texts containing `CHATGPT_TEST_EMBED_SLOW_TEXT` only if that's set.
 fn embed_worker(model_dir: Option<std::path::PathBuf>, fake: bool) -> ExitCode {
     use chatgpt_embed::worker::{Model, serve};
     if fake {
@@ -132,7 +133,10 @@ fn embed_worker(model_dir: Option<std::path::PathBuf>, fake: bool) -> ExitCode {
             .ok()
             .and_then(|ms| ms.parse().ok())
             .map_or(std::time::Duration::ZERO, std::time::Duration::from_millis);
-        return serve(Model::Fake { delay });
+        let slow_only = std::env::var("CHATGPT_TEST_EMBED_SLOW_TEXT")
+            .ok()
+            .filter(|marker| !marker.is_empty());
+        return serve(Model::Fake { delay, slow_only });
     }
     match model_dir {
         Some(dir) => serve(Model::Files(dir)),

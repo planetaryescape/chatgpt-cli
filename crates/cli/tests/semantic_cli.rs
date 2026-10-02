@@ -221,6 +221,85 @@ fn embedding_steps_aside_for_a_sync_and_a_query() {
     assert_eq!(embeddings["embedded"], embeddings["chunks"]);
 }
 
+/// Texts with this word take the fake embedder 1.5 s (or 12 s).
+const SLOW: &str = "slowpoke";
+
+#[test]
+fn a_query_the_worker_takes_too_long_on_fails_and_the_next_gets_its_own_vector() {
+    let mut env = Env::with_fake(chats());
+    for (name, value) in [
+        ("CHATGPT_TEST_EMBED_DELAY_MS", "1500"),
+        ("CHATGPT_TEST_EMBED_SLOW_TEXT", SLOW),
+        ("CHATGPT_TEST_EMBED_TIMEOUT_MS", "300"),
+    ] {
+        env.extra_env.push((name.into(), value.into()));
+    }
+    synced(&env);
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["embedded"], embeddings["chunks"]);
+
+    // Cut off mid-exchange: the worker's late answer is still on its pipe.
+    let started = Instant::now();
+    let (code, stdout, stderr) = run(&env, &["search", "slowpoke compost garden", "--semantic"]);
+    assert_ne!(code, Some(0));
+    assert!(stdout.is_empty());
+    assert_eq!(
+        stderr,
+        "error: Couldn't embed the query: the embedding worker didn't answer within 0.3s\n"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let (code, stdout, stderr) = run(
+        &env,
+        &["search", "tokio smol", "--semantic", "--format", "ids"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stdout.lines().next(),
+        Some("a-rust"),
+        "not the garden query's vector"
+    );
+}
+
+#[test]
+fn a_client_that_goes_away_mid_query_leaves_no_stale_answer() {
+    let mut env = Env::with_fake(chats());
+    for (name, value) in [
+        ("CHATGPT_TEST_EMBED_DELAY_MS", "12000"),
+        ("CHATGPT_TEST_EMBED_SLOW_TEXT", SLOW),
+    ] {
+        env.extra_env.push((name.into(), value.into()));
+    }
+    synced(&env);
+    env.wait_for_embedder();
+    let mut client = env
+        .std_cmd()
+        .args(["search", "slowpoke compost garden", "--semantic"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    client.kill().unwrap();
+    client.wait().unwrap();
+    // The daemon drops the abandoned query when its next heartbeat (every
+    // 10 s) finds the client gone, before the worker answers it at 12 s.
+    std::thread::sleep(Duration::from_millis(10_500));
+    let (code, stdout, stderr) = run(
+        &env,
+        &["search", "tokio smol", "--semantic", "--format", "ids"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stdout.lines().next(),
+        Some("a-rust"),
+        "not the abandoned query's vector"
+    );
+}
+
 #[test]
 fn embedding_resumes_where_it_stopped() {
     let mut env = Env::with_fake(many_chats());
@@ -440,4 +519,84 @@ fn remote_search_asks_chatgpt_and_prints_its_results() {
         stderr,
         "error: --remote supports --limit up to 40 (ChatGPT's search API limit).\n"
     );
+}
+
+/// The real model's cache directory, under `root`.
+fn model_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("chatgpt-cli/models/Xenova/all-MiniLM-L6-v2/751bff37182d3f1213fa05d7196b954e230abad9")
+}
+
+#[test]
+fn a_model_gone_from_the_cache_is_fetched_again_although_every_chunk_has_a_vector() {
+    // The developer's cached model, if any: CI has none and skips.
+    let cached = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".cache")))
+        .map(|root| model_dir(&root));
+    let Some(cached) = cached.filter(|dir| dir.join("onnx/model_quantized.onnx").is_file()) else {
+        eprintln!("skipping: the embedding model isn't cached on this machine");
+        return;
+    };
+    let mut env = Env::with_fake(chats());
+    let dir = model_dir(&env.home.path().join("xdg-cache"));
+    std::fs::create_dir_all(dir.join("onnx")).unwrap();
+    for file in ["onnx/model_quantized.onnx", "tokenizer.json"] {
+        std::fs::copy(cached.join(file), dir.join(file)).unwrap();
+    }
+    // The real model, and no download until a server is offered.
+    env.extra_env
+        .push(("CHATGPT_TEST_EMBEDDER".into(), String::new()));
+    synced(&env);
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["embedded"], embeddings["chunks"], "{embeddings}");
+    let (code, stdout, stderr) = run(
+        &env,
+        &["search", "tomato compost", "--semantic", "--format", "ids"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.lines().next(), Some("b-garden"));
+
+    // The model goes; searches say why, and never download it themselves.
+    let model = dir.join("onnx/model_quantized.onnx");
+    let bytes = std::fs::read(&model).unwrap();
+    std::fs::remove_file(&model).unwrap();
+    let (code, _, stderr) = run(&env, &["search", "tomato", "--semantic"]);
+    assert_ne!(code, Some(0));
+    assert!(
+        stderr.contains(
+            "the embedding model is missing from its cache; the daemon is downloading it again"
+        ) || stderr.contains("the embedding model isn't available ("),
+        "{stderr}"
+    );
+    let embeddings = env.wait_for_embedder();
+    assert!(
+        embeddings["waiting"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("the embedding model isn't available ("),
+        "{embeddings}"
+    );
+    let (_, _, stderr) = run(&env, &["search", "tomato", "--hybrid"]);
+    assert!(
+        stderr.contains("the embedding model isn't available ("),
+        "{stderr}"
+    );
+
+    // With a server to fetch from, the daemon's background run restores it
+    // although nothing is left to embed.
+    env.cmd().args(["daemon", "stop"]).assert().success();
+    let served: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    env.extra_env
+        .push(("CHATGPT_MODEL_BASE_URL".into(), serve_forever(served)));
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["waiting"], Value::Null, "{embeddings}");
+    assert_eq!(std::fs::read(&model).unwrap(), served);
+    let (code, stdout, stderr) = run(
+        &env,
+        &["search", "tomato compost", "--semantic", "--format", "ids"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.lines().next(), Some("b-garden"));
+    let (code, _, stderr) = run(&env, &["search-index"]);
+    assert_eq!(code, Some(0), "{stderr}");
 }

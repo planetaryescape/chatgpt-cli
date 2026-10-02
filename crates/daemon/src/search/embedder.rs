@@ -43,6 +43,20 @@ const UNLOAD_CHECK: Duration = Duration::from_secs(60);
 /// Picks the fake embedder in debug builds, for tests that need vectors
 /// but not the model (and no download).
 const TEST_EMBEDDER_ENV: &str = "CHATGPT_TEST_EMBEDDER";
+/// The longest one text may take, model load included: a worker that
+/// takes longer is stopped and replaced, so a hung one can't hold every
+/// semantic search.
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A shorter [`EXCHANGE_TIMEOUT`] for tests (debug builds only).
+const TEST_TIMEOUT_ENV: &str = "CHATGPT_TEST_EMBED_TIMEOUT_MS";
+
+fn exchange_timeout() -> Duration {
+    std::env::var(TEST_TIMEOUT_ENV)
+        .ok()
+        .filter(|_| cfg!(debug_assertions))
+        .and_then(|ms| ms.parse().ok())
+        .map_or(EXCHANGE_TIMEOUT, Duration::from_millis)
+}
 
 #[derive(Default)]
 pub struct Embedder {
@@ -120,11 +134,18 @@ impl Embedder {
         if let WorkerModel::Files(dir) = &model
             && !chatgpt_embed::model::present(dir)
         {
-            return Err(self
-                .inner()
-                .waiting
-                .clone()
-                .unwrap_or_else(|| "the embedding model isn't downloaded yet".to_owned()));
+            // Gone from the cache since it was checked: the background run
+            // fetches it again (a search never downloads).
+            let why = {
+                let mut inner = self.inner();
+                inner.model_ready = false;
+                inner.waiting.clone().unwrap_or_else(|| {
+                    "the embedding model is missing from its cache; the daemon is downloading it again"
+                        .to_owned()
+                })
+            };
+            self.wake();
+            return Err(why);
         }
         self.embed(&model, text)
             .await
@@ -135,16 +156,33 @@ impl Embedder {
     /// broke is dropped, so the next text starts a fresh one.
     async fn embed(&self, model: &WorkerModel, text: &str) -> Result<Vec<f32>, WorkerError> {
         let mut worker = self.worker.lock().await;
+        // Its last caller went away mid-exchange: its answer is still due.
+        if worker.as_ref().is_some_and(Worker::interrupted) {
+            tracing::info!("replacing an interrupted embedding worker");
+            *worker = None;
+        }
         let running = match worker.as_mut() {
             Some(running) => running,
             None => worker.insert(Worker::spawn(model)?),
         };
-        let answer = running.embed(text).await;
+        let timeout = exchange_timeout();
+        let answer = tokio::time::timeout(timeout, running.embed(text))
+            .await
+            .unwrap_or_else(|_| {
+                Err(WorkerError::Broken(format!(
+                    "didn't answer within {}s",
+                    timeout.as_secs_f64()
+                )))
+            });
         if matches!(
             answer,
             Err(WorkerError::Broken(_) | WorkerError::Unusable(_))
         ) {
             *worker = None;
+        }
+        if matches!(answer, Err(WorkerError::Unusable(_))) {
+            // A damaged file: the next run checks the files and fetches them.
+            self.inner().model_ready = false;
         }
         self.inner().last_used = Some(Instant::now());
         answer
@@ -254,13 +292,17 @@ async fn model_ready(state: &State, model: &WorkerModel) -> bool {
 
 async fn embed_pending(state: &State) -> Result<(), String> {
     let versions = super::versions(&state.profile());
-    let (chunks, embedded) = count(state, versions).await?;
-    if embedded >= chunks {
-        state.embedder.inner().waiting = None;
-        return Ok(());
-    }
     let model = worker_model()?;
-    if !model_ready(state, &model).await {
+    // Queries need the model even when every chunk has its vector, so every
+    // run checks it is still there (and fetches it again if not).
+    if let WorkerModel::Files(dir) = &model
+        && !chatgpt_embed::model::present(dir)
+    {
+        state.embedder.inner().model_ready = false;
+    }
+    let ready = model_ready(state, &model).await;
+    let (chunks, embedded) = count(state, versions).await?;
+    if !ready || embedded >= chunks {
         return Ok(());
     }
     tracing::info!(to_embed = chunks - embedded, "embedding search chunks");

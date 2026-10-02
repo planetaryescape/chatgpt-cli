@@ -93,6 +93,24 @@ pub fn excerpt(text: &str) -> (String, Option<u16>) {
     slice_units(trim(&collapse_spaces(text)), SNIPPET_UNITS)
 }
 
+/// Run `read` in one read transaction, so every query in it sees the same
+/// snapshot (WAL keeps it while the writer goes on): a hit's chat, score,
+/// scope and snippet can't come from different moments, as they could if
+/// the indexer replaced a chunk, and SQLite reused its id, in between.
+pub fn in_snapshot<T>(
+    db: &Connection,
+    read: impl FnOnce(&Connection) -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    let snapshot = db
+        .unchecked_transaction()
+        .map_err(|error| Failure::store(error.into()))?;
+    let answer = read(&snapshot)?;
+    snapshot
+        .commit()
+        .map_err(|error| Failure::store(error.into()))?;
+    Ok(answer)
+}
+
 /// The cli's last step for every search: each hit takes its chat's display
 /// title, as `index.get(id)[0]` gives it, when the chat is indexed.
 pub fn with_display_titles(
@@ -127,6 +145,70 @@ mod tests {
             format!("{}\u{FFFD}\u{FFFD}\u{FFFD}", "a".repeat(61))
         );
         assert_eq!(bun_text(b"fine"), "fine");
+    }
+
+    #[test]
+    fn reads_in_a_snapshot_never_see_a_chunk_replaced_meanwhile() {
+        use chatgpt_store::{NewConversation, Store, Unindexed};
+        let dir = tempfile::tempdir().expect("dir");
+        let store = Store::open(&dir.path().join("chatgpt.db")).expect("store");
+        let versions = ChunkVersions {
+            render: 2,
+            chunk: 1,
+        };
+        let chat = Unindexed {
+            id: "a".into(),
+            title: "A".into(),
+            update_time: "t".into(),
+            cached: false,
+        };
+        store
+            .write(|db| {
+                let row = NewConversation {
+                    id: "a".into(),
+                    title: "A".into(),
+                    create_time: "t".into(),
+                    update_time: "t".into(),
+                    is_archived: false,
+                    pinned: false,
+                    project_id: None,
+                };
+                chatgpt_store::replace_all(db, &[row], "t")?;
+                chatgpt_store::replace_chunks(db, &chat, versions, &[b"first".to_vec()])
+            })
+            .expect("index");
+        let body = |db: &Connection| {
+            chatgpt_store::chunk_body(db, 1)
+                .map_err(Failure::store)
+                .map(Option::unwrap_or_default)
+        };
+        let seen = store
+            .read(|db| {
+                Ok(in_snapshot(db, |db| {
+                    let before = body(db)?;
+                    // The indexer replaces the chunk; SQLite reuses its id.
+                    store
+                        .write(|db| {
+                            chatgpt_store::replace_chunks(
+                                db,
+                                &chat,
+                                versions,
+                                &[b"second".to_vec()],
+                            )
+                        })
+                        .map_err(Failure::store)?;
+                    Ok((before, body(db)?))
+                }))
+            })
+            .expect("read")
+            .map_err(|failure| failure.message)
+            .expect("snapshot");
+        assert_eq!(seen, (b"first".to_vec(), b"first".to_vec()));
+        let now = store
+            .read(|db| Ok(body(db).map_err(|failure| failure.message)))
+            .expect("read")
+            .expect("body");
+        assert_eq!(now, b"second", "the id was reused");
     }
 
     #[test]

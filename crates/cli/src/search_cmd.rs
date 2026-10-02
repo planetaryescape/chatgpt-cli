@@ -154,7 +154,7 @@ pub async fn search_index(
         report.embedded
     ));
     let complete = report.indexed == report.chats && report.embedded == report.chunks;
-    if report.failures.is_empty() && complete {
+    if report.failures.is_empty() && report.waiting.is_empty() && complete {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::FAILURE)
