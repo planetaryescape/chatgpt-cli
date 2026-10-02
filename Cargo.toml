@@ -129,6 +129,11 @@ hyper-util = { git = "https://github.com/apify/hyper-util", rev = "9b7795dfd7158
 [patch."https://github.com/apify/impit"]
 impit = { path = "third_party/impit" }
 
+# Without symbols the release binary is about a quarter smaller (tract's
+# are most of them); panics still name their location.
+[profile.release]
+strip = true
+
 # The embedding model's maths, optimised in debug builds too: unoptimised, a
 # dev daemon takes seconds per chunk instead of milliseconds.
 [profile.dev.package.tract-linalg]
