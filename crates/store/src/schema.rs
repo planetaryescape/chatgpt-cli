@@ -8,6 +8,7 @@ use crate::{Result, StoreError};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_index.sql"),
     include_str!("../migrations/0002_search.sql"),
+    include_str!("../migrations/0003_search_follows_transcripts.sql"),
 ];
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<()> {

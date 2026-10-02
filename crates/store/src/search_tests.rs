@@ -277,3 +277,81 @@ fn the_import_keeps_transcripts_the_daemon_fetched() {
         ]
     );
 }
+
+// The review's scenario: the indexer backs off while a chat moves from t1
+// to t2; its cached transcript and chunks say "oldword" at t1. An import
+// then replaces the transcript with "newword", still at t1, and the
+// reconcile verifies that replacement against a fresh render and moves the
+// caches to t2. The old chunks must not ride along as current.
+#[test]
+fn chunks_never_outlive_the_transcript_they_were_built_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("chatgpt.db")).unwrap();
+    let path = dir.path().join("ts.db");
+    let legacy = Connection::open(&path).unwrap();
+    legacy
+        .execute_batch(include_str!("../migrations/0001_index.sql"))
+        .unwrap();
+    store
+        .write(|db| {
+            replace_all(db, &[chat("a", "Idea", "t1", false)], "t")?;
+            db.execute(
+                "insert into transcripts values ('a', 't1', 2, '# Idea\n\n---\n\noldword', 1, 1)",
+                [],
+            )?;
+            replace_chunks(db, &target("a", "Idea", "t1"), V, &[b"oldword".to_vec()])?;
+            // The chat moves on; the indexer is backing off.
+            apply_delta(db, &[chat("a", "Idea", "t2", false)], &[], "t2")
+        })
+        .unwrap();
+    legacy
+        .execute(
+            "insert into transcripts values ('a', 't1', 2, '# Idea\n\n---\n\nnewword', 1, 1)",
+            [],
+        )
+        .unwrap();
+    store.write(|db| import_legacy(db, &path)).unwrap();
+    let found = store
+        .read(|db| candidates(db, &["a".to_owned()], 2))
+        .unwrap();
+    assert_eq!(found[0].markdown, "# Idea\n\n---\n\nnewword");
+    assert!(store.write(|db| preserve(db, &found[0])).unwrap());
+
+    assert!(
+        store
+            .read(|db| lexical(db, "\"oldword\"", None, V, 200))
+            .unwrap()
+            .is_empty(),
+        "chunks of the replaced transcript are gone"
+    );
+    let todo = store.read(|db| unindexed(db, V)).unwrap();
+    assert_eq!(todo.len(), 1, "the indexer sees the chat to redo");
+    assert!(
+        todo[0].cached,
+        "from the verified transcript, without fetching"
+    );
+}
+
+#[test]
+fn moving_a_transcript_forward_keeps_its_chunks() {
+    let (_dir, store) = store_with(&[chat("a", "Idea", "t2", false)]);
+    store
+        .write(|db| {
+            db.execute(
+                "insert into transcripts values ('a', 't1', 2, '# Idea', 1, 1)",
+                [],
+            )?;
+            replace_chunks(db, &target("a", "Idea", "t1"), V, &[b"an idea".to_vec()])?;
+            // Same content, only the time: the reconcile's kind of write.
+            db.execute(
+                "update transcripts set update_time = 't2' where id = 'a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let left: i64 = store
+        .read(|db| Ok(db.query_row("select count(*) from search_chunks", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(left, 1);
+}

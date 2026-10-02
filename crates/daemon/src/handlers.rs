@@ -111,10 +111,11 @@ pub async fn handle(
         Request::ImportLegacy => ts_sync::import(state).await.map(ResponseData::Imported),
         Request::Export {
             reference,
+            stdin_ids,
             archived,
             all,
             session,
-        } => export::export(state, reference, archived, all, session)
+        } => export::export(state, reference, stdin_ids, archived, all, session)
             .await
             .map(|chat| ResponseData::Exported(Box::new(chat))),
         Request::Search {

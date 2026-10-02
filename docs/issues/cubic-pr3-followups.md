@@ -12,7 +12,7 @@ Recorded on 2026-10-02. Triaged as edge cases and not fixed in stage 1. Each lin
 - `crates/cli/src/daemon_cmd.rs:148`: `daemon logs` reads the whole day's log into memory to print its tail. Verified by reading.
 - `crates/store/src/lib.rs:90`: only the database file is chmod 0600; SQLite creates `-wal` and `-shm` from the process umask. Unverified (SQLite documents copying the database's permissions).
 - `crates/daemon/src/policy/memory.rs:35`: `to_lowercase` is locale-independent where Bun's `toLocaleLowerCase` follows the locale (Turkish dotted I), which can change a memory's input hash. Unverified.
-- `crates/daemon/src/js.rs:125`: JS's `.` without the `u` flag matches one UTF-16 code unit, so an astral character is two `.` matches in JS and one here. Unverified.
+- `crates/daemon/src/js.rs:125`: JS's `.` without the `u` flag matches one UTF-16 code unit, so an astral character is two `.` matches in JS and one here. Unverified. Since stage 2 this also reaches `export` output: a canvas `update_textdoc` edit whose pattern counts characters (`^..$`, `.{3}`) over text with emoji (`👍`) matches differently, so the exported canvas can differ from the TS CLI's (and the search chunks built from it).
 - `crates/daemon/src/sync/full.rs:129`: a chat that moves from the active to the archived list mid-listing keeps its first (active) copy, as the TS CLI's `Map` does. Verified by reading; matches the TS CLI.
 - `crates/fake-chatgpt/src/lib.rs`: the fake's omission list, pinned times and response delay don't model every real-API detail (omitted chats still answer batch reads; `pinned_time` is the update time). Test-only.
 - `crates/cli/src/reads.rs:51`: `list --format ""` is treated as a format the TS CLI would treat as unset (`opts.format` falsy). Unverified.

@@ -46,12 +46,13 @@ fn wrong_scope(archived: bool) -> &'static str {
 pub async fn export(
     state: &State,
     reference: String,
+    stdin_ids: Vec<String>,
     archived: bool,
     all: bool,
     session: SessionChoice,
 ) -> Result<ExportedChat, Failure> {
     let _foreground = state.indexer.foreground();
-    let (id, synced_at) = resolve(state, reference, archived, all).await?;
+    let (id, synced_at) = resolve(state, reference, stdin_ids, archived, all).await?;
     let api = Api::new(std::sync::Arc::clone(&state.sessions), session);
     let path = format!("/backend-api/conversation/{id}");
     let value = api
@@ -78,6 +79,7 @@ pub async fn export(
 async fn resolve(
     state: &State,
     reference: String,
+    stdin_ids: Vec<String>,
     archived: bool,
     all: bool,
 ) -> Result<(String, Option<String>), Failure> {
@@ -95,6 +97,7 @@ async fn resolve(
             Ok(select_one(
                 db,
                 &reference,
+                &stdin_ids,
                 archived,
                 all,
                 local_title_version,
@@ -103,15 +106,40 @@ async fn resolve(
         .await?
 }
 
-/// `selectTargets(index, [id], opts)[0]`.
+/// `selectOne(index, reference, opts)`: `selectTargets(index, [reference])`
+/// and its first chat. `-` stands for the ids the client read from stdin,
+/// every one of which must be found and in scope, as in the TS CLI.
 fn select_one(
     db: &rusqlite::Connection,
-    prefix: &str,
+    reference: &str,
+    stdin_ids: &[String],
     archived: bool,
     all: bool,
     local_title_version: u32,
 ) -> Result<(String, Option<String>), Failure> {
     let synced_at = require_synced(db)?;
+    let selectors: Vec<&str> = if reference == "-" {
+        stdin_ids.iter().map(String::as_str).collect()
+    } else {
+        vec![reference]
+    };
+    let mut first = None;
+    for prefix in selectors {
+        let id = select_target(db, prefix, archived, all, local_title_version)?;
+        first.get_or_insert(id);
+    }
+    let id = first.ok_or_else(|| invalid(format!("No conversation matching \"{reference}\".")))?;
+    Ok((id, Some(synced_at)))
+}
+
+/// One id or prefix of `selectTargets`: found exactly once, in scope.
+fn select_target(
+    db: &rusqlite::Connection,
+    prefix: &str,
+    archived: bool,
+    all: bool,
+    local_title_version: u32,
+) -> Result<String, Failure> {
     let matches = chatgpt_store::get(db, prefix, local_title_version).map_err(Failure::store)?;
     let target = match matches.as_slice() {
         [] => {
@@ -133,7 +161,7 @@ fn select_one(
             wrong_scope(target.is_archived)
         )));
     }
-    Ok((target.id.clone(), Some(synced_at)))
+    Ok(target.id.clone())
 }
 
 /// `renderTranscript` for the single-chat endpoint's answer, and the title

@@ -36,6 +36,9 @@ pub enum Request {
     /// and render it.
     Export {
         reference: String,
+        /// For a `reference` of `-`: the ids the client read from stdin.
+        #[serde(default)]
+        stdin_ids: Vec<String>,
         #[serde(default)]
         archived: bool,
         #[serde(default)]

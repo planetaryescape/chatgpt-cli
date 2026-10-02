@@ -5,6 +5,7 @@
 use std::io::Write;
 use std::process::{ExitCode, Stdio};
 
+use chatgpt_core::js::{is_space, trim};
 use chatgpt_core::{ErrorKind, Paths};
 use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{Request, ResponseData, SessionChoice};
@@ -18,8 +19,14 @@ pub async fn export(
     args: ExportArgs,
     session: SessionChoice,
 ) -> Result<ExitCode, ClientError> {
+    let stdin_ids = if args.link == "-" {
+        read_stdin_ids()?
+    } else {
+        Vec::new()
+    };
     let request = Request::Export {
         reference: args.link,
+        stdin_ids,
         archived: args.archived,
         all: args.all,
         session,
@@ -34,12 +41,13 @@ pub async fn export(
         "{} KB",
         (chat.markdown.len() as f64 / 1024.0).round() as u64
     );
-    if let Some(output) = &args.output {
-        let path = if output.is_empty() {
-            format!("{}.md", slugify(&chat.title))
-        } else {
-            output.clone()
-        };
+    // `opts.output` is truthy: `-o` alone, or a non-empty name.
+    let output = match args.output {
+        Some(None) => Some(format!("{}.md", slugify(&chat.title))),
+        Some(Some(name)) if !name.is_empty() => Some(name),
+        _ => None,
+    };
+    if let Some(path) = &output {
         std::fs::write(&path, &chat.markdown)
             .map_err(|error| io_error(std::path::Path::new(&path), &error))?;
         note(&format!("wrote {path} ({kb})"));
@@ -51,10 +59,28 @@ pub async fn export(
             chat.title
         ));
     }
-    if args.output.is_none() && !args.copy {
+    if output.is_none() && !args.copy {
         data(&chat.markdown);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `readStdinIds`: the first word of each line, so `list` output can be
+/// piped in.
+fn read_stdin_ids() -> Result<Vec<String>, ClientError> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|error| {
+        ClientError::new(ErrorKind::Internal, format!("reading stdin: {error}"))
+    })?;
+    Ok(stdin_ids(&text))
+}
+
+fn stdin_ids(text: &str) -> Vec<String> {
+    text.split('\n')
+        .filter_map(|line| trim(line).split(is_space).next())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `slugify`: lowercase ASCII letters and digits, other runs as `-`, at
@@ -103,6 +129,15 @@ fn copy_to_clipboard(text: &str) -> Result<(), ClientError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdin_ids_are_the_first_word_of_each_line() {
+        assert_eq!(
+            stdin_ids("abc  2026-01-01  title\n\n  def\tx\r\n\u{a0}ghi\n"),
+            ["abc", "def", "ghi"]
+        );
+        assert!(stdin_ids("").is_empty());
+    }
 
     #[test]
     fn titles_slugify_as_the_ts_cli_does() {

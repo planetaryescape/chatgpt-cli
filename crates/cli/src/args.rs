@@ -195,8 +195,10 @@ pub struct ExportArgs {
     /// Chat link, id, or id prefix
     pub link: String,
     /// Write to a file (default name: from the title)
-    #[arg(short, long, value_name = "file", num_args = 0..=1, default_missing_value = "")]
-    pub output: Option<String>,
+    // `Some(None)`: `-o` alone. `Some(Some(""))` (`--output=`) is unset, as
+    // Commander's empty string is to the TS CLI.
+    #[arg(short, long, value_name = "file", num_args = 0..=1)]
+    pub output: Option<Option<String>>,
     /// Copy to the clipboard
     #[arg(short, long)]
     pub copy: bool,

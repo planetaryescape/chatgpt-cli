@@ -275,6 +275,40 @@ fn export_and_search_match_the_ts_cli_on_the_same_chats() {
         );
     }
 
+    // `export -` reads the selector from stdin; these fail before any
+    // request, so the TS CLI can answer them here.
+    for stdin in [
+        "nope\n",
+        "",
+        "\n \n",
+        "chat-010  2026  title\n",
+        "chat-001\nnope\n",
+        "chat-0\n",
+    ] {
+        let mut ts_child = ts
+            .command(&strings(&["export", "-"]))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut ts_child.stdin.take().unwrap(), stdin.as_bytes()).unwrap();
+        let ts_output = ts_child.wait_with_output().unwrap();
+        assert_eq!(ts_output.status.code(), Some(1), "TS export - {stdin:?}");
+        let rust = env
+            .cmd()
+            .args(["export", "-"])
+            .write_stdin(stdin)
+            .output()
+            .unwrap();
+        assert!(!rust.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&rust.stderr),
+            String::from_utf8_lossy(&ts_output.stderr),
+            "export - with {stdin:?}"
+        );
+    }
+
     // search: the TS CLI chunks every cached transcript on its first local
     // search with --all, as the Rust indexer did.
     let (code, _, stderr) = ts

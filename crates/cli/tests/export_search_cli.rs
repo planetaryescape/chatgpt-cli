@@ -457,3 +457,68 @@ fn the_indexer_steps_aside_for_sync_and_export() {
     );
     wait_indexed(&env);
 }
+
+#[test]
+fn an_empty_output_name_prints_to_stdout_as_the_ts_cli_does() {
+    let env = synced(chats());
+    let dir = tempfile::tempdir().unwrap();
+    let output = env
+        .cmd()
+        .current_dir(dir.path())
+        .args(["export", UUID, "--output="])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("# Rust: async & tokio!\n"));
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "no file");
+}
+
+#[test]
+fn export_dash_takes_the_first_id_piped_in_after_checking_them_all() {
+    let env = synced(chats());
+    let piped = |stdin: &str, extra: &[&str]| {
+        let output = env
+            .cmd()
+            .args(["export", "-"])
+            .args(extra)
+            .write_stdin(stdin)
+            .output()
+            .unwrap();
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+    // `list` output pipes straight in: the id is the first word.
+    let (code, stdout, _) = piped("c-other  2026-09-26       Taxes\n6a1b  x\n", &[]);
+    assert_eq!(code, Some(0));
+    assert!(stdout.starts_with("# Taxes\n"), "{stdout}");
+    for (stdin, extra, message) in [
+        ("", &[][..], "No conversation matching \"-\"."),
+        ("\n  \n", &[], "No conversation matching \"-\"."),
+        (
+            "c-other\nzz\n",
+            &[],
+            "No conversation matching \"zz\" in the index. Run `chatgpt sync`?",
+        ),
+        (
+            "b-arch\n",
+            &[],
+            "Conversation \"b-arch\" is archived; pass --archived or --all to include it.",
+        ),
+    ] {
+        let (code, stdout, stderr) = piped(stdin, extra);
+        assert_ne!(code, Some(0), "{stdin:?}");
+        assert!(stdout.is_empty());
+        assert_eq!(stderr, format!("error: {message}\n"), "{stdin:?}");
+    }
+    let (code, stdout, _) = piped("b-arch\n", &["--archived"]);
+    assert_eq!(code, Some(0));
+    assert!(stdout.starts_with("# Old garden plan\n"));
+}
