@@ -36,6 +36,16 @@ const PAGE: usize = 64;
 /// How long a failed download waits before the next try (a `search-index`
 /// tries at once).
 const DOWNLOAD_RETRY: Duration = Duration::from_secs(15 * 60);
+/// A shorter [`DOWNLOAD_RETRY`] for tests (debug builds only).
+const TEST_RETRY_ENV: &str = "CHATGPT_TEST_MODEL_RETRY_MS";
+
+fn download_retry() -> Duration {
+    std::env::var(TEST_RETRY_ENV)
+        .ok()
+        .filter(|_| cfg!(debug_assertions))
+        .and_then(|ms| ms.parse().ok())
+        .map_or(DOWNLOAD_RETRY, Duration::from_millis)
+}
 /// The worker stops after this long unused.
 const UNLOAD_AFTER: Duration = Duration::from_secs(10 * 60);
 const UNLOAD_CHECK: Duration = Duration::from_secs(60);
@@ -174,11 +184,20 @@ impl Embedder {
         })
     }
 
+    /// The model download failed and its backoff has passed.
+    fn download_due(&self) -> bool {
+        let inner = self.inner();
+        !inner.model_ready
+            && inner
+                .download_failed_at
+                .is_some_and(|at| at.elapsed() >= download_retry())
+    }
+
     /// Whether a repair run was woken in this retry window.
     fn repairing(&self) -> bool {
         self.inner()
             .repair_woken_at
-            .is_some_and(|at| at.elapsed() < DOWNLOAD_RETRY)
+            .is_some_and(|at| at.elapsed() < download_retry())
     }
 
     /// One text through the worker, starting it if need be. A worker that
@@ -223,7 +242,7 @@ impl Embedder {
                     inner.model_ready = false;
                     let due = inner
                         .repair_woken_at
-                        .is_none_or(|at| at.elapsed() >= DOWNLOAD_RETRY);
+                        .is_none_or(|at| at.elapsed() >= download_retry());
                     if due {
                         inner.repair_woken_at = Some(Instant::now());
                     }
@@ -264,9 +283,15 @@ pub async fn run(state: std::sync::Arc<State>) {
     loop {
         tokio::select! {
             () = state.embedder.wake.notified() => {}
-            () = tokio::time::sleep(unload_timing().1) => {
+            () = tokio::time::sleep(unload_timing().1.min(download_retry())) => {
                 state.embedder.unload_if_idle().await;
-                continue;
+                // A failed download is tried again once its backoff is
+                // over, without waiting for new chunks or a `search-index`.
+                if !state.embedder.download_due() {
+                    continue;
+                }
+                // Counted as asked for, so status shows it in progress.
+                state.embedder.inner().requested += 1;
             }
         }
         let generation = {
@@ -316,7 +341,7 @@ async fn model_ready(state: &State, model: &WorkerModel) -> bool {
         }
         if inner
             .download_failed_at
-            .is_some_and(|at| at.elapsed() < DOWNLOAD_RETRY)
+            .is_some_and(|at| at.elapsed() < download_retry())
         {
             return false;
         }
@@ -339,7 +364,8 @@ async fn model_ready(state: &State, model: &WorkerModel) -> bool {
             tracing::warn!("embedding model unavailable: {why}");
             inner.download_failed_at = Some(Instant::now());
             inner.waiting = Some(format!(
-                "the embedding model isn't available ({why}); trying again after the next sync"
+                "the embedding model isn't available ({why}); trying again in {} minutes",
+                download_retry().as_secs().div_ceil(60)
             ));
             false
         }

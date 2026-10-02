@@ -663,3 +663,87 @@ fn a_model_damaged_in_place_is_repaired_without_waiting_for_a_sync() {
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(stdout.lines().next(), Some("b-garden"));
 }
+
+/// A server that answers its first `failures` requests with 503, then
+/// every request with 200 and `body`.
+fn serve_after_failures(failures: usize, body: &'static [u8]) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for (n, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let (status, body) = if n < failures {
+                ("503 Service Unavailable", &b""[..])
+            } else {
+                ("200 OK", body)
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body);
+        }
+    });
+    url
+}
+
+#[test]
+fn a_failed_model_download_is_tried_again_once_its_backoff_is_over() {
+    let cached = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".cache")))
+        .map(|root| model_dir(&root));
+    let Some(cached) = cached.filter(|dir| dir.join("onnx/model_quantized.onnx").is_file()) else {
+        eprintln!("skipping: the embedding model isn't cached on this machine");
+        return;
+    };
+    let mut env = Env::with_fake(chats());
+    let dir = model_dir(&env.home.path().join("xdg-cache"));
+    std::fs::create_dir_all(dir.join("onnx")).unwrap();
+    // The tokenizer is cached; the model has to be downloaded.
+    std::fs::copy(cached.join("tokenizer.json"), dir.join("tokenizer.json")).unwrap();
+    let model: &'static [u8] = Box::leak(
+        std::fs::read(cached.join("onnx/model_quantized.onnx"))
+            .unwrap()
+            .into_boxed_slice(),
+    );
+    for (name, value) in [
+        ("CHATGPT_TEST_EMBEDDER", String::new()),
+        // Offline at first, then back.
+        ("CHATGPT_MODEL_BASE_URL", serve_after_failures(1, model)),
+        ("CHATGPT_TEST_MODEL_RETRY_MS", "1000".to_owned()),
+    ] {
+        env.extra_env.push((name.into(), value));
+    }
+    synced(&env);
+    let embeddings = env.wait_for_embedder();
+    assert!(
+        embeddings["waiting"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("the embedding model isn't available ("),
+        "{embeddings}"
+    );
+
+    // No sync, no search-index: the daemon tries again on its own.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let embeddings = env.status()["embeddings"].clone();
+        if embeddings["chunks"].as_u64() > Some(0) && embeddings["embedded"] == embeddings["chunks"]
+        {
+            assert_eq!(embeddings["waiting"], Value::Null, "{embeddings}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "never tried again: {embeddings}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let (code, stdout, stderr) = run(
+        &env,
+        &["search", "tomato compost", "--semantic", "--format", "ids"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.lines().next(), Some("b-garden"));
+}

@@ -75,7 +75,7 @@ On BK's account (2026-10-02, a fresh instance and an empty model cache), the dae
 
 They come from `https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/751bff37182d3f1213fa05d7196b954e230abad9/<file>` and are cached where the TS CLI caches them: `$XDG_CACHE_HOME/chatgpt-cli/models/Xenova/all-MiniLM-L6-v2/<revision>/`, else `~/.cache/…`. A machine where the TS CLI already ran `search-index` downloads nothing. The daemon downloads a missing or damaged file in the background, checks its size and checksum, and only then moves it into place. The worker checks the checksums again when it loads the model.
 
-A failed download (offline, a proxy, a changed file) never stops lexical search. `chatgpt daemon status` shows why embedding waits, a semantic search says the same, and the daemon tries again after the next sync once 15 minutes have passed. `chatgpt search-index` tries at once.
+A failed download (offline, a proxy, a changed file) never stops lexical search. `chatgpt daemon status` shows why embedding waits, a semantic search says the same, and the daemon tries again 15 minutes later on its own. `chatgpt search-index` tries at once.
 
 ## Versions
 
