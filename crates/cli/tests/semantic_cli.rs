@@ -600,3 +600,66 @@ fn a_model_gone_from_the_cache_is_fetched_again_although_every_chunk_has_a_vecto
     let (code, _, stderr) = run(&env, &["search-index"]);
     assert_eq!(code, Some(0), "{stderr}");
 }
+
+#[test]
+fn a_model_damaged_in_place_is_repaired_without_waiting_for_a_sync() {
+    let cached = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".cache")))
+        .map(|root| model_dir(&root));
+    let Some(cached) = cached.filter(|dir| dir.join("onnx/model_quantized.onnx").is_file()) else {
+        eprintln!("skipping: the embedding model isn't cached on this machine");
+        return;
+    };
+    let mut env = Env::with_fake(chats());
+    let dir = model_dir(&env.home.path().join("xdg-cache"));
+    std::fs::create_dir_all(dir.join("onnx")).unwrap();
+    for file in ["onnx/model_quantized.onnx", "tokenizer.json"] {
+        std::fs::copy(cached.join(file), dir.join(file)).unwrap();
+    }
+    let model = dir.join("onnx/model_quantized.onnx");
+    let good: &'static [u8] = Box::leak(std::fs::read(&model).unwrap().into_boxed_slice());
+    for (name, value) in [
+        ("CHATGPT_TEST_EMBEDDER", String::new()),
+        ("CHATGPT_MODEL_BASE_URL", serve_forever(good)),
+        // The worker (and the model checked when it loaded) goes after 1 s.
+        ("CHATGPT_TEST_EMBED_IDLE_MS", "1000".to_owned()),
+    ] {
+        env.extra_env.push((name.into(), value));
+    }
+    synced(&env);
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["embedded"], embeddings["chunks"], "{embeddings}");
+    let (code, _, stderr) = run(&env, &["search", "tomato compost", "--semantic"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    std::thread::sleep(Duration::from_millis(2_500));
+
+    // Damaged in place, same size: only the checksum can tell.
+    let mut damaged = good.to_vec();
+    let middle = damaged.len() / 2;
+    for byte in &mut damaged[middle..middle + 64] {
+        *byte ^= 0xFF;
+    }
+    std::fs::write(&model, &damaged).unwrap();
+    let (code, stdout, stderr) = run(&env, &["search", "tomato compost", "--semantic"]);
+    assert_ne!(code, Some(0));
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("doesn't match its pinned SHA-256; the daemon is fetching it again"),
+        "{stderr}"
+    );
+
+    // No sync: the woken run checks the files and fetches the model again.
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["waiting"], Value::Null, "{embeddings}");
+    assert!(
+        std::fs::read(&model).unwrap() == good,
+        "the model was fetched again"
+    );
+    let (code, stdout, stderr) = run(
+        &env,
+        &["search", "tomato compost", "--semantic", "--format", "ids"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.lines().next(), Some("b-garden"));
+}

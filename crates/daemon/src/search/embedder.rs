@@ -39,6 +39,20 @@ const DOWNLOAD_RETRY: Duration = Duration::from_secs(15 * 60);
 /// The worker stops after this long unused.
 const UNLOAD_AFTER: Duration = Duration::from_secs(10 * 60);
 const UNLOAD_CHECK: Duration = Duration::from_secs(60);
+/// A shorter [`UNLOAD_AFTER`] (and check) for tests (debug builds only).
+const TEST_IDLE_ENV: &str = "CHATGPT_TEST_EMBED_IDLE_MS";
+
+/// How long the worker may idle, and how often that's checked.
+fn unload_timing() -> (Duration, Duration) {
+    std::env::var(TEST_IDLE_ENV)
+        .ok()
+        .filter(|_| cfg!(debug_assertions))
+        .and_then(|ms| ms.parse().ok())
+        .map_or((UNLOAD_AFTER, UNLOAD_CHECK), |ms| {
+            let idle = Duration::from_millis(ms);
+            (idle, idle / 2)
+        })
+}
 
 /// Picks the fake embedder in debug builds, for tests that need vectors
 /// but not the model (and no download).
@@ -87,6 +101,11 @@ struct Inner {
     model_ready: bool,
     download_failed_at: Option<Instant>,
     last_used: Option<Instant>,
+    /// When a worker last found the model unusable and woke a run to
+    /// repair it; cleared by the next text embedded. At most one such wake
+    /// per [`DOWNLOAD_RETRY`], so files that check out but still won't load
+    /// can't keep the embedder busy.
+    repair_woken_at: Option<Instant>,
 }
 
 /// The worker's embedder: the model in the cache, or the fake in tests.
@@ -147,9 +166,19 @@ impl Embedder {
             self.wake();
             return Err(why);
         }
-        self.embed(&model, text)
-            .await
-            .map_err(|error| error.to_string())
+        self.embed(&model, text).await.map_err(|error| match error {
+            WorkerError::Unusable(why) if self.repairing() => {
+                format!("{why}; the daemon is fetching it again")
+            }
+            other => other.to_string(),
+        })
+    }
+
+    /// Whether a repair run was woken in this retry window.
+    fn repairing(&self) -> bool {
+        self.inner()
+            .repair_woken_at
+            .is_some_and(|at| at.elapsed() < DOWNLOAD_RETRY)
     }
 
     /// One text through the worker, starting it if need be. A worker that
@@ -180,11 +209,33 @@ impl Embedder {
         ) {
             *worker = None;
         }
-        if matches!(answer, Err(WorkerError::Unusable(_))) {
-            // A damaged file: the next run checks the files and fetches them.
-            self.inner().model_ready = false;
+        let wake = {
+            let mut inner = self.inner();
+            inner.last_used = Some(Instant::now());
+            match &answer {
+                Ok(_) => {
+                    inner.repair_woken_at = None;
+                    false
+                }
+                // A damaged file (its size can be right): a run checks the
+                // files and fetches them again, under the download backoff.
+                Err(WorkerError::Unusable(_)) => {
+                    inner.model_ready = false;
+                    let due = inner
+                        .repair_woken_at
+                        .is_none_or(|at| at.elapsed() >= DOWNLOAD_RETRY);
+                    if due {
+                        inner.repair_woken_at = Some(Instant::now());
+                    }
+                    due
+                }
+                Err(_) => false,
+            }
+        };
+        if wake {
+            tracing::warn!("the embedding model can't be used; checking it again");
+            self.wake();
         }
-        self.inner().last_used = Some(Instant::now());
         answer
     }
 
@@ -195,7 +246,7 @@ impl Embedder {
             !inner.running
                 && inner
                     .last_used
-                    .is_some_and(|used| used.elapsed() >= UNLOAD_AFTER)
+                    .is_some_and(|used| used.elapsed() >= unload_timing().0)
         };
         if !idle {
             return;
@@ -213,7 +264,7 @@ pub async fn run(state: std::sync::Arc<State>) {
     loop {
         tokio::select! {
             () = state.embedder.wake.notified() => {}
-            () = tokio::time::sleep(UNLOAD_CHECK) => {
+            () = tokio::time::sleep(unload_timing().1) => {
                 state.embedder.unload_if_idle().await;
                 continue;
             }
