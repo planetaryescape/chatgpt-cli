@@ -73,8 +73,9 @@ pub(super) async fn run(
                 continue;
             };
             match check(state, candidate, item).await {
-                Ok(true) => report.preserved += 1,
-                Ok(false) => report.changed += 1,
+                Ok(Checked::Unchanged) => report.preserved += 1,
+                Ok(Checked::Changed) => report.changed += 1,
+                Ok(Checked::Superseded) => report.superseded += 1,
                 Err(why) => report.failures.push(format!("{}: {why}", candidate.id)),
             }
         }
@@ -88,8 +89,13 @@ pub(super) async fn run(
     } else {
         format!(", {} failed", report.failures.len())
     };
+    let superseded = if report.superseded == 0 {
+        String::new()
+    } else {
+        format!(", {} replaced meanwhile", report.superseded)
+    };
     step.finish(&format!(
-        "Preserved {} unchanged cache(s); {} content or metadata change(s) left stale{failed}",
+        "Preserved {} unchanged cache(s); {} content or metadata change(s) left stale{superseded}{failed}",
         report.preserved, report.changed
     ));
     for failure in &report.failures {
@@ -98,24 +104,41 @@ pub(super) async fn run(
     Ok(report)
 }
 
+/// What [`check`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Checked {
+    /// Same title and body: every cache moved forward.
+    Unchanged,
+    /// The chat changed: the caches stay stale.
+    Changed,
+    /// Unchanged, but another write replaced the cached transcript while
+    /// the check ran, so nothing moved.
+    Superseded,
+}
+
 /// One candidate against its fresh copy from the batch endpoint: when the
-/// title and rendered body are unchanged, move every cache forward
-/// (`Ok(true)`); otherwise leave them stale (`Ok(false)`). The search
-/// indexer runs this too before it replaces a stale transcript, so a
-/// metadata-only change never strands judgments, summaries or titles.
+/// title and rendered body are unchanged, move every cache forward;
+/// otherwise leave them stale. The search indexer runs this too before it
+/// replaces a stale transcript, so a metadata-only change never strands
+/// judgments, summaries or titles.
 pub(crate) async fn check(
     state: &State,
     candidate: &Candidate,
     item: &BatchItem,
-) -> Result<bool, String> {
+) -> Result<Checked, String> {
     if !same_content(candidate, item)? {
-        return Ok(false);
+        return Ok(Checked::Changed);
     }
     let candidate = candidate.clone();
-    state
+    let preserved = state
         .db_write(move |db| chatgpt_store::preserve(db, &candidate))
         .await
-        .map_err(|failure| failure.message)
+        .map_err(|failure| failure.message)?;
+    Ok(if preserved {
+        Checked::Unchanged
+    } else {
+        Checked::Superseded
+    })
 }
 
 /// `sameContent`. The batch endpoint returns old or rounded update times
@@ -204,6 +227,56 @@ mod tests {
                 &item("A product idea worth developing.", "Renamed")
             ),
             Ok(false)
+        );
+    }
+
+    // docs/issues/export-search-followups.md: a snapshot another write
+    // replaced while it was checked is told apart from a changed chat.
+    #[tokio::test]
+    async fn a_snapshot_replaced_while_checked_is_superseded_not_changed() {
+        let dir = tempfile::tempdir().expect("dir");
+        let paths = chatgpt_core::Paths::under(chatgpt_core::Instance::Default, dir.path(), None);
+        std::fs::create_dir_all(&paths.data_dir).expect("data dir");
+        let store = chatgpt_store::Store::open(&paths.data_dir.join("chatgpt.db")).expect("store");
+        let candidate = cached("A product idea worth developing.");
+        store
+            .write(|db| {
+                let chat = chatgpt_store::NewConversation {
+                    id: ID.into(),
+                    title: candidate.title.clone(),
+                    create_time: candidate.create_time.clone(),
+                    update_time: candidate.update_time.clone(),
+                    is_archived: false,
+                    pinned: false,
+                    project_id: None,
+                };
+                chatgpt_store::replace_all(db, &[chat], "t")?;
+                db.execute(
+                    "insert into transcripts values (?, ?, 2, ?, 1, 1)",
+                    rusqlite::params![ID, candidate.cached_update_time, candidate.markdown],
+                )?;
+                Ok(())
+            })
+            .expect("seed");
+        let state = State::new(paths, store);
+        let fresh = item("A product idea worth developing.", "Idea");
+        assert_eq!(
+            check(&state, &candidate, &item("A changed idea.", "Idea")).await,
+            Ok(Checked::Changed)
+        );
+        state
+            .store
+            .write(|db| {
+                db.execute(
+                    "update transcripts set markdown = 'replaced' where id = ?",
+                    [ID],
+                )?;
+                Ok(())
+            })
+            .expect("replace");
+        assert_eq!(
+            check(&state, &candidate, &fresh).await,
+            Ok(Checked::Superseded)
         );
     }
 }

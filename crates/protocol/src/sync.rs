@@ -52,6 +52,10 @@ pub struct SyncReport {
 pub struct ReconcileReport {
     pub preserved: u64,
     pub changed: u64,
+    /// Unchanged chats whose cache another write replaced while they were
+    /// checked, so nothing moved.
+    #[serde(default)]
+    pub superseded: u64,
     /// `<id>: <why>`, without any response body.
     pub failures: Vec<String>,
 }

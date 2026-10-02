@@ -31,7 +31,8 @@ use super::chunks::transcript_chunks;
 use crate::api::{ApiError, BATCH_MAX, BatchItem};
 use crate::render::cached_transcript;
 use crate::state::{State, now_unix};
-use crate::sync::{backoff_for, reconcile, remaining};
+use crate::sync::reconcile::{self, Checked};
+use crate::sync::{backoff_for, remaining};
 
 const BATCH_GAP: Duration = Duration::from_millis(500);
 /// Cached transcripts chunked per write, so the writer is never held long.
@@ -358,12 +359,13 @@ async fn save_batch(
             match reconcile::check(state, candidate, &item).await {
                 // Unchanged: every cache moved to `update_time`, so the
                 // cached transcript is current; only chunks are needed.
-                Ok(true) => {
+                Ok(Checked::Unchanged) => {
                     preserved.push((chat, candidate.markdown.clone()));
                     continue;
                 }
-                // Changed: replace it below and leave the rest stale.
-                Ok(false) => {}
+                // Changed, or the cache was replaced meanwhile: replace it
+                // with this fetch below and leave the rest stale.
+                Ok(Checked::Changed | Checked::Superseded) => {}
                 Err(why) => {
                     tracing::warn!(id = %chat.id, "search transcript not checked: {why}");
                     failed.push((chat, why));
