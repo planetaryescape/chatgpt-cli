@@ -57,15 +57,29 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (creating and migrating) the index at `path`. The file is 0600:
-    /// it holds chat titles and Jev's notes on them.
+    /// Open (creating and migrating) the index at `path`. The file and its
+    /// `-wal` and `-shm` are 0600: they hold chat titles and Jev's notes on
+    /// them.
     pub fn open(path: &Path) -> Result<Self> {
+        // Created 0600 before SQLite opens it: SQLite gives the `-wal` and
+        // `-shm` it creates the database's permissions, so they never exist
+        // readable by others, even for the first moment.
+        create_private(path)?;
+        restrict(path)?;
         let mut writer = Connection::open(path)?;
         writer.busy_timeout(BUSY_TIMEOUT)?;
         writer.pragma_update(None, "journal_mode", "wal")?;
         writer.pragma_update(None, "synchronous", "normal")?;
         schema::migrate(&mut writer)?;
-        restrict(path)?;
+        // Ones an older build left behind were made from the umask.
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.as_os_str().to_owned();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                restrict(&sidecar)?;
+            }
+        }
         let reader = Connection::open(path)?;
         reader.busy_timeout(BUSY_TIMEOUT)?;
         Ok(Self {
@@ -92,6 +106,21 @@ impl Store {
         let connection = self.reader.lock().unwrap_or_else(PoisonError::into_inner);
         work(&connection)
     }
+}
+
+fn create_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .map(drop)
+        .map_err(|source| StoreError::Permissions {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 fn restrict(path: &Path) -> Result<()> {

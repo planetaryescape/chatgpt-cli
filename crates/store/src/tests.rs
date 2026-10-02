@@ -276,14 +276,29 @@ fn a_newer_schema_is_refused() {
 }
 
 #[test]
-fn the_index_file_is_private() {
+fn the_index_file_and_its_wal_and_shm_are_private() {
     use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
     let dir = tempfile::tempdir().unwrap();
     let store = open(dir.path());
-    let mode = std::fs::metadata(store.path())
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600);
+    let database = store.path().to_path_buf();
+    let sidecar = |suffix: &str| {
+        let mut path = database.as_os_str().to_owned();
+        path.push(suffix);
+        std::path::PathBuf::from(path)
+    };
+    assert_eq!(mode(&database), 0o600);
+    // Open while the store is: WAL mode keeps them until the last close.
+    assert_eq!(mode(&sidecar("-wal")), 0o600, "-wal");
+    assert_eq!(mode(&sidecar("-shm")), 0o600, "-shm");
+
+    // An older build's, made from the umask, are made private on open.
+    drop(store);
+    for suffix in ["-wal", "-shm"] {
+        std::fs::write(sidecar(suffix), b"").unwrap();
+        std::fs::set_permissions(sidecar(suffix), std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let _store = open(dir.path());
+    assert_eq!(mode(&sidecar("-wal")), 0o600, "older -wal");
+    assert_eq!(mode(&sidecar("-shm")), 0o600, "older -shm");
 }
