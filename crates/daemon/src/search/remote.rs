@@ -3,7 +3,7 @@
 //! search that reads the network, because the user asked for it. It needs
 //! no synced index; chats the index knows show their display title.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chatgpt_core::ErrorKind;
@@ -39,7 +39,8 @@ fn hits(
     let mut seen = HashSet::new();
     let mut hits = Vec::new();
     for hit in found {
-        if archived.is_some_and(|archived| hit.payload.is_archived != archived) {
+        let is_archived = hit.payload.is_archived.unwrap_or(false);
+        if archived.is_some_and(|archived| is_archived != archived) {
             continue;
         }
         if !seen.insert(hit.payload.conversation_id.clone()) {
@@ -52,7 +53,7 @@ fn hits(
             id: hit.payload.conversation_id,
             title: hit.title,
             updated,
-            archived: hit.payload.is_archived,
+            archived: is_archived,
             score: None,
             snippet,
         });
@@ -63,6 +64,16 @@ fn hits(
     Ok(hits)
 }
 
+/// A hit without `payload.is_archived` (ChatGPT has always sent it) takes
+/// the index's archive state for its chat; `known` holds those.
+fn fill_archive_state(found: &mut [GlobalSearchHit], known: &HashMap<String, bool>) {
+    for hit in found {
+        if hit.payload.is_archived.is_none() {
+            hit.payload.is_archived = known.get(&hit.payload.conversation_id).copied();
+        }
+    }
+}
+
 pub async fn search(
     state: &Arc<State>,
     query: String,
@@ -71,11 +82,32 @@ pub async fn search(
     session: SessionChoice,
 ) -> Result<SearchResults, Failure> {
     let api = Api::new(Arc::clone(&state.sessions), session);
-    let found = api
+    let mut found = api
         .global_search(&query, requested(limit, archived.is_none()))
         .await?;
-    let hits = hits(found, limit, archived)?;
     let profile = state.profile();
+    let unknown: Vec<String> = found
+        .iter()
+        .filter(|hit| hit.payload.is_archived.is_none())
+        .map(|hit| hit.payload.conversation_id.clone())
+        .collect();
+    if !unknown.is_empty() {
+        let known = state
+            .db(move |db| {
+                let mut known = HashMap::new();
+                for id in unknown {
+                    for chat in chatgpt_store::get(db, &id, profile.local_title_version)? {
+                        if chat.id == id {
+                            known.insert(id.clone(), chat.is_archived);
+                        }
+                    }
+                }
+                Ok(known)
+            })
+            .await?;
+        fill_archive_state(&mut found, &known);
+    }
+    let hits = hits(found, limit, archived)?;
     let hits = state
         .db(move |db| Ok(with_display_titles(db, hits, profile)))
         .await??;
@@ -101,7 +133,7 @@ mod tests {
             update_time: 1_758_000_000.123_456_7,
             payload: GlobalSearchPayload {
                 conversation_id: id.into(),
-                is_archived: archived,
+                is_archived: Some(archived),
             },
         }
     }
@@ -153,5 +185,35 @@ mod tests {
             hits(vec![bad], 5, None).expect_err("bad time").message,
             "Invalid time value"
         );
+    }
+
+    #[test]
+    fn a_hit_without_archive_state_takes_the_indexs() {
+        let missing = |id: &str| GlobalSearchHit {
+            payload: GlobalSearchPayload {
+                conversation_id: id.into(),
+                is_archived: None,
+            },
+            ..found(id, false, "s")
+        };
+        let mut found = vec![
+            missing("archived"),
+            missing("unknown"),
+            found("sent", true, "s"),
+        ];
+        let known = HashMap::from([("archived".to_owned(), true), ("sent".to_owned(), false)]);
+        fill_archive_state(&mut found, &known);
+        let states: Vec<Option<bool>> = found.iter().map(|hit| hit.payload.is_archived).collect();
+        assert_eq!(
+            states,
+            [Some(true), None, Some(true)],
+            "ChatGPT's own answer wins"
+        );
+        let active = hits(found.clone(), 5, Some(false)).expect("hits");
+        assert_eq!(active.len(), 1, "an unknown chat counts as active");
+        assert_eq!(active[0].id, "unknown");
+        let archived = hits(found, 5, Some(true)).expect("hits");
+        let ids: Vec<&str> = archived.iter().map(|hit| hit.id.as_str()).collect();
+        assert_eq!(ids, ["archived", "sent"]);
     }
 }

@@ -198,7 +198,7 @@ pub struct GlobalSearchHit {
 pub struct GlobalSearchPayload {
     pub conversation_id: String,
     #[serde(default)]
-    pub is_archived: bool,
+    pub is_archived: Option<bool>,
 }
 
 /// Calls made with one browser choice's session, which the daemon reads
