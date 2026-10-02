@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.4...v0.1.5) (2026-10-02)
+
+
+### Features
+
+* native TUI, review, and parted answers for any size ([#14](https://github.com/planetaryescape/chatgpt-cli/issues/14)) ([45d9668](https://github.com/planetaryescape/chatgpt-cli/commit/45d9668789478499b1bd558be0055dbfd24d8d1f))
+
 ## [0.1.4](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.3...v0.1.4) (2026-10-02)
 
 
