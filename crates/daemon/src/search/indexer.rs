@@ -223,7 +223,9 @@ async fn index(state: &State) -> Result<(), String> {
                         &chat.update_time,
                         versions.render,
                     )?;
-                    if current.is_some_and(|transcript| transcript.markdown == *markdown) {
+                    if current.is_some_and(|transcript| transcript.markdown == *markdown)
+                        && still_at(db, chat)?
+                    {
                         chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
                     }
                 }
@@ -264,17 +266,16 @@ async fn index(state: &State) -> Result<(), String> {
         if number > 0 {
             tokio::time::sleep(BATCH_GAP).await;
         }
-        // Holds off sync passes (and changes) for this one read, so a
-        // pass can't start between the check and the request.
+        // Holds off sync passes (and changes) for this batch's read and
+        // save, so a pass can't start between the check and the request,
+        // nor move the chats on between the read and the save.
         let admitted = admit_fetch(state).await;
         if let Some(why) = cannot_fetch(state) {
             state.indexer.inner().waiting = Some(why);
             break;
         }
         let ids: Vec<String> = batch.iter().map(|chat| chat.id.clone()).collect();
-        let fetched_batch = api.batch(&ids).await;
-        drop(admitted);
-        let items = match fetched_batch {
+        let items = match api.batch(&ids).await {
             Ok(items) => items,
             Err(error) if error.is_rate_limit() => return Err(rate_limited(state, error)),
             // A timeout or a dropped connection says nothing about these
@@ -297,6 +298,7 @@ async fn index(state: &State) -> Result<(), String> {
             }
         };
         let saved = save_batch(state, batch.to_vec(), items, versions).await?;
+        drop(admitted);
         fetched += saved;
         state.indexer.inner().fetched += saved;
         count(state, versions).await?;
@@ -366,10 +368,12 @@ async fn save_batch(
         }
     }
     unavailable(state, &failed);
-    let saved = u64::try_from(ready.len() + preserved.len()).unwrap_or(u64::MAX);
     let preserved: Vec<_> = preserved
         .into_iter()
-        .map(|(chat, markdown)| (chat, chunk_bytes(&markdown)))
+        .map(|(chat, markdown)| {
+            let bodies = chunk_bytes(&markdown);
+            (chat, markdown, bodies)
+        })
         .collect();
     // Chunked before taking the writer.
     let ready: Vec<_> = ready
@@ -380,18 +384,48 @@ async fn save_batch(
         })
         .collect();
     state
-        .db_write(move |db| {
-            for (chat, transcript, bodies) in &ready {
-                chatgpt_store::save_indexed(db, transcript, chat, versions, bodies)?;
-            }
-            for (chat, bodies) in &preserved {
-                chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
-            }
-            Ok(())
-        })
+        .db_write(move |db| save_fetched(db, &ready, &preserved, versions))
         .await
-        .map_err(|failure| failure.message)?;
+        .map_err(|failure| failure.message)
+}
+
+/// Write what a batch brought, for each chat only while the index still
+/// has it at the `update_time` it was fetched for (and, for chunks of a
+/// kept transcript, while that transcript is unchanged): a snapshot a
+/// write overtook is never saved over the newer caches, and the next run
+/// fetches the chat again. How many were saved.
+fn save_fetched(
+    db: &mut rusqlite::Connection,
+    ready: &[(Unindexed, chatgpt_store::Transcript, Vec<Vec<u8>>)],
+    preserved: &[(Unindexed, String, Vec<Vec<u8>>)],
+    versions: ChunkVersions,
+) -> chatgpt_store::Result<u64> {
+    let mut saved = 0;
+    for (chat, transcript, bodies) in ready {
+        if still_at(db, chat)? {
+            chatgpt_store::save_indexed(db, transcript, chat, versions, bodies)?;
+            saved += 1;
+        }
+    }
+    for (chat, markdown, bodies) in preserved {
+        let kept = chatgpt_store::transcript(db, &chat.id, &chat.update_time, versions.render)?
+            .is_some_and(|transcript| transcript.markdown == *markdown);
+        if kept && still_at(db, chat)? {
+            chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
+            saved += 1;
+        }
+    }
     Ok(saved)
+}
+
+/// Whether the index still has `chat` at the `update_time` it was read at.
+fn still_at(db: &rusqlite::Connection, chat: &Unindexed) -> chatgpt_store::Result<bool> {
+    let current: Option<String> = rusqlite::OptionalExtension::optional(db.query_row(
+        "select update_time from conversations where id = ?",
+        [&chat.id],
+        |row| row.get(0),
+    ))?;
+    Ok(current.as_deref() == Some(chat.update_time.as_str()))
 }
 
 /// Refresh the counts `daemon status` shows.
@@ -515,6 +549,62 @@ mod tests {
             update_time: update_time.into(),
             cached: false,
         }
+    }
+
+    #[test]
+    fn a_fetch_a_sync_overtook_never_replaces_the_newer_transcript() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = chatgpt_store::Store::open(&dir.path().join("chatgpt.db")).expect("store");
+        let versions = ChunkVersions {
+            render: 2,
+            chunk: 2,
+        };
+        let transcript = |update_time: &str, markdown: &str| chatgpt_store::Transcript {
+            id: "a".into(),
+            update_time: update_time.into(),
+            render_version: 2,
+            markdown: markdown.into(),
+            turns: 1,
+            approx_tokens: 1,
+        };
+        // A sync moved the chat to t2 and cached its transcript there
+        // while the indexer held a t1 snapshot.
+        let at_t2 = chat("a", "t2");
+        store
+            .write(|db| {
+                chatgpt_store::replace_all(
+                    db,
+                    &[chatgpt_store::NewConversation {
+                        id: "a".into(),
+                        title: "a".into(),
+                        create_time: "t0".into(),
+                        update_time: "t2".into(),
+                        is_archived: false,
+                        pinned: false,
+                        project_id: None,
+                    }],
+                    "now",
+                )?;
+                chatgpt_store::save_indexed(db, &transcript("t2", "newer"), &at_t2, versions, &[])
+            })
+            .expect("t2");
+        let stale = vec![(chat("a", "t1"), transcript("t1", "older"), Vec::new())];
+        let saved = store
+            .write(|db| save_fetched(db, &stale, &[], versions))
+            .expect("saved");
+        assert_eq!(saved, 0);
+        let kept = store
+            .read(|db| chatgpt_store::transcript(db, "a", "t2", 2))
+            .expect("read")
+            .expect("the t2 transcript");
+        assert_eq!(kept.markdown, "newer");
+
+        // A current one is saved.
+        let current = vec![(at_t2, transcript("t2", "fetched"), Vec::new())];
+        let saved = store
+            .write(|db| save_fetched(db, &current, &[], versions))
+            .expect("saved");
+        assert_eq!(saved, 1);
     }
 
     #[test]
