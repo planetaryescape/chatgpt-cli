@@ -346,6 +346,50 @@ fn a_project_delete_is_sent_once_and_a_missing_project_says_so() {
     );
 }
 
+/// `""` prefixes every id, so a blank project or chat reference would pick
+/// the only one there is: each is refused before anything is sent.
+#[test]
+fn a_blank_project_or_chat_reference_is_refused() {
+    let env = synced();
+    env.fake().state().projects = vec![Project::new("g-p-only", "Only")];
+    let (code, _, stderr) = run(&env, &["project", "delete", " ", "-y"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stderr, "error: Pass a project name or id.\n");
+    let (code, _, stderr) = run(&env, &["project", "add", "", "a-loose", "-y"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stderr, "error: Pass a project name or id.\n");
+    let (code, _, stderr) = run(&env, &["project", "remove", "  ", "c-writing", "-y"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(env.fake().state().deleted_projects.is_empty());
+    assert_eq!(project_of(&env, "a-loose"), None);
+
+    // With one chat indexed, `""` would be a unique prefix of it.
+    let env = Env::with_fake(vec![Chat::new(
+        "a-loose",
+        "Loose chat",
+        "2026-09-27T10:00:00.000000Z",
+    )]);
+    env.cmd().arg("sync").assert().success();
+    env.fake().state().projects = vec![Project::new("g-p-only", "Only")];
+    for id in ["", " "] {
+        let (code, _, stderr) = run(&env, &["project", "add", "Only", id, "-y"]);
+        assert_eq!(code, Some(2), "{id:?}: {stderr}");
+        assert_eq!(
+            stderr,
+            "error: A conversation id can't be empty; pass an id or a unique id prefix.\n"
+        );
+        let (code, _, stderr) = run(&env, &["delete", id, "-y"]);
+        assert_eq!(code, Some(2), "{id:?}: {stderr}");
+    }
+    let calls = env.fake().calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.starts_with("PATCH") || call.starts_with("DELETE")),
+        "{calls:?}"
+    );
+}
+
 #[test]
 fn the_project_prompt_reads_the_terminal_after_ids_on_stdin() {
     let env = synced();

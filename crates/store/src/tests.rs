@@ -403,6 +403,8 @@ fn a_full_uuid_is_looked_up_exactly_and_anything_shorter_by_prefix() {
     );
     assert_eq!(ids("6a1b").len(), 3);
     assert_eq!(ids("6A1B2C3D").len(), 2);
+    assert!(ids("").is_empty(), "a blank prefix names no chat");
+    assert!(ids("  ").is_empty());
 
     let cleared = store.write(|db| clear_project(db, "g-p-gone")).unwrap();
     assert_eq!(cleared, 1);

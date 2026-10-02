@@ -103,6 +103,12 @@ pub fn target(
     all: bool,
     local_title_version: u32,
 ) -> Result<IndexedConversation, Failure> {
+    // `""` prefixes every id: it would pick the only chat there is.
+    if chatgpt_core::js::trim(prefix).is_empty() {
+        return Err(invalid(
+            "A conversation id can't be empty; pass an id or a unique id prefix.".to_owned(),
+        ));
+    }
     let mut matches =
         chatgpt_store::get(db, prefix, local_title_version).map_err(Failure::store)?;
     if matches.len() > 1 {

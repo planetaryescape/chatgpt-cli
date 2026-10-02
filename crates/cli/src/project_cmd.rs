@@ -96,9 +96,13 @@ pub fn positive_limit(raw: Option<&str>) -> Result<Option<usize>, ClientError> {
 }
 
 /// `resolveProject`: an exact id or name (ignoring case), else a unique id
-/// prefix.
+/// prefix. An empty reference is refused: every id starts with "", so it
+/// would pick the only project there is.
 fn resolve_project(projects: Vec<Project>, reference: &str) -> Result<Project, ClientError> {
     let input = chatgpt_core::js::trim(reference).to_lowercase();
+    if input.is_empty() {
+        return Err(invalid("Pass a project name or id.".to_owned()));
+    }
     let (exact, rest): (Vec<Project>, Vec<Project>) = projects.into_iter().partition(|project| {
         project.id.to_lowercase() == input || project.name.to_lowercase() == input
     });
@@ -345,6 +349,15 @@ mod tests {
             resolve_project(all(), "g-p-a").unwrap_err().message,
             "\"g-p-a\" matches 2 projects; use a project id."
         );
+        for blank in ["", "  "] {
+            assert_eq!(
+                resolve_project(vec![project("g-p-only", "Only")], blank)
+                    .unwrap_err()
+                    .message,
+                "Pass a project name or id.",
+                "{blank:?} would match every id"
+            );
+        }
         assert_eq!(
             resolve_project(all(), "nope").unwrap_err().message,
             "No project matching \"nope\". Run `chatgpt project list` to see names and ids."

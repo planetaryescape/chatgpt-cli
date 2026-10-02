@@ -199,6 +199,10 @@ pub fn get(
             case when l.source = 'manual' or (l.update_time = c.update_time and l.version = ?)
                 then l.title end as local_title
          from conversations c left join local_titles l on l.id = c.id";
+    // A blank prefix names no chat, though `like '%'` would match them all.
+    if prefix.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     let (sql, value) = if is_uuid(prefix) {
         (
             format!("{SELECT} where c.id = ?"),
