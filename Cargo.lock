@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aes",
  "bytes",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-cli"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "chatgpt-core",
@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-core"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "serde_json",
@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-daemon"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chatgpt",
  "chatgpt-core",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-embed"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "serde_json",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-launcher"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chatgpt-core",
  "chatgpt-protocol",
@@ -606,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-protocol"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "serde",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-store"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "tempfile",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "chatgpt-tui"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chatgpt-core",
  "chatgpt-launcher",
@@ -1375,7 +1375,7 @@ checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
 
 [[package]]
 name = "fake-chatgpt"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -2502,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "model-api"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "impit",
@@ -4558,7 +4558,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "typesafe-client"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "impit",

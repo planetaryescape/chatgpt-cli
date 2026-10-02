@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.5...v0.2.0) (2026-10-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rust-only CLI; remove the TS CLI, the bridge and the TS import ([#16](https://github.com/planetaryescape/chatgpt-cli/issues/16))
+
+### Features
+
+* Rust-only CLI; remove the TS CLI, the bridge and the TS import ([#16](https://github.com/planetaryescape/chatgpt-cli/issues/16)) ([4663abc](https://github.com/planetaryescape/chatgpt-cli/commit/4663abc0e1ed696938e1d3a7cb6c53359c1997c7))
+
 ## [0.1.5](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.4...v0.1.5) (2026-10-02)
 
 
