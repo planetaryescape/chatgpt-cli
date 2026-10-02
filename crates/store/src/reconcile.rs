@@ -56,8 +56,8 @@ pub fn candidates(
 
 /// Move every cache of `candidate` from its cached `update_time` to the
 /// chat's current one, unless the chat changed again since it was read.
-/// Returns whether it did. Search tables aren't in this index yet; the TS
-/// CLI's own reconcile keeps its search index current.
+/// Returns whether it did. Search chunks move too when they were indexed
+/// from the cached version under the same title.
 pub fn preserve(connection: &mut Connection, candidate: &Candidate) -> Result<bool> {
     let transaction = connection.transaction()?;
     let current: Option<(String, String)> = transaction
@@ -86,6 +86,28 @@ pub fn preserve(connection: &mut Connection, candidate: &Candidate) -> Result<bo
                 candidate.cached_update_time
             ],
         )?;
+    }
+    let indexed = transaction
+        .query_row(
+            "select 1 from search_chunks where conversation_id = ? and update_time = ? and title = ? limit 1",
+            params![candidate.id, candidate.cached_update_time, candidate.title],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if indexed {
+        for table in ["search_indexed", "search_chunks"] {
+            transaction.execute(
+                &format!(
+                    "update {table} set update_time = ? where conversation_id = ? and update_time = ?"
+                ),
+                params![
+                    candidate.update_time,
+                    candidate.id,
+                    candidate.cached_update_time
+                ],
+            )?;
+        }
     }
     transaction.commit()?;
     Ok(true)

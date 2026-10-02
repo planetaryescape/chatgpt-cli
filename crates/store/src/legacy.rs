@@ -11,6 +11,13 @@
 //! alone while its `update_time` is the chat's current one here. (Comparing
 //! the times themselves doesn't work: the TS index holds some as
 //! `toISOString` milliseconds and others as the list's microseconds.)
+//!
+//! Transcripts are a cache both sides fill: the daemon's search indexer
+//! fetches them too. So the TS index never deletes one here, and its copy
+//! replaces the daemon's only while the daemon's isn't current for the
+//! chat's `update_time` (two current renders can differ only in the model
+//! named in the header, which the single-chat endpoint gives and the batch
+//! doesn't).
 
 use std::path::Path;
 
@@ -149,10 +156,15 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
             &transaction,
             &format!("select count(*) from legacy.{table}"),
         )?;
-        table_counts.deleted = transaction.execute(
-            &format!("delete from main.{table} where id not in (select id from legacy.{table})"),
-            [],
-        )? as u64;
+        let cache = *table == "transcripts";
+        if !cache {
+            table_counts.deleted = transaction.execute(
+                &format!(
+                    "delete from main.{table} where id not in (select id from legacy.{table})"
+                ),
+                [],
+            )? as u64;
+        }
         table_counts.inserted = count(
             &transaction,
             &format!(
@@ -182,12 +194,19 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
                  where c.id = {table}.id and c.update_time = {table}.update_time))"
             ));
         }
+        let mut condition = format!("({})", changed.join(" or "));
+        if cache {
+            condition.push_str(&format!(
+                " and not exists (select 1 from main.conversations c \
+                 where c.id = {table}.id and c.update_time = {table}.update_time \
+                 and {table}.render_version >= excluded.render_version)"
+            ));
+        }
         // `where true` lets SQLite tell the upsert's ON from a join's.
         let upserted = transaction.execute(
             &format!(
                 "insert into main.{table} ({list}) select {list} from legacy.{table} where true
-                 on conflict (id) do update set {assignments} where {}",
-                changed.join(" or ")
+                 on conflict (id) do update set {assignments} where {condition}"
             ),
             [],
         )? as u64;

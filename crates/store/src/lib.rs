@@ -12,6 +12,7 @@ mod legacy;
 mod meta;
 mod reconcile;
 mod schema;
+mod search;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -23,6 +24,7 @@ pub use conversations::{IndexFilter, IndexedConversation, NewConversation};
 pub use judgments::{JudgmentRow, MemoryJudgmentRow};
 pub use legacy::{ImportCounts, LEGACY_TABLES, TableCounts};
 pub use reconcile::Candidate;
+pub use search::{ChunkVersions, LexicalRow, Transcript, Unindexed};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -105,6 +107,12 @@ pub use judgments::{current_judgments, memory_judgment};
 pub use legacy::import_legacy;
 pub use meta::{account, get_meta, set_account, set_meta};
 pub use reconcile::{candidates, preserve};
+pub use search::{
+    coverage, lexical, prune_search, replace_chunks, save_indexed, save_transcript, transcript,
+    unindexed,
+};
 
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod tests;
