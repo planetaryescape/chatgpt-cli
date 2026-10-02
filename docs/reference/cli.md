@@ -266,6 +266,7 @@ Commands:
   list    List projects available to your account
   add     Move chats into an existing project by name or id; use `-` for ids on stdin
   remove  Remove chats from an existing project; use `-` for ids on stdin
+  delete  Delete a project in ChatGPT; asks you to type its name to confirm
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -345,6 +346,24 @@ Options:
   -y, --yes             Skip the confirmation prompt
       --archived        Select archived conversations instead of active ones
       --all             Select both active and archived conversations
+  -h, --help            Print help
+```
+
+## `chatgpt project delete`
+
+```text
+Delete a project in ChatGPT; asks you to type its name to confirm
+
+Usage: chatgpt project delete [OPTIONS] <project>
+
+Arguments:
+  <project>  Project name, id or id prefix
+
+Options:
+      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+  -n, --dry-run         Preview without changing anything
+      --profile <name>  Use a browser profile directory (with --browser)
+  -y, --yes             Skip the confirmation prompt
   -h, --help            Print help
 ```
 

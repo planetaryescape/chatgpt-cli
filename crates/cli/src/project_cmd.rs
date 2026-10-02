@@ -1,5 +1,6 @@
 //! `project create|list|add|remove`, as the TS CLI's (`src/cli.ts` and
-//! `src/commands/projects.ts` @ 1b8c950) run them.
+//! `src/commands/projects.ts` @ 1b8c950) run them, and `project delete`,
+//! which the TS CLI didn't have.
 
 use std::process::ExitCode;
 
@@ -66,6 +67,11 @@ pub async fn run(
         }
         ProjectCommand::Add(args) => return move_chats(paths, args, false, session).await,
         ProjectCommand::Remove(args) => return move_chats(paths, args, true, session).await,
+        ProjectCommand::Delete {
+            project,
+            dry_run,
+            yes,
+        } => return delete(paths, &project, dry_run, yes, session).await,
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -114,6 +120,95 @@ fn resolve_project(projects: Vec<Project>, reference: &str) -> Result<Project, C
     }
 }
 
+/// `project delete`: the project, what it holds in the index, then the
+/// user types its name (or passes `-y`) before it's deleted.
+async fn delete(
+    paths: &Paths,
+    reference: &str,
+    dry_run: bool,
+    yes: bool,
+    session: SessionChoice,
+) -> Result<ExitCode, ClientError> {
+    let (projects, every) = tokio::join!(
+        projects(paths, session.clone()),
+        chatgpt_launcher::ask(paths, Request::list_every_chat(), |_| {})
+    );
+    let project = resolve_project(projects?, reference)?;
+    if !project.can_write {
+        return Err(invalid(format!(
+            "You do not have write access to project \"{}\".",
+            project.name
+        )));
+    }
+    let ResponseData::Rows(every) = every? else {
+        return Err(unexpected());
+    };
+    let chats: Vec<&Row> = every
+        .rows
+        .iter()
+        .filter(|row| in_project(row, &project))
+        .collect();
+    let name = &project.name;
+    note(&format!("Project \"{name}\" ({})", project.id));
+    if chats.is_empty() {
+        note("No indexed chats are in it.");
+    } else {
+        let archived = chats.iter().filter(|row| row.is_archived != 0).count();
+        note(&format!(
+            "{} indexed chat(s) are in it{}:",
+            chats.len(),
+            if archived > 0 {
+                format!(" ({archived} archived)")
+            } else {
+                String::new()
+            }
+        ));
+        preview(chats.iter().map(|row| preview_line(row)), chats.len());
+        note(
+            "ChatGPT may delete these chats along with the project, or only take them out of it. Treat them as deleted: export any you want to keep first.",
+        );
+    }
+    if dry_run {
+        note(&format!("dry run: would delete project \"{name}\"."));
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !yes {
+        let typed = prompt::ask(&format!(
+            "This can't be undone. Type the project name ({name}) to delete it: "
+        ))?;
+        if typed != *name {
+            note("Cancelled: the name didn't match.");
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+    let request = Request::DeleteProject {
+        project: project.clone(),
+        session,
+    };
+    let ResponseData::ProjectDeleted { unassigned } =
+        chatgpt_launcher::ask(paths, request, |_| {}).await?
+    else {
+        return Err(unexpected());
+    };
+    note(&format!("Deleted project \"{name}\" ({}).", project.id));
+    if unassigned > 0 {
+        note(&format!(
+            "Took {unassigned} indexed chat(s) out of it; `chatgpt sync` shows whether ChatGPT kept them."
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Whether the index has `row` in `project`.
+fn in_project(row: &Row, project: &Project) -> bool {
+    row.project_id.as_deref() == Some(project.id.as_str())
+}
+
+/// A chat's line in a preview.
+fn preview_line(row: &Row) -> String {
+    format!("{}  {}", row.id, row.display_title)
+}
+
 /// `project add` and `project remove`: the chats, then the project, then
 /// `applyProjectAdd` or `applyProjectRemove`.
 async fn move_chats(
@@ -147,7 +242,7 @@ async fn move_chats(
             unique.push(row);
         }
     }
-    let in_project = |row: &Row| row.project_id.as_deref() == Some(project.id.as_str());
+    let in_project = |row: &Row| in_project(row, &project);
     let name = &project.name;
     let pending: Vec<Row> = if remove {
         let pending: Vec<Row> = unique.into_iter().filter(in_project).collect();
@@ -155,12 +250,7 @@ async fn move_chats(
             note(&format!("No selected chats are in \"{name}\"."));
             return Ok(ExitCode::SUCCESS);
         }
-        preview(
-            pending
-                .iter()
-                .map(|row| format!("{}  {}", row.id, row.display_title)),
-            pending.len(),
-        );
+        preview(pending.iter().map(preview_line), pending.len());
         pending
     } else {
         if unique.is_empty() {

@@ -28,6 +28,7 @@ const COMMANDS: &[&str] = &[
     "project list",
     "project add",
     "project remove",
+    "project delete",
     "export",
     "classify",
     "titles",

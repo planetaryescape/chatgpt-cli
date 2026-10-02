@@ -186,22 +186,41 @@ pub fn query(
 
 /// `ConversationIndex.get`: chats whose id is like `prefix%`, with local
 /// titles. SQL `like`, as in the TS CLI: ASCII case doesn't matter, and `%`
-/// and `_` in the prefix are wildcards.
+/// and `_` in the prefix are wildcards. A full UUID (what `Transcript` and
+/// search ask for) is looked up by the primary key instead, which `like`
+/// can't use; lower-cased, so it matches what `like` would.
 pub fn get(
     connection: &Connection,
     prefix: &str,
     local_title_version: u32,
 ) -> Result<Vec<IndexedConversation>> {
-    let mut statement = connection.prepare_cached(
+    const SELECT: &str =
         "select c.id, c.title, c.create_time, c.update_time, c.is_archived, c.pinned, c.project_id,
             case when l.source = 'manual' or (l.update_time = c.update_time and l.version = ?)
                 then l.title end as local_title
-         from conversations c left join local_titles l on l.id = c.id where c.id like ?",
-    )?;
+         from conversations c left join local_titles l on l.id = c.id";
+    let (sql, value) = if is_uuid(prefix) {
+        (
+            format!("{SELECT} where c.id = ?"),
+            prefix.to_ascii_lowercase(),
+        )
+    } else {
+        (format!("{SELECT} where c.id like ?"), format!("{prefix}%"))
+    };
+    let mut statement = connection.prepare_cached(&sql)?;
     let rows = statement
-        .query_map(params![local_title_version, format!("{prefix}%")], indexed)?
+        .query_map(params![local_title_version, value], indexed)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
+}
+
+/// `8-4-4-4-12` hex digits, as every ChatGPT conversation id is.
+fn is_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(at, byte)| match at {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 fn indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedConversation> {
@@ -251,6 +270,15 @@ pub fn set_project(connection: &Connection, id: &str, project_id: Option<&str>) 
         params![project_id, id],
     )?;
     Ok(())
+}
+
+/// Take every chat out of project `project_id` (it was deleted); how many
+/// were in it.
+pub fn clear_project(connection: &Connection, project_id: &str) -> Result<usize> {
+    Ok(connection.execute(
+        "update conversations set project_id = null where project_id = ?",
+        params![project_id],
+    )?)
 }
 
 /// The chats with exactly these ids, in the order asked (an id no longer

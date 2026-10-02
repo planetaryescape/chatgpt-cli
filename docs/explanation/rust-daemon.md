@@ -57,7 +57,9 @@ The vectors are tagged with the Rust `MODEL_VERSION` and live only in the daemon
 
 ChatGPT's quirks, as observed: a pre-2025 chat's rename answers 500 yet applies (the error says so), a project move answering 500 is checked with a read of the chat, a delete answering 404 has done its job, and a memory delete counts only when ChatGPT answers `success: true`.
 
-Archiving is idempotent, so it's retried like a read. A delete, a rename, a project move, a new project and a memory delete mustn't happen twice: they're retried only after an answer that shows ChatGPT turned them away (a Cloudflare challenge, a 429). After a gateway error or a dropped connection the write may have applied, and the CLI says exactly that, with the path, and that `chatgpt sync` shows whether it did, rather than sending it again.
+`project delete` has one target, so it skips the per-chat steps: the CLI resolves the project from `project list`, counts its chats from the index, and asks for the project's name. The daemon then deletes it under the same pass lock and pinned session, and clears `project_id` for its chats in the index. It counts only when ChatGPT answers `deleted: true`.
+
+Archiving is idempotent, so it's retried like a read. A delete, a rename, a project move, a new or deleted project and a memory delete mustn't happen twice: they're retried only after an answer that shows ChatGPT turned them away (a Cloudflare challenge, a 429). After a gateway error or a dropped connection the write may have applied, and the CLI says exactly that, with the path, and that `chatgpt sync` shows whether it did, rather than sending it again.
 
 `title` (and the TUI's `n`) writes a manual local title to the daemon's index only.
 

@@ -46,6 +46,15 @@ ChatGPT can change `update_time` when a chat moves. Run `chatgpt sync` afterward
 
 For older chats, ChatGPT may return HTTP 500 even after completing a move. The CLI reads the chat to confirm those cases. If a chat still fails, its local project id stays unchanged; run `chatgpt sync` and check it in `list --json` before retrying.
 
+## Delete a project
+
+```sh
+chatgpt project delete "Garden Planner" --dry-run
+chatgpt project delete "Garden Planner"
+```
+
+`project delete` resolves the project as `project add` does, then shows its id and how many indexed chats are in it (with the first 25). ChatGPT may delete those chats along with the project, or only take them out of it, so treat them as deleted and export any you want first. To confirm, type the project's name exactly; `--yes` skips that. The delete is sent once. After ChatGPT confirms it, the CLI clears the local project id of the chats that were in it; run `chatgpt sync` to see which ones ChatGPT kept.
+
 ## Check the result
 
 ```sh

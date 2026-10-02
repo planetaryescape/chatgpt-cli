@@ -134,8 +134,8 @@ fn restrict(path: &Path) -> Result<()> {
 }
 
 pub use conversations::{
-    active_watermark, all_ids, apply_delta, archived_ids, by_ids, count_all, get, query, remove,
-    rename, replace_all, set_archived, set_project, synced_at,
+    active_watermark, all_ids, apply_delta, archived_ids, by_ids, clear_project, count_all, get,
+    query, remove, rename, replace_all, set_archived, set_project, synced_at,
 };
 pub use judgments::{
     current_judgments, fresh_update_time, has_deep_judgment, has_luna_judgment, judgment,

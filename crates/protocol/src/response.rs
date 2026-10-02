@@ -70,6 +70,10 @@ pub enum ResponseData {
         projects: Vec<Project>,
     },
     ProjectCreated(Project),
+    /// `DeleteProject`: how many indexed chats were taken out of it.
+    ProjectDeleted {
+        unassigned: u64,
+    },
     /// ChatGPT's saved-memory objects, as it sent them.
     Memories {
         memories: Vec<serde_json::Value>,

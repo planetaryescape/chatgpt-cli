@@ -284,6 +284,11 @@ async fn answer(
         }
         .await
         .map(ResponseData::ProjectCreated),
+        Request::DeleteProject { project, session } => projects::delete(state, project, session)
+            .await
+            .map(|unassigned| ResponseData::ProjectDeleted {
+                unassigned: u64::try_from(unassigned).unwrap_or(u64::MAX),
+            }),
         Request::MoveToProject {
             project,
             targets,

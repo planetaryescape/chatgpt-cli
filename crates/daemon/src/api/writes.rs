@@ -7,10 +7,11 @@
 //! - a project move that answers 500 may have applied: it's checked with a
 //!   GET of the chat;
 //! - a delete answering 404 has reached its goal (the caller decides);
-//! - a memory delete counts only when ChatGPT answers `success: true`.
+//! - a memory delete counts only when ChatGPT answers `success: true`, and
+//!   a project delete only when it answers `deleted: true`.
 //!
 //! Archiving is idempotent and retried like a read. A delete, a rename, a
-//! project move or a new project, and a memory delete must not happen
+//! project move, a new or deleted project, and a memory delete must not happen
 //! twice: they're retried only after an answer that shows ChatGPT turned
 //! them away (a Cloudflare challenge, a 429), and a dropped connection or a
 //! gateway error comes back as "may have applied".
@@ -268,6 +269,36 @@ impl Api {
                 ErrorKind::Decode,
                 "ChatGPT returned an invalid created project.",
             )),
+        }
+    }
+
+    /// Delete project `id` (`DELETE /backend-api/gizmos/{id}`, observed
+    /// 2026-10-02). Done only when ChatGPT answers `deleted: true`; a 404
+    /// means there's no such project to delete.
+    pub async fn delete_project(&self, id: &str) -> Result<(), ApiError> {
+        let path = format!("/backend-api/gizmos/{}", encode_uri_component(id));
+        let text = match self
+            .write(HttpMethod::Delete, &path, None, Resend::OnlyIfRefused)
+            .await
+        {
+            Err(error) if error.status == Some(404) => {
+                return Err(ApiError::new(
+                    ErrorKind::InvalidInput,
+                    format!("ChatGPT has no project {id}; run `chatgpt project list`."),
+                ));
+            }
+            answer => answer?,
+        };
+        let answer: Option<Value> = parse_optional(&text, &path)?;
+        if answer.as_ref().and_then(|value| value.get("deleted")) == Some(&Value::Bool(true)) {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorKind::Api,
+                format!(
+                    "ChatGPT didn't confirm deleting project {id}; run `chatgpt project list` to check."
+                ),
+            ))
         }
     }
 

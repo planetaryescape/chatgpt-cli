@@ -1,6 +1,6 @@
 //! The fake's write endpoints: archive and project moves (`PATCH
-//! /backend-api/conversation/{id}`), deletes, renames, the project list
-//! and new projects, the memory summary and memory deletes, with the
+//! /backend-api/conversation/{id}`), deletes, renames, the project list,
+//! new projects and project deletes, the memory summary and memory deletes, with the
 //! quirks chatgpt.com has (observed 2026-09-27/28): a legacy chat's rename
 //! answers 500 yet applies, a project move can answer 500 after applying,
 //! and a memory delete is done only when it answers `success: true`.
@@ -48,6 +48,8 @@ pub enum Write {
     Rename,
     ProjectList,
     CreateProject,
+    /// `DELETE /backend-api/gizmos/{id}`.
+    DeleteProject,
     MemorySummary,
     DeleteMemory,
 }
@@ -184,6 +186,16 @@ fn apply(state: &mut State, write: Write, request: &Request) -> ResponseTemplate
                 "id": id, "display": { "name": name },
                 "current_user_permission": { "can_write": true },
             } } }))
+        }
+        Write::DeleteProject => {
+            let id = segment(request, 0);
+            let before = state.projects.len();
+            state.projects.retain(|project| project.id != id);
+            if state.projects.len() == before {
+                return not_found();
+            }
+            state.deleted_projects.push(id);
+            ResponseTemplate::new(200).set_body_json(json!({ "deleted": true }))
         }
         Write::MemorySummary => {
             ResponseTemplate::new(200).set_body_json(state.memory_summary.clone())

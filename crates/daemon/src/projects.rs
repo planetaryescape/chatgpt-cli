@@ -3,6 +3,9 @@
 //! `applyProjectAdd` and `applyProjectRemove` (`src/commands/projects.ts`
 //! @ 1b8c950) do. The client resolved the project and the chats, skipped
 //! the ones already where they're going, and showed the preview.
+//!
+//! `project delete` (new in the Rust CLI): the project in ChatGPT, then its
+//! chats taken out of it in the index.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,4 +80,29 @@ async fn move_one(
         .db_write(move |db| chatgpt_store::set_project(db, &id, project_id.as_deref()))
         .await
         .map_err(ApiError::from)
+}
+
+/// `project delete` after the confirmation: the project in ChatGPT, then
+/// `project_id` cleared for the index's chats in it. How many those were.
+pub async fn delete(
+    state: &Arc<State>,
+    project: Project,
+    session: SessionChoice,
+) -> Result<usize, Failure> {
+    let api = crate::sync::pinned_api(state, session).await?;
+    let state = Arc::clone(state);
+    // Its own task, as a move's: a client that goes away never leaves the
+    // project deleted in ChatGPT but still named in the index. Under the
+    // pass lock, so a pass that listed the chats before the delete can't
+    // put the old project back.
+    let task = crate::progress::spawn(async move {
+        let _no_pass = state.syncer.exclusive().await;
+        api.delete_project(&project.id).await?;
+        let id = project.id;
+        state
+            .db_write(move |db| chatgpt_store::clear_project(db, &id))
+            .await
+            .map_err(ApiError::from)
+    });
+    Ok(task.await.map_err(Failure::join)??)
 }

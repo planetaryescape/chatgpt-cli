@@ -239,6 +239,114 @@ fn a_move_answering_500_is_checked_and_an_unconfirmed_one_fails() {
 }
 
 #[test]
+fn deleting_a_project_previews_its_chats_wants_its_name_and_clears_the_index() {
+    let env = synced();
+    let (code, _, stderr) = run(&env, &["project", "delete", "writing", "-n"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stderr,
+        "Project \"Writing\" (g-p-writing)\n1 indexed chat(s) are in it:\nc-writing  Draft\n\
+         ChatGPT may delete these chats along with the project, or only take them out of it. Treat them as deleted: export any you want to keep first.\n\
+         dry run: would delete project \"Writing\".\n"
+    );
+    let deletes = |env: &Env| {
+        env.fake()
+            .calls()
+            .into_iter()
+            .filter(|call| call.starts_with("DELETE /backend-api/gizmos/"))
+            .collect::<Vec<_>>()
+    };
+    assert!(deletes(&env).is_empty());
+
+    let question = "This can't be undone. Type the project name (Writing) to delete it: ";
+    let (code, shown) = in_terminal(
+        &env,
+        &["project", "delete", "g-p-writing"],
+        None,
+        question,
+        "writing",
+    );
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(
+        shown.ends_with("Cancelled: the name didn't match.\n"),
+        "{shown}"
+    );
+    assert!(deletes(&env).is_empty());
+
+    let (code, shown) = in_terminal(
+        &env,
+        &["project", "delete", "g-p-writing"],
+        None,
+        question,
+        "Writing",
+    );
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(
+        shown.ends_with(
+            "Deleted project \"Writing\" (g-p-writing).\nTook 1 indexed chat(s) out of it; `chatgpt sync` shows whether ChatGPT kept them.\n"
+        ),
+        "{shown}"
+    );
+    assert_eq!(deletes(&env), ["DELETE /backend-api/gizmos/g-p-writing"]);
+    assert_eq!(env.fake().state().deleted_projects, ["g-p-writing"]);
+    assert_eq!(project_of(&env, "c-writing"), None);
+    assert_eq!(project_of(&env, "b-moved").as_deref(), Some("g-p-other"));
+    assert!(!env.stdout(&["project", "list"]).contains("Writing"));
+
+    let (code, _, stderr) = run(&env, &["project", "delete", "Filler 1", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stderr,
+        "Project \"Filler 1\" (g-p-filler01)\nNo indexed chats are in it.\nDeleted project \"Filler 1\" (g-p-filler01).\n"
+    );
+
+    let (code, _, stderr) = run(&env, &["project", "delete", "Shared", "-y"]);
+    assert_ne!(code, Some(0));
+    assert_eq!(
+        stderr,
+        "error: You do not have write access to project \"Shared\".\n"
+    );
+}
+
+#[test]
+fn a_project_delete_is_sent_once_and_a_missing_project_says_so() {
+    let env = synced();
+    env.fake()
+        .state()
+        .fail_writes
+        .push_back(WriteFailure::Status(504));
+    let (code, _, stderr) = run(&env, &["project", "delete", "Writing", "-y"]);
+    assert_ne!(code, Some(0));
+    assert!(stderr.contains("so it may have applied"), "{stderr}");
+    assert!(!stderr.contains("secret body"), "{stderr}");
+    let deletes = env
+        .fake()
+        .calls()
+        .into_iter()
+        .filter(|call| call.starts_with("DELETE /backend-api/gizmos/"))
+        .count();
+    assert_eq!(deletes, 1);
+    assert_eq!(
+        project_of(&env, "c-writing").as_deref(),
+        Some("g-p-writing"),
+        "the index is left as it was"
+    );
+
+    // Gone from ChatGPT since the list was read: the 404 says so.
+    env.fake()
+        .state()
+        .fail_writes
+        .push_back(WriteFailure::Status(404));
+    let (code, _, stderr) = run(&env, &["project", "delete", "Writing", "-y"]);
+    assert_ne!(code, Some(0));
+    assert!(
+        stderr
+            .ends_with("error: ChatGPT has no project g-p-writing; run `chatgpt project list`.\n"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn the_project_prompt_reads_the_terminal_after_ids_on_stdin() {
     let env = synced();
     let (code, shown) = in_terminal(
