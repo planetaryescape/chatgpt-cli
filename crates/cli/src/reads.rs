@@ -48,13 +48,16 @@ pub fn stale_note(synced_at: &str) {
 }
 
 pub async fn list(paths: &Paths, args: ListArgs) -> Result<ExitCode, ClientError> {
-    if args.format.as_deref().is_some_and(|format| format != "ids") {
-        return Err(invalid("--format must be ids."));
-    }
-    if args.json && args.format.is_some() {
+    // `--format ""` is unset, as the TS CLI's falsy `opts.format` was.
+    let ids = match args.format.as_deref() {
+        None | Some("") => false,
+        Some("ids") => true,
+        Some(_) => return Err(invalid("--format must be ids.")),
+    };
+    if args.json && ids {
         return Err(invalid("Choose only one of --json or --format."));
     }
-    if args.count && args.format.is_some() {
+    if args.count && ids {
         return Err(invalid("Choose only one of --count or --format."));
     }
     let request = Request::List {
@@ -67,7 +70,7 @@ pub async fn list(paths: &Paths, args: ListArgs) -> Result<ExitCode, ClientError
     let rows = answer.rows;
     if args.count {
         data(&format!("{}\n", rows.len()));
-    } else if args.format.is_some() {
+    } else if ids {
         let ids: String = rows.iter().map(|row| format!("{}\n", row.id)).collect();
         data(&ids);
     } else if args.json {

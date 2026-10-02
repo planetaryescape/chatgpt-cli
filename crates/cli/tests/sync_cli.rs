@@ -211,6 +211,16 @@ fn list_answers_from_the_index_without_the_network() {
 }
 
 #[test]
+fn an_empty_list_format_is_unset() {
+    let env = synced();
+    assert_eq!(env.stdout(&["list", "--format", ""]), env.stdout(&["list"]));
+    assert_eq!(
+        env.stdout(&["list", "--json", "--format", ""]),
+        env.stdout(&["list", "--json"])
+    );
+}
+
+#[test]
 fn stats_counts_chats_and_live_memories() {
     let env = synced();
     let output = env.stdout(&["stats"]);
