@@ -107,7 +107,7 @@ fn slugify(title: &str) -> String {
 /// `copyToClipboard`.
 fn copy_to_clipboard(text: &str) -> Result<(), ClientError> {
     chatgpt_core::desktop::copy_to_clipboard(text)
-        .map_err(|(kind, message)| ClientError::new(kind, message))
+        .map_err(|error| ClientError::new(error.kind, error.to_string()))
 }
 
 #[cfg(test)]

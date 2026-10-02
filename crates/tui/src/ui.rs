@@ -215,38 +215,85 @@ fn printable(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// `text` wrapped at `width` columns, one line per wrapped line.
-fn wrap(text: &str, width: usize, style: Style, into: &mut Vec<Line<'static>>) {
-    for line in text.split('\n') {
-        let line = printable(line);
-        for piece in textwrap::wrap(&line, width.max(1)) {
-            into.push(Line::styled(piece.into_owned(), style));
+/// The preview's text wrapped at one width, as far as it's been shown:
+/// a chat several megabytes long draws its first screen without wrapping
+/// the rest.
+pub struct Wrapped {
+    version: u64,
+    width: usize,
+    pub(crate) lines: Vec<Line<'static>>,
+    /// The piece of the text to wrap next: a part of [`preview_parts`] and
+    /// a byte offset in it at the start of a line. `None` once it's all
+    /// wrapped.
+    next: Option<(usize, usize)>,
+}
+
+impl Wrapped {
+    fn new(version: u64, width: usize) -> Self {
+        Self {
+            version,
+            width,
+            lines: Vec::new(),
+            next: Some((0, 0)),
         }
+    }
+
+    /// Wrap on until there are `wanted` lines or the text ends. Each part
+    /// splits on `\n` as `str::split` does: a trailing newline leaves an
+    /// empty last line.
+    fn extend(&mut self, parts: &[(Cow<'_, str>, Style)], wanted: usize) {
+        while self.lines.len() < wanted {
+            let Some((part, from)) = self.next else {
+                return;
+            };
+            let Some((text, style)) = parts.get(part) else {
+                self.next = None;
+                return;
+            };
+            let rest = &text[from..];
+            let (line, next) = match rest.find('\n') {
+                Some(end) => (&rest[..end], Some((part, from + end + 1))),
+                None => (rest, (part + 1 < parts.len()).then_some((part + 1, 0))),
+            };
+            let line = printable(line);
+            for piece in textwrap::wrap(&line, self.width.max(1)) {
+                self.lines.push(Line::styled(piece.into_owned(), *style));
+            }
+            self.next = next;
+        }
+    }
+
+    /// How many lines the text wraps to, once that's known.
+    fn total(&self) -> Option<usize> {
+        self.next.is_none().then_some(self.lines.len())
     }
 }
 
-/// The preview's scrolling text: the summary, then the transcript or its
-/// state. Wrapped once per text and width.
-fn preview_text(app: &App, width: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+/// The preview's scrolling text, in parts with their styles: the summary,
+/// then the transcript or its state.
+fn preview_parts(app: &App) -> Vec<(Cow<'_, str>, Style)> {
+    let mut parts = Vec::new();
     if let Some(summary) = &app.preview.summary {
         let text = format!("Summary\n{summary}\n\n{}\n", "─".repeat(40));
-        wrap(&text, width, Style::new().fg(color::ACCENT), &mut lines);
+        parts.push((Cow::Owned(text), Style::new().fg(color::ACCENT)));
     }
     match &app.preview.transcript {
         Transcript::Idle => {}
-        Transcript::Loading => lines.push(Line::from(dim("Loading transcript…"))),
-        Transcript::Failed(why) => wrap(
-            &format!("Couldn't load: {why}"),
-            width,
+        Transcript::Loading => {
+            parts.push((
+                Cow::Borrowed("Loading transcript…"),
+                Style::new().fg(color::DIM),
+            ));
+        }
+        Transcript::Failed(why) => parts.push((
+            Cow::Owned(format!("Couldn't load: {why}")),
             Style::new().fg(color::DELETE),
-            &mut lines,
-        ),
+        )),
         Transcript::Ready(markdown) => {
-            wrap(markdown, width, Style::new().fg(color::FG), &mut lines);
+            parts.push((Cow::Borrowed(markdown.as_str()), Style::new().fg(color::FG)));
         }
     }
-    lines
+    parts
 }
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -322,22 +369,31 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let version = app.preview.version;
-    if !matches!(&app.wrapped, Some((v, w, _)) if *v == version && *w == width) {
-        app.wrapped = Some((version, width, preview_text(app, width)));
-    }
-    let total = app.wrapped.as_ref().map_or(0, |(_, _, lines)| lines.len());
+    let mut wrapped = match app.wrapped.take() {
+        Some(wrapped) if wrapped.version == version && wrapped.width == width => wrapped,
+        _ => Wrapped::new(version, width),
+    };
     let height = usize::from(text_area.height);
+    // A page past the bottom, so a page down needs no wrapping first.
+    let wanted = app.preview.scroll.saturating_add(height * 2);
+    if wrapped.total().is_none() && wrapped.lines.len() < wanted {
+        wrapped.extend(&preview_parts(app), wanted);
+    }
     app.preview_height = height.max(1);
-    app.preview_lines = total;
-    app.preview.scroll = app.preview.scroll.min(total.saturating_sub(height));
-    let shown: Vec<Line> = app
-        .wrapped
+    let total = wrapped.total();
+    // Until the end's been wrapped, scrolling may go further.
+    app.preview_lines = total.unwrap_or(usize::MAX);
+    if let Some(total) = total {
+        app.preview.scroll = app.preview.scroll.min(total.saturating_sub(height));
+    }
+    let shown: Vec<Line> = wrapped
+        .lines
         .iter()
-        .flat_map(|(_, _, lines)| lines.iter())
         .skip(app.preview.scroll)
         .take(height)
         .cloned()
         .collect();
+    app.wrapped = Some(wrapped);
     frame.render_widget(Paragraph::new(shown), text_area);
 }
 
@@ -425,12 +481,50 @@ fn draw_dialog(
     );
 }
 
+/// The help box, 84 columns wide as the TS TUI's where there's room. Its
+/// lines are wrapped here, so the box is exactly as tall as they are. On a
+/// terminal too short for it at its usual place it moves to the top left
+/// corner, and on one too short even for that it shows what fits and says
+/// so on its last line.
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let lines = HELP
-        .lines()
+    const WIDTH: u16 = 84;
+    // Borders and padding: 2 columns and 2 rows on each side.
+    const FRAME: u16 = 4;
+    let wrap_at = |left: u16| {
+        let inner = usize::from(
+            WIDTH
+                .min(area.width.saturating_sub(left))
+                .saturating_sub(FRAME),
+        );
+        HELP.lines()
+            .flat_map(|line| {
+                // Keys such as `ctrl-d/u` stay whole.
+                let options = textwrap::Options::new(inner.max(1))
+                    .word_splitter(textwrap::WordSplitter::NoHyphenation);
+                textwrap::wrap(line, options)
+            })
+            .map(Cow::into_owned)
+            .collect::<Vec<String>>()
+    };
+    let fits = |top: u16, lines: usize| {
+        lines + usize::from(FRAME) <= usize::from(area.height.saturating_sub(top))
+    };
+    let mut at = HELP_AT;
+    let mut lines = wrap_at(at.0);
+    if !fits(at.1, lines.len()) {
+        at = (0, 0);
+        lines = wrap_at(0);
+    }
+    let room = usize::from(area.height.saturating_sub(FRAME));
+    if lines.len() > room {
+        lines.truncate(room.saturating_sub(1));
+        lines.push("… (a taller terminal shows every key)".to_owned());
+    }
+    let lines = lines
+        .into_iter()
         .map(|line| Line::styled(line, Style::new().fg(color::FG)))
         .collect();
-    draw_dialog(frame, area, HELP_AT, 84, "Keys", color::ACCENT, lines);
+    draw_dialog(frame, area, at, WIDTH, "Keys", color::ACCENT, lines);
 }
 
 fn draw_confirm(frame: &mut Frame, app: &App, input: &LineInput, area: Rect) {

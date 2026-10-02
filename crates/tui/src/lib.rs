@@ -10,9 +10,11 @@
 //! - [`model`]: the filters and the list's window;
 //! - [`app`]: the state and what each key does;
 //! - [`ui`]: drawing it;
-//! - [`run`]: the terminal, the keyboard and the daemon requests.
+//! - [`run`]: the terminal, the keyboard and the daemon requests;
+//! - [`connections`]: the daemon connections those requests share.
 
 mod app;
+mod connections;
 mod input;
 mod model;
 mod run;

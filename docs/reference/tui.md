@@ -80,5 +80,5 @@ Transcripts cached by `classify` appear immediately. Others are fetched when you
 
 ## Limits
 
-- The TUI doesn't classify. Run `chatgpt classify` in another terminal and press `r`.
+- The TUI doesn't classify. Run `chatgpt classify` in another terminal and press `r`. Background syncs and the daemon's background Jev show up by themselves within about 30 seconds (not while a box is open); the cursor stays on its chat.
 - Marks aren't saved when you quit.

@@ -108,6 +108,48 @@ fn browse_filter_preview_copy_mark_and_quit_without_applying() {
     assert_eq!(fake_chat_states(&env), before, "nothing changed in ChatGPT");
 }
 
+/// A sync from another client shows up without `r`, the cursor staying on
+/// the chat it was on; never while a box is open.
+#[test]
+fn a_background_sync_reloads_the_list_and_keeps_the_cursor() {
+    let mut env = synced();
+    env.extra_env
+        .push(("CHATGPT_TEST_TUI_POLL_MS".into(), "100".into()));
+    let mut pty = Pty::spawn(&env, &["tui"], None, ROWS, COLS);
+    pty.wait_for_screen("Hello from a-one");
+    pty.send("j");
+    pty.wait_for_screen("┌Two");
+    pty.send("?");
+    pty.wait_for_screen("close help");
+
+    env.fake()
+        .state()
+        .chats
+        .push(Chat::new("d-four", "Four", "2026-09-28T10:00:00.000000Z"));
+    env.cmd().arg("sync").assert().success();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(
+        pty.screen().contains("chatgpt · 3 of 3"),
+        "reloaded under the help box: {}",
+        pty.screen()
+    );
+
+    pty.send("q");
+    let screen = pty.wait_for_screen("The index changed in the background; reloaded.");
+    let screen = if screen.contains("4 of 4") {
+        screen
+    } else {
+        pty.wait_for_screen("chatgpt · 4 of 4")
+    };
+    assert!(screen.contains("Four"), "{screen}");
+    assert!(
+        screen.contains("┌Two"),
+        "the cursor moved off Two: {screen}"
+    );
+    pty.send("q");
+    assert_eq!(pty.finish(), Some(0));
+}
+
 #[test]
 fn apply_changes_exactly_the_marked_chats() {
     let env = synced();
