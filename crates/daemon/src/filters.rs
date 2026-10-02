@@ -4,9 +4,8 @@
 
 use chatgpt_protocol::Filter;
 use chatgpt_store::{IndexFilter, IndexedConversation, JudgmentRow};
-use fancy_regex::Regex;
 
-use crate::js;
+use crate::js::{self, JsRegex};
 use crate::policy::{Judged, PolicyError, Profile, Verdict};
 
 const BRAINSTORM_KINDS: [&str; 4] = ["writing", "sermon", "product", "other"];
@@ -21,7 +20,7 @@ pub struct InvalidFilter(pub String);
 /// The index part of the filter (`toFilter`), and the title regex.
 pub struct Selection {
     pub index: IndexFilter,
-    pub title: Option<Regex>,
+    pub title: Option<JsRegex>,
 }
 
 /// `parseAge`: `30d`, `12w`, `6m`, `2y` before `now_ms`.
@@ -31,7 +30,8 @@ fn parse_age(value: &str, now_ms: i64) -> Result<i64, InvalidFilter> {
             "Invalid age \"{value}\". Use a number and unit, e.g. 30d, 12w, 6m, 2y."
         ))
     };
-    let (digits, unit) = value.split_at(value.len().saturating_sub(1));
+    let unit_at = value.char_indices().last().map_or(0, |(at, _)| at);
+    let (digits, unit) = value.split_at(unit_at);
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }
@@ -100,13 +100,11 @@ pub fn selection(filter: &Filter, now_ms: i64) -> Result<Selection, InvalidFilte
 }
 
 /// The title regex against the display title, then the original one.
-pub fn title_matches(title: Option<&Regex>, chat: &IndexedConversation) -> bool {
+pub fn title_matches(title: Option<&JsRegex>, chat: &IndexedConversation) -> bool {
     let Some(regex) = title else {
         return true;
     };
-    // A regex that runs out of backtracking budget matches nothing.
-    regex.is_match(chat.display_title()).unwrap_or(false)
-        || regex.is_match(&chat.title).unwrap_or(false)
+    regex.is_match(chat.display_title()) || regex.is_match(&chat.title)
 }
 
 /// `--suggest`, `--topic` and `--brainstorm`, validated, and `--limit`.
@@ -304,6 +302,22 @@ mod tests {
             })
             .as_deref(),
             Some("Invalid age \"3x\". Use a number and unit, e.g. 30d, 12w, 6m, 2y.")
+        );
+        // A non-ASCII last character is refused, not split inside.
+        assert_eq!(
+            error(Filter {
+                older_than: Some("30é".into()),
+                ..filter()
+            })
+            .as_deref(),
+            Some("Invalid age \"30é\". Use a number and unit, e.g. 30d, 12w, 6m, 2y.")
+        );
+        assert!(
+            error(Filter {
+                newer_than: Some("é".into()),
+                ..filter()
+            })
+            .is_some()
         );
         assert_eq!(
             error(Filter {

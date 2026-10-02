@@ -288,13 +288,8 @@ fn apply_update(content: &mut String, update: &Value) -> Option<()> {
         return Some(());
     }
     let regex = js::regex(pattern, false).ok()?;
-    let literal = fancy_regex::NoExpand(replacement);
     let multiple = update.get("multiple").and_then(Value::as_bool) == Some(true);
-    *content = if multiple {
-        regex.try_replacen(content, 0, literal).ok()?.into_owned()
-    } else {
-        regex.try_replacen(content, 1, literal).ok()?.into_owned()
-    };
+    *content = regex.replacen(content, if multiple { 0 } else { 1 }, replacement)?;
     Some(())
 }
 

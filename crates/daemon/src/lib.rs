@@ -13,6 +13,7 @@ mod filters;
 mod handlers;
 mod jev;
 mod js;
+mod js_regex;
 mod logging;
 mod memories;
 mod mutate;

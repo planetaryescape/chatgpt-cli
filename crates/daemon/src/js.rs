@@ -60,90 +60,12 @@ fn round_half_up(whole: &str, kept: &str, digits: usize) -> String {
     format!("{}.{}", &text[..split], &text[split..])
 }
 
-/// JS's `\s`: WhiteSpace and LineTerminator, without U+0085.
-const JS_SPACE: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
-
-/// A JS regex source (no `u` flag) rewritten for Rust's regex syntax, so
-/// it matches what `new RegExp(source)` would: `\w`, `\d` and `\b` are
-/// ASCII-only, `\s` is JS's whitespace set, and `.` stops at every JS line
-/// terminator, not only `\n`. Everything else passes through.
-fn regex_source(source: &str) -> String {
-    const WORD: &str = "0-9A-Za-z_";
-    let mut out = String::with_capacity(source.len() + 16);
-    let mut chars = source.chars().peekable();
-    let mut in_class = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                let Some(next) = chars.next() else {
-                    out.push('\\');
-                    break;
-                };
-                let replacement = match (next, in_class) {
-                    ('w', false) => Some(format!("[{WORD}]")),
-                    ('w', true) => Some(WORD.to_owned()),
-                    ('W', false) => Some(format!("[^{WORD}]")),
-                    ('d', false) => Some("[0-9]".to_owned()),
-                    ('d', true) => Some("0-9".to_owned()),
-                    ('D', false) => Some("[^0-9]".to_owned()),
-                    // fancy-regex has no `(?-u:\b)`: spell the ASCII
-                    // boundary out with lookarounds.
-                    ('b', false) => Some(format!(
-                        "(?:(?<={W})(?!{W})|(?<!{W})(?={W}))",
-                        W = format!("[{WORD}]")
-                    )),
-                    ('B', false) => Some(format!(
-                        "(?:(?<={W})(?={W})|(?<!{W})(?!{W}))",
-                        W = format!("[{WORD}]")
-                    )),
-                    ('s', false) => Some(format!("[{JS_SPACE}]")),
-                    ('s', true) => Some(JS_SPACE.to_owned()),
-                    ('S', false) => Some(format!("[^{JS_SPACE}]")),
-                    _ => None,
-                };
-                match replacement {
-                    Some(text) => out.push_str(&text),
-                    None => {
-                        out.push('\\');
-                        out.push(next);
-                    }
-                }
-            }
-            '[' if !in_class => {
-                in_class = true;
-                out.push('[');
-                // A leading `^` negates the class: keep it ahead of any
-                // translated escape.
-                if chars.next_if_eq(&'^').is_some() {
-                    out.push('^');
-                }
-            }
-            ']' if in_class => {
-                in_class = false;
-                out.push(']');
-            }
-            '.' if !in_class => out.push_str(r"[^\n\r\x{2028}\x{2029}]"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// `new RegExp(source, flags)` for flags `""` or `"i"`: every JS regex the
-/// TS CLI builds goes through here, so none skips the translation.
-pub fn regex(
-    source: &str,
-    case_insensitive: bool,
-) -> Result<fancy_regex::Regex, fancy_regex::Error> {
-    fancy_regex::RegexBuilder::new(&regex_source(source))
-        .case_insensitive(case_insensitive)
-        .build()
-}
-
+pub use crate::js_regex::{JsRegex, regex};
 pub use chatgpt_core::js::{number, trim};
 
 /// How a template literal prints a JSON value (`${value}`): `undefined` for
-/// a missing one, `null`, strings as they are, numbers as JS prints them.
+/// a missing one, `null`, strings as they are, numbers as JS prints them,
+/// arrays joined with commas and objects as `[object Object]`.
 pub fn template(value: Option<&serde_json::Value>) -> String {
     use serde_json::Value;
     match value {
@@ -153,7 +75,17 @@ pub fn template(value: Option<&serde_json::Value>) -> String {
         Some(Value::Number(number)) => number
             .as_f64()
             .map_or_else(|| number.to_string(), chatgpt_core::js_number_string),
-        Some(other) => other.to_string(),
+        Some(Value::Bool(flag)) => flag.to_string(),
+        // `Array.prototype.join`: null elements print as nothing.
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Null => String::new(),
+                item => template(Some(item)),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Some(Value::Object(_)) => "[object Object]".to_owned(),
     }
 }
 
@@ -213,7 +145,7 @@ pub fn parse_date(text: &str) -> Option<i64> {
     // With an offset: let RFC 3339 parse it, padding missing seconds.
     if let Some(at) = time_part.find(['Z', '+', '-']) {
         let (clock, offset) = time_part.split_at(at);
-        let clock = parse_clock(clock)?;
+        let (clock, date) = parse_clock(clock, date)?;
         let with_seconds = format!(
             "{}T{}{offset}",
             date.format("%Y-%m-%d"),
@@ -223,7 +155,8 @@ pub fn parse_date(text: &str) -> Option<i64> {
             .ok()
             .map(|time| time.timestamp_millis());
     }
-    let local = NaiveDateTime::new(date, parse_clock(time_part)?);
+    let (clock, date) = parse_clock(time_part, date)?;
+    let local = NaiveDateTime::new(date, clock);
     Local
         .from_local_datetime(&local)
         .earliest()
@@ -252,11 +185,26 @@ fn parse_date_only(text: &str) -> Option<NaiveDate> {
     first.checked_add_days(chrono::Days::new(u64::from(day - 1)))
 }
 
-/// `HH:mm`, `HH:mm:ss` or `HH:mm:ss.sss`.
-fn parse_clock(text: &str) -> Option<NaiveTime> {
-    ["%H:%M:%S%.f", "%H:%M"]
+/// `HH:mm`, `HH:mm:ss` or `HH:mm:ss.sss` on `date`. V8 reads `24:00`
+/// (seconds and fraction zero) as the next day's midnight.
+fn parse_clock(text: &str, date: NaiveDate) -> Option<(NaiveTime, NaiveDate)> {
+    if let Some(rest) = text.strip_prefix("24:00") {
+        let zero = rest.is_empty()
+            || rest.strip_prefix(":00").is_some_and(|fraction| {
+                fraction.is_empty()
+                    || fraction.strip_prefix('.').is_some_and(|digits| {
+                        !digits.is_empty() && digits.bytes().all(|byte| byte == b'0')
+                    })
+            });
+        if !zero {
+            return None;
+        }
+        return Some((NaiveTime::MIN, date.succ_opt()?));
+    }
+    let clock = ["%H:%M:%S%.f", "%H:%M"]
         .iter()
-        .find_map(|format| NaiveTime::parse_from_str(text, format).ok())
+        .find_map(|format| NaiveTime::parse_from_str(text, format).ok())?;
+    Some((clock, date))
 }
 
 /// `JSON.stringify(value)`: compact, numbers as JS prints them (`1e-7`,
@@ -297,6 +245,21 @@ mod tests {
             stringify(&value),
             r#"{"b":{"x":1e-7,"y":0.000001,"z":1e+21,"w":0.9400000000000001},"a":[1,2.5,"q\"\u0001"]}"#
         );
+    }
+
+    #[test]
+    fn template_prints_values_as_a_js_template_literal_does() {
+        let value: serde_json::Value =
+            serde_json::from_str(r#"[1, [2, [null, 3]], {"a": 1}, true, "x", 1e21, 0.1, null]"#)
+                .expect("json");
+        // `${[1,[2,[null,3]],{a:1},true,"x",1e21,0.1,null]}` in node.
+        assert_eq!(
+            template(Some(&value)),
+            "1,2,,3,[object Object],true,x,1e+21,0.1,"
+        );
+        assert_eq!(template(Some(&serde_json::json!({}))), "[object Object]");
+        assert_eq!(template(Some(&serde_json::json!([[]]))), "");
+        assert_eq!(template(None), "undefined");
     }
 
     #[test]
@@ -349,27 +312,24 @@ mod tests {
     }
 
     #[test]
-    fn regexes_match_as_js_regexes_without_the_u_flag() {
-        let js = |source: &str| regex(source, false).expect("valid");
-        let word = js(r"\w+");
+    fn hour_24_is_the_next_midnight_as_in_v8() {
+        // Date.parse values from node.
+        assert_eq!(parse_date("2026-01-01T24:00Z"), Some(1_767_312_000_000));
         assert_eq!(
-            word.find("café").expect("ok").map(|m| m.as_str()),
-            Some("caf")
+            parse_date("2026-01-01T24:00:00.000Z"),
+            Some(1_767_312_000_000)
         );
-        assert!(
-            js(r"\bé").is_match("café").expect("ok"),
-            "é isn't a JS word character"
+        assert_eq!(
+            parse_date("2026-01-01T24:00+02:00"),
+            Some(1_767_304_800_000)
         );
-        assert!(!js(r"\d").is_match("٣").expect("ok"), "only ASCII digits");
-        assert!(js(r"a.b").is_match("a\u{85}b").expect("ok"));
-        assert!(!js(r"a.b").is_match("a\u{2028}b").expect("ok"));
-        assert!(js(r"\s").is_match("\u{FEFF}").expect("ok"));
-        assert!(!js(r"\s").is_match("\u{85}").expect("ok"));
-        assert!(js(r"[\w-]+$").is_match("a-b").expect("ok"));
-        assert!(
-            js(r"[^.]x").is_match("ax").expect("ok"),
-            "a class keeps its own dot"
+        assert_eq!(parse_date("2026-12-31T24:00Z"), Some(1_798_761_600_000));
+        assert_eq!(
+            parse_date("2026-01-01T24:00"),
+            parse_date("2026-01-02T00:00")
         );
-        assert!(js(r"\.").is_match(".").expect("ok"));
+        assert_eq!(parse_date("2026-01-01T24:01"), None);
+        assert_eq!(parse_date("2026-01-01T24:00:01"), None);
+        assert_eq!(parse_date("2026-01-01T24:00:00.001"), None);
     }
 }
