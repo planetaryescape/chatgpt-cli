@@ -1,0 +1,25 @@
+[package]
+name = "typesafe-client"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "A small client for TypeSafe's System One API (Jev), as @typesafe-ai/sdk 0.6.0 calls it."
+
+[lib]
+name = "typesafe_client"
+
+[dependencies]
+bytes = { workspace = true }
+impit = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true
