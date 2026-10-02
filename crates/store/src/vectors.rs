@@ -32,6 +32,8 @@ pub struct NewVector {
 /// One stored vector, with what ranking needs from its chunk and chat.
 pub struct VectorRow<'a> {
     pub chunk_id: i64,
+    /// The chunk's place in its chat, the same in every index.
+    pub chunk_index: i64,
     pub conversation_id: &'a str,
     /// The chat title the chunk was indexed with.
     pub title: &'a str,
@@ -48,14 +50,16 @@ fn text<'a>(row: &'a rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'a st
 }
 
 /// `pendingVectors` for every chat (`archived` null), in id order, from
-/// after `after_id`, at most `limit`: only chunks current for their chat
-/// and without a vector from `model_version`.
+/// after `after_id`, at most `limit`: only chunks current for their chat,
+/// without a vector from `model_version`, and not set aside after a
+/// failure until after `now` (unix seconds).
 pub fn pending_vectors(
     connection: &Connection,
     versions: ChunkVersions,
     model_version: &str,
     after_id: i64,
     limit: usize,
+    now: i64,
 ) -> Result<Vec<PendingChunk>> {
     let mut statement = connection.prepare_cached(
         "select sc.id, sc.title || char(10) || sc.body from search_chunks sc
@@ -64,6 +68,8 @@ pub fn pending_vectors(
          where sc.render_version = ?1 and sc.chunk_version = ?2 and sc.title = c.title
          and (v.chunk_id is null or v.model_version != ?3)
          and sc.id > ?4
+         and not exists (select 1 from search_vector_failures f
+            where f.chunk_id = sc.id and f.model_version = ?3 and f.retry_at > ?6)
          order by sc.id limit ?5",
     )?;
     let rows = statement
@@ -73,7 +79,8 @@ pub fn pending_vectors(
                 versions.chunk,
                 model_version,
                 after_id,
-                i64::try_from(limit).unwrap_or(i64::MAX)
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                now
             ],
             |row| {
                 Ok(PendingChunk {
@@ -104,6 +111,8 @@ pub fn save_vectors(
                 select 1 from search_chunks
                 where id = ?1 and title || char(10) || body = ?4)",
         )?;
+        let mut clear =
+            transaction.prepare_cached("delete from search_vector_failures where chunk_id = ?")?;
         for vector in vectors {
             saved += insert.execute(params![
                 vector.chunk_id,
@@ -111,10 +120,35 @@ pub fn save_vectors(
                 vector.embedding,
                 vector.text
             ])?;
+            clear.execute([vector.chunk_id])?;
         }
     }
     transaction.commit()?;
     Ok(saved)
+}
+
+/// Set chunk `chunk_id` aside until `retry_at` (unix seconds): the model
+/// failed on it.
+pub fn record_vector_failure(
+    connection: &Connection,
+    chunk_id: i64,
+    model_version: &str,
+    retry_at: i64,
+) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into search_vector_failures values (?, ?, ?)")?
+        .execute(params![chunk_id, model_version, retry_at])?;
+    Ok(())
+}
+
+/// How many chunks are set aside for `model_version` after `now`.
+pub fn vector_failures(connection: &Connection, model_version: &str, now: i64) -> Result<u64> {
+    let count: i64 = connection.query_row(
+        "select count(*) from search_vector_failures where model_version = ? and retry_at > ?",
+        params![model_version, now],
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(count).unwrap_or(0))
 }
 
 /// `coverage`'s `chunks` and `embedded`: chunks current for their chat in
@@ -146,8 +180,7 @@ pub fn vector_coverage(
 }
 
 /// `semantic`'s query: every vector from `model_version` on a chunk
-/// current for its chat in scope, handed to `each` in the order SQLite
-/// returns them (the TS CLI keeps the first of equal scores in that order).
+/// current for its chat in scope, handed to `each` in no particular order.
 pub fn each_vector(
     connection: &Connection,
     archived: Option<bool>,
@@ -158,7 +191,7 @@ pub fn each_vector(
     let scope = archived.map(i64::from);
     let mut statement = connection.prepare_cached(
         "select sc.id as chunk_id, sc.conversation_id, sc.title,
-            c.update_time, c.is_archived, v.embedding from search_vectors v
+            c.update_time, c.is_archived, v.embedding, sc.chunk_index from search_vectors v
             join search_chunks sc on sc.id = v.chunk_id
             join conversations c on c.id = sc.conversation_id and c.update_time = sc.update_time
             where v.model_version = ? and sc.render_version = ? and sc.chunk_version = ?
@@ -177,6 +210,7 @@ pub fn each_vector(
         };
         each(VectorRow {
             chunk_id: row.get(0)?,
+            chunk_index: row.get(6)?,
             conversation_id: text(row, 1)?,
             title: text(row, 2)?,
             updated: text(row, 3)?,

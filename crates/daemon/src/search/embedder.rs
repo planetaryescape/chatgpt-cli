@@ -13,9 +13,9 @@
 //! failed download (offline, say) is retried after a while and never
 //! affects lexical search; `daemon status` and semantic search say why
 //! they're waiting. The worker, and the model with it, is stopped after
-//! ten idle minutes. Logs carry counts and chunk ids, never text.
+//! ten idle minutes. A chunk the model fails on is set aside in the index
+//! for a day, across restarts. Logs carry counts and chunk ids, never text.
 
-use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,8 @@ const PAGE: usize = 64;
 /// How long a failed download waits before the next try (a `search-index`
 /// tries at once).
 const DOWNLOAD_RETRY: Duration = Duration::from_secs(15 * 60);
+/// How long a chunk the model failed on is set aside, in seconds.
+const FAILED_CHUNK_RETRY: i64 = 24 * 60 * 60;
 /// A shorter [`DOWNLOAD_RETRY`] for tests (debug builds only).
 const TEST_RETRY_ENV: &str = "CHATGPT_TEST_MODEL_RETRY_MS";
 
@@ -101,8 +103,8 @@ struct Inner {
     /// The request generation `chunks` was counted for: a later wake means
     /// the indexer wrote chunks since.
     counted_for: u64,
-    /// Chunks the model failed on, skipped until the daemon restarts.
-    failed: HashSet<i64>,
+    /// Chunks set aside after the model failed on them, as last counted.
+    failed: u64,
     waiting: Option<String>,
     last_error: Option<String>,
     last_finished_at: Option<i64>,
@@ -149,7 +151,7 @@ impl Embedder {
             chunks: inner.chunks,
             embedded: inner.embedded,
             in_progress: inner.running || inner.requested > inner.done,
-            failed: u64::try_from(inner.failed.len()).unwrap_or(u64::MAX),
+            failed: inner.failed,
             waiting: inner.waiting.clone(),
             last_error: inner.last_error.clone(),
             last_finished_at: inner.last_finished_at,
@@ -308,21 +310,27 @@ pub async fn run(state: std::sync::Arc<State>) {
                 tracing::warn!("embedding stopped: {message}");
                 inner.last_error = Some(message);
             }
-            Ok(()) if inner.failed.is_empty() => inner.last_error = None,
+            Ok(()) if inner.failed == 0 => inner.last_error = None,
             Ok(()) => {}
         }
     }
 }
 
-/// Count the chunks and their vectors, for `daemon status`.
+/// Count the chunks, their vectors and the chunks set aside, for `daemon
+/// status`.
 async fn count(state: &State, versions: ChunkVersions) -> Result<(u64, u64), String> {
     let generation = state.embedder.inner().requested;
-    let counted = state
-        .db_write(move |db| chatgpt_store::vector_coverage(db, None, versions, MODEL_VERSION))
+    let (counted, failed) = state
+        .db_write(move |db| {
+            let counted = chatgpt_store::vector_coverage(db, None, versions, MODEL_VERSION)?;
+            let failed = chatgpt_store::vector_failures(db, MODEL_VERSION, now_unix())?;
+            Ok((counted, failed))
+        })
         .await
         .map_err(|failure| failure.message)?;
     let mut inner = state.embedder.inner();
     (inner.chunks, inner.embedded) = counted;
+    inner.failed = failed;
     inner.counted_for = generation;
     Ok(counted)
 }
@@ -402,7 +410,7 @@ async fn embed_pending(state: &State) -> Result<(), String> {
         }
         let page = state
             .db_write(move |db| {
-                chatgpt_store::pending_vectors(db, versions, MODEL_VERSION, after, PAGE)
+                chatgpt_store::pending_vectors(db, versions, MODEL_VERSION, after, PAGE, now_unix())
             })
             .await
             .map_err(|failure| failure.message)?;
@@ -412,9 +420,6 @@ async fn embed_pending(state: &State) -> Result<(), String> {
         after = last.id;
         let mut stopped = None;
         for chunk in page {
-            if state.embedder.inner().failed.contains(&chunk.id) {
-                continue;
-            }
             super::indexer::yield_to_requests(state).await;
             match state.embedder.embed(&model, &chunk.text).await {
                 Ok(vector) => batch.push(NewVector {
@@ -424,8 +429,20 @@ async fn embed_pending(state: &State) -> Result<(), String> {
                 }),
                 Err(WorkerError::Text(why)) => {
                     tracing::warn!(chunk = chunk.id, "chunk not embedded: {why}");
+                    let retry_at = now_unix() + FAILED_CHUNK_RETRY;
+                    state
+                        .db_write(move |db| {
+                            chatgpt_store::record_vector_failure(
+                                db,
+                                chunk.id,
+                                MODEL_VERSION,
+                                retry_at,
+                            )
+                        })
+                        .await
+                        .map_err(|failure| failure.message)?;
                     let mut inner = state.embedder.inner();
-                    inner.failed.insert(chunk.id);
+                    inner.failed += 1;
                     inner.last_error = Some(why);
                 }
                 Err(WorkerError::Unusable(why)) => {

@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_native_rows.sql"),
     include_str!("../migrations/0006_drop_native_rows.sql"),
     include_str!("../migrations/0007_chunk_bodies_text.sql"),
+    include_str!("../migrations/0008_vector_failures.sql"),
 ];
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<()> {

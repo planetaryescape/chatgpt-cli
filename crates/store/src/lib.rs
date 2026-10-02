@@ -148,7 +148,10 @@ pub use reconcile::{candidates, preserve};
 pub use search::{
     coverage, lexical, prune_search, replace_chunks, save_indexed, transcript, unindexed,
 };
-pub use vectors::{chunk_body, each_vector, pending_vectors, save_vectors, vector_coverage};
+pub use vectors::{
+    chunk_body, each_vector, pending_vectors, record_vector_failure, save_vectors, vector_coverage,
+    vector_failures,
+};
 
 #[cfg(test)]
 mod search_tests;

@@ -128,24 +128,43 @@ fn chunks_that_may_not_be_utf8_are_dropped_by_the_text_migration() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chatgpt.db");
     {
-        let store = Store::open(&path).unwrap();
-        store
-            .write(|db| {
-                replace_all(db, &[chat("a", "T", "t", false), chat("b", "T", "t", false)], "t")?;
-                replace_chunks(db, &target("b", "T", "t"), ChunkVersions { render: 2, chunk: 2 }, &["kept".to_owned()])?;
-                // What a chunk from before chunk version 2 can hold: the
-                // bytes Bun wrote for half of a surrogate pair.
-                db.execute(
-                    "insert into search_chunks
-                     (conversation_id, update_time, render_version, chunk_version, chunk_index, title, body)
-                     values ('a', 't', 2, 1, 0, 'T', cast(x'68656c6c6f20eda0bd' as text))",
-                    [],
-                )?;
-                db.execute("insert into search_indexed values ('a', 't', 2, 1)", [])?;
-                db.pragma_update(None, "user_version", 6)?;
-                Ok(())
-            })
-            .unwrap();
+        // An index at migration 6, before the text migration.
+        let mut db = rusqlite::Connection::open(&path).unwrap();
+        let transaction = db.transaction().unwrap();
+        for sql in [
+            include_str!("../migrations/0001_index.sql"),
+            include_str!("../migrations/0002_search.sql"),
+            include_str!("../migrations/0003_search_follows_transcripts.sql"),
+            include_str!("../migrations/0004_search_vectors.sql"),
+            include_str!("../migrations/0005_native_rows.sql"),
+            include_str!("../migrations/0006_drop_native_rows.sql"),
+        ] {
+            transaction.execute_batch(sql).unwrap();
+        }
+        transaction.pragma_update(None, "user_version", 6).unwrap();
+        transaction.commit().unwrap();
+        let chats = [chat("a", "T", "t", false), chat("b", "T", "t", false)];
+        replace_all(&mut db, &chats, "t").unwrap();
+        let current = ChunkVersions {
+            render: 2,
+            chunk: 2,
+        };
+        replace_chunks(
+            &mut db,
+            &target("b", "T", "t"),
+            current,
+            &["kept".to_owned()],
+        )
+        .unwrap();
+        // What a chunk from before chunk version 2 can hold: the bytes Bun
+        // wrote for half of a surrogate pair.
+        db.execute_batch(
+            "insert into search_chunks
+             (conversation_id, update_time, render_version, chunk_version, chunk_index, title, body)
+             values ('a', 't', 2, 1, 0, 'T', cast(x'68656c6c6f20eda0bd' as text));
+             insert into search_indexed values ('a', 't', 2, 1);",
+        )
+        .unwrap();
     }
     let store = Store::open(&path).unwrap();
     let left: Vec<(String, String)> = store
@@ -180,17 +199,39 @@ fn chunks_that_may_not_be_utf8_are_dropped_by_the_text_migration() {
 fn chunks_under_an_old_title_are_not_current_anywhere() {
     let (_dir, store) = store_with(&[chat("a", "New name", "t", false)]);
     store
-        .write(|db| replace_chunks(db, &target("a", "Old name", "t"), V, &["body text".to_owned()]))
+        .write(|db| {
+            replace_chunks(
+                db,
+                &target("a", "Old name", "t"),
+                V,
+                &["body text".to_owned()],
+            )
+        })
         .unwrap();
     assert_eq!(store.read(|db| unindexed(db, V)).unwrap().len(), 1);
     assert_eq!(store.read(|db| coverage(db, None, V)).unwrap(), (1, 0));
-    assert!(store.read(|db| lexical(db, "\"old\"", None, V, 200)).unwrap().is_empty());
-    assert!(store.read(|db| lexical(db, "\"body\"", None, V, 200)).unwrap().is_empty());
+    assert!(
+        store
+            .read(|db| lexical(db, "\"old\"", None, V, 200))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .read(|db| lexical(db, "\"body\"", None, V, 200))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         store.read(|db| vector_coverage(db, None, V, "m")).unwrap(),
         (0, 0)
     );
-    assert!(store.read(|db| pending_vectors(db, V, "m", 0, 10)).unwrap().is_empty());
+    assert!(
+        store
+            .read(|db| pending_vectors(db, V, "m", 0, 10, 0))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
