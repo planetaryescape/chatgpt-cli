@@ -493,6 +493,7 @@ dependencies = [
  "assert_cmd",
  "chatgpt-core",
  "chatgpt-daemon",
+ "chatgpt-embed",
  "chatgpt-launcher",
  "chatgpt-protocol",
  "chrono",
@@ -524,6 +525,7 @@ version = "0.1.1"
 dependencies = [
  "chatgpt",
  "chatgpt-core",
+ "chatgpt-embed",
  "chatgpt-protocol",
  "chatgpt-store",
  "chrono",

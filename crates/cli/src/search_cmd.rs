@@ -1,17 +1,18 @@
-//! Lexical `search`: the daemon answers from its search index; this prints
-//! the hits as the TS CLI's `search` action and `formatSearchResults`
-//! (`src/cli.ts`, `src/search/output.ts` @ 1b8c950) do.
+//! `search` and `search-index`: the daemon answers from its search index
+//! (or, with `--remote`, from ChatGPT's search); this prints the hits as the
+//! TS CLI's `search` action and `formatSearchResults` (`src/cli.ts`,
+//! `src/search/output.ts` @ 1b8c950) do.
 
 use std::process::ExitCode;
 
 use chatgpt_core::js::{collapse_spaces, number, trim};
-use chatgpt_core::js_number_string;
+use chatgpt_core::{format_duration, js_number_string};
 use chatgpt_launcher::ClientError;
-use chatgpt_protocol::{Request, ResponseData, SearchHit};
+use chatgpt_protocol::{Request, ResponseData, SearchHit, SearchMode, SessionChoice};
 use unicode_width::UnicodeWidthStr;
 
-use crate::args::SearchArgs;
-use crate::output::{data, json, note, unexpected};
+use crate::args::{ScopeArgs, SearchArgs};
+use crate::output::{ProgressLines, data, note, unexpected};
 use crate::reads::{invalid, stale_note};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,46 +45,162 @@ fn format(raw: Option<&str>) -> Result<Format, ClientError> {
     }
 }
 
+/// ChatGPT's search API returns at most this many.
+const REMOTE_MAX: u64 = 40;
+
 pub async fn search(
     paths: &chatgpt_core::Paths,
     args: SearchArgs,
+    session: SessionChoice,
 ) -> Result<ExitCode, ClientError> {
     let limit = limit(&args.limit)?;
+    if u8::from(args.semantic) + u8::from(args.hybrid) + u8::from(args.remote) > 1 {
+        return Err(invalid(
+            "Choose only one of --semantic, --hybrid, or --remote.",
+        ));
+    }
+    if args.remote && limit > REMOTE_MAX {
+        return Err(invalid(
+            "--remote supports --limit up to 40 (ChatGPT's search API limit).",
+        ));
+    }
     let format = format(args.format.as_deref())?;
-    let request = Request::Search {
-        query: args.query,
-        limit,
-        archived: args.archived,
-        all: args.all,
+    let mode = if args.hybrid {
+        SearchMode::Hybrid
+    } else if args.semantic {
+        SearchMode::Semantic
+    } else {
+        SearchMode::Lexical
+    };
+    let request = if args.remote {
+        Request::RemoteSearch {
+            query: args.query,
+            limit,
+            archived: args.archived,
+            all: args.all,
+            session,
+        }
+    } else {
+        Request::Search {
+            query: args.query,
+            limit,
+            archived: args.archived,
+            all: args.all,
+            mode,
+        }
     };
     let ResponseData::SearchHits(results) = chatgpt_launcher::ask(paths, request, |_| {}).await?
     else {
         return Err(unexpected());
     };
-    stale_note(&results.synced_at);
-    if results.indexed < results.chats {
-        note(&format!(
-            "{} of {} chats indexed; the daemon is indexing the rest in the background.",
-            results.indexed, results.chats
-        ));
-    }
-    if format == Format::Json {
-        json(&results.hits)?;
-    } else {
-        let output = render(&results.hits, format);
-        // `if (output) console.log(output)`.
-        if !output.is_empty() {
-            data(&format!("{output}\n"));
+    // The remote search reads no index, and says nothing more.
+    let local = !args.remote;
+    if local {
+        stale_note(&results.synced_at);
+        if results.indexed < results.chats {
+            note(&format!(
+                "{} of {} chats indexed; the daemon is indexing the rest in the background.",
+                results.indexed, results.chats
+            ));
+        }
+        if mode != SearchMode::Lexical && results.embedded < results.chunks {
+            note(&format!(
+                "{} of {} chunks embedded; the daemon is embedding the rest in the background.",
+                results.embedded, results.chunks
+            ));
         }
     }
-    note(&format!(
-        "{} conversation(s) found locally.",
-        results.hits.len()
-    ));
+    // `if (output) console.log(output)`.
+    let output = render(&results.hits, format);
+    if !output.is_empty() {
+        data(&format!("{output}\n"));
+    }
+    if local {
+        note(&format!(
+            "{} conversation(s) found locally.",
+            results.hits.len()
+        ));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
-/// `formatSearchResults` for every format but JSON.
+/// `search-index`: wait for the daemon's indexer and embedder to catch up,
+/// showing their progress, then report as the TS CLI's `search-index` does.
+pub async fn search_index(
+    paths: &chatgpt_core::Paths,
+    scope: ScopeArgs,
+) -> Result<ExitCode, ClientError> {
+    let request = Request::SearchIndex {
+        archived: scope.archived,
+        all: scope.all,
+    };
+    let mut progress = ProgressLines::new();
+    let answer = chatgpt_launcher::ask(paths, request, |event| progress.show(event)).await;
+    progress.close();
+    let ResponseData::SearchIndexed(report) = answer? else {
+        return Err(unexpected());
+    };
+    for failure in &report.failures {
+        eprintln!("failed: {failure}");
+    }
+    for why in &report.waiting {
+        note(&format!("waiting: {why}"));
+    }
+    note(&format!(
+        "Search index in {}: {}/{} chats, {} text chunks, {} embeddings.",
+        format_duration(report.elapsed_ms as f64),
+        report.indexed,
+        report.chats,
+        report.chunks,
+        report.embedded
+    ));
+    let complete = report.indexed == report.chats && report.embedded == report.chunks;
+    if report.failures.is_empty() && complete {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+/// `text` as a JSON string, escaped as `JSON.stringify` escapes it.
+fn quoted(text: &str) -> String {
+    serde_json::Value::from(text).to_string()
+}
+
+/// A hit's snippet as JSON: `JSON.stringify` escapes a lone surrogate left
+/// by a cut, where text output shows U+FFFD.
+fn snippet_json(hit: &SearchHit) -> String {
+    let Some(unit) = hit.snippet_cut else {
+        return quoted(&hit.snippet);
+    };
+    let kept = quoted(hit.snippet.strip_suffix('\u{FFFD}').unwrap_or(&hit.snippet));
+    let open = kept.strip_suffix('"').unwrap_or(&kept);
+    format!("{open}\\u{unit:04x}\"")
+}
+
+/// `JSON.stringify(results, null, 2)`, numbers formatted as JS does.
+fn json_text(hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return "[]".to_owned();
+    }
+    let objects: Vec<String> = hits
+        .iter()
+        .map(|hit| {
+            let score = hit.score.map_or_else(|| "null".to_owned(), js_number_string);
+            format!(
+                "  {{\n    \"id\": {},\n    \"title\": {},\n    \"updated\": {},\n    \"archived\": {},\n    \"score\": {score},\n    \"snippet\": {}\n  }}",
+                quoted(&hit.id),
+                quoted(&hit.title),
+                quoted(&hit.updated),
+                hit.archived,
+                snippet_json(hit),
+            )
+        })
+        .collect();
+    format!("[\n{}\n]", objects.join(",\n"))
+}
+
+/// `formatSearchResults`.
 fn render(hits: &[SearchHit], format: Format) -> String {
     let date = |hit: &SearchHit| hit.updated.chars().take(10).collect::<String>();
     match format {
@@ -99,7 +216,8 @@ fn render(hits: &[SearchHit], format: Format) -> String {
                     hit.title.clone(),
                     hit.updated.clone(),
                     hit.archived.to_string(),
-                    js_number_string(hit.score),
+                    // `String(value ?? "")`.
+                    hit.score.map(js_number_string).unwrap_or_default(),
                     hit.snippet.clone(),
                 ]
                 .iter()
@@ -110,7 +228,8 @@ fn render(hits: &[SearchHit], format: Format) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         Format::Table => table(hits),
-        Format::Text | Format::Json => hits
+        Format::Json => json_text(hits),
+        Format::Text => hits
             .iter()
             .map(|hit| {
                 format!(
@@ -186,9 +305,28 @@ mod tests {
             title: title.into(),
             updated: "2026-09-27T11:05:37.123456Z".into(),
             archived,
-            score,
+            score: Some(score),
             snippet: snippet.into(),
+            snippet_cut: None,
         }
+    }
+
+    #[test]
+    fn json_is_written_as_json_stringify_writes_it() {
+        let mut remote = hit("r", "Line\nbreak \"q\"", true, 0.0, "cut \u{FFFD}");
+        remote.score = None;
+        remote.snippet_cut = Some(0xD83D);
+        let hits = [hit("a", "T", false, 1.5e-7, "é"), remote];
+        // `bun -e 'console.log(JSON.stringify([...], null, 2))'` for the
+        // same values, with "cut \ud83d" as the second snippet.
+        assert_eq!(
+            json_text(&hits),
+            "[\n  {\n    \"id\": \"a\",\n    \"title\": \"T\",\n    \"updated\": \"2026-09-27T11:05:37.123456Z\",\n    \"archived\": false,\n    \"score\": 1.5e-7,\n    \"snippet\": \"é\"\n  },\n  {\n    \"id\": \"r\",\n    \"title\": \"Line\\nbreak \\\"q\\\"\",\n    \"updated\": \"2026-09-27T11:05:37.123456Z\",\n    \"archived\": true,\n    \"score\": null,\n    \"snippet\": \"cut \\ud83d\"\n  }\n]"
+        );
+        assert_eq!(json_text(&[]), "[]");
+        // Text formats show the cut as U+FFFD; CSV leaves a null score empty.
+        assert!(render(&hits[1..], Format::Text).ends_with("cut \u{FFFD}"));
+        assert!(render(&hits[1..], Format::Csv).contains("\"true\",\"\",\"cut"));
     }
 
     #[test]

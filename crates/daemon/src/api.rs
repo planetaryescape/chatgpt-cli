@@ -182,6 +182,23 @@ pub struct BatchItem {
     pub conversation: Conversation,
 }
 
+/// A conversation result of ChatGPT's search (the TS CLI's `SearchHit`).
+#[derive(Clone, Debug, Deserialize)]
+pub struct GlobalSearchHit {
+    pub title: String,
+    pub snippet: String,
+    /// Unix seconds.
+    pub update_time: f64,
+    pub payload: GlobalSearchPayload,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GlobalSearchPayload {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub is_archived: bool,
+}
+
 /// Calls made with one browser choice's session, which the daemon reads
 /// once and renews only when ChatGPT rejects it. A sync pins the account
 /// too: a renewed session for another account fails the call rather than
@@ -307,6 +324,35 @@ impl Api {
             Some(&body),
         )
         .await
+    }
+
+    /// `searchConversations`: ChatGPT's own search, conversation results
+    /// only. A read, although it's a POST.
+    pub async fn global_search(
+        &self,
+        query: &str,
+        limit: u64,
+    ) -> Result<Vec<GlobalSearchHit>, ApiError> {
+        #[derive(Deserialize)]
+        struct Page {
+            items: Vec<Value>,
+        }
+        let path = "/backend-api/global/search";
+        let body = serde_json::json!({
+            "entrypoint": "global_search",
+            "limit": limit,
+            "query": query,
+            "source_requests": [{ "type": "conversation" }],
+            "cursor": null,
+        })
+        .to_string();
+        self.json::<Page>(HttpMethod::Post, path, Some(&body))
+            .await?
+            .items
+            .into_iter()
+            .filter(|item| item["source_type"] == "conversation")
+            .map(|item| serde_json::from_value(item).map_err(|error| decode_error(path, &error)))
+            .collect()
     }
 
     /// The saved memories, for `stats`.

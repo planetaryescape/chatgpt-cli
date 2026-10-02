@@ -66,8 +66,14 @@ impl Env {
             .env("HOME", home)
             .env("XDG_DATA_HOME", home.join("xdg-data"))
             .env("XDG_CONFIG_HOME", home.join("xdg-config"))
+            // The embedding model's cache: never the developer's.
+            .env("XDG_CACHE_HOME", home.join("xdg-cache"))
             .env("CHATGPT_LEGACY_DB", &self.legacy)
             .env("CHATGPT_TEST_FAST_RETRY", "1")
+            // Vectors without the model, and never a download from the
+            // internet (a test that wants the real path overrides both).
+            .env("CHATGPT_TEST_EMBEDDER", "fake")
+            .env("CHATGPT_MODEL_BASE_URL", "http://127.0.0.1:9")
             .env_remove("CHATGPT_INSTANCE")
             .env_remove("CHATGPT_BROWSER")
             .env_remove("CHATGPT_BROWSER_PROFILE")
@@ -140,6 +146,24 @@ impl Env {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the indexer never went idle: {index}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Wait until the indexer and then the embedder have nothing running
+    /// or pending. Returns the embedder's status.
+    pub fn wait_for_embedder(&self) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        loop {
+            let index = self.status()["search_index"].clone();
+            let embeddings = index["embeddings"].clone();
+            if index["in_progress"] == false && embeddings["in_progress"] == false {
+                return embeddings;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the embedder never went idle: {index}"
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }

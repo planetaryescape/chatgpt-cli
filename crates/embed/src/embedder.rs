@@ -132,7 +132,7 @@ impl Embedder for TractEmbedder {
 /// `normalize`.
 fn mean_normalized(hidden: &[f32], tokens: usize) -> Vec<f32> {
     let mut sum = vec![0f32; DIM];
-    for token in hidden.chunks_exact(DIM).take(tokens) {
+    for token in hidden.as_chunks::<DIM>().0.iter().take(tokens) {
         for (total, value) in sum.iter_mut().zip(token) {
             *total += value;
         }
@@ -154,10 +154,14 @@ fn mean_normalized(hidden: &[f32], tokens: usize) -> Vec<f32> {
 /// of ASCII words, so texts sharing words point the same way. It's simple
 /// enough to compute bit for bit in JS too, which the parity harness does
 /// (`crates/cli/tests/parity_semantic.rs`).
-pub struct FakeEmbedder;
+pub struct FakeEmbedder {
+    /// How long each text takes, to stand in for the model's speed.
+    pub delay: std::time::Duration,
+}
 
 impl Embedder for FakeEmbedder {
     fn embed(&mut self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        std::thread::sleep(self.delay);
         Ok(fake_vector(text))
     }
 }
@@ -257,7 +261,9 @@ mod tests {
         }
         let mut embedder = TractEmbedder::load(&dir).expect("load");
         let vector = embedder
-            .embed("Rust async runtimes compared: tokio, smol and async-std for a small CLI daemon.")
+            .embed(
+                "Rust async runtimes compared: tokio, smol and async-std for a small CLI daemon.",
+            )
             .expect("embed");
         // `bun scripts/dump-embeddings.ts --batch 1` for the same text.
         let ts: Vec<f32> =

@@ -356,6 +356,38 @@ impl HttpClient {
     }
 }
 
+/// GET a public file, following redirects, with no cookies and no retries:
+/// the search embedding model's files, which Hugging Face redirects to its
+/// CDN. Errors name `url` without its query and never quote a body.
+pub async fn download(url: &str, timeout: Duration) -> Result<bytes::Bytes, HttpError> {
+    let shown = url.split('?').next().unwrap_or(url).to_owned();
+    if !environment_prepared() {
+        return Err(HttpError::EnvironmentNotPrepared);
+    }
+    let impit = Impit::<Jar>::builder()
+        .with_fingerprint(chrome_fingerprint())
+        .with_redirect(RedirectBehavior::FollowRedirect(10))
+        .with_default_timeout(timeout)
+        .build()
+        .map_err(HttpError::Build)?;
+    let response = impit
+        .get(url.to_owned(), None, None)
+        .await
+        .map_err(|error| transport_error(&shown, error))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(HttpError::Status {
+            status,
+            path: shown,
+            snippet: None,
+        });
+    }
+    response
+        .bytes()
+        .await
+        .map_err(|error| transport_error(&shown, error.into()))
+}
+
 /// The body of a final response: `Ok` for 2xx, otherwise `HttpError::Status`.
 async fn finish(response: reqwest::Response, path: &str) -> Result<String, HttpError> {
     let status = response.status();

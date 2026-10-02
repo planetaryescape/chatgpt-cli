@@ -156,6 +156,7 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
         crate::sync::run_scheduled(background).await;
     });
     tasks.spawn(crate::search::indexer::run(Arc::clone(&state)));
+    tasks.spawn(crate::search::embedder::run(Arc::clone(&state)));
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {

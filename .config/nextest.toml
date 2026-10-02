@@ -9,3 +9,9 @@
 slow-timeout = { period = "30s", terminate-after = 2 }
 # The dev loop wants the full failure list from one run.
 fail-fast = false
+
+# The TS parity harnesses start the daemon and hundreds of TS CLI runs each;
+# under a full parallel run they take 30-50s.
+[[profile.default.overrides]]
+filter = "binary(parity_ts) | binary(parity_export_search)"
+slow-timeout = { period = "60s", terminate-after = 3 }

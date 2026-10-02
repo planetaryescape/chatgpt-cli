@@ -99,6 +99,19 @@ impl Indexer {
         self.wake();
     }
 
+    /// `search-index`: fetch what's missing now, as the TS CLI's does,
+    /// without waiting for a pass.
+    pub fn fetch_now(&self) {
+        self.pass_succeeded();
+    }
+
+    /// Chats set aside because ChatGPT didn't return them.
+    pub fn unavailable_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.inner().unavailable.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     pub fn foreground(&self) -> Foreground<'_> {
         self.foreground.fetch_add(1, Ordering::SeqCst);
         Foreground(&self.foreground)
@@ -115,6 +128,8 @@ impl Indexer {
             last_finished_at: inner.last_finished_at,
             last_error: inner.last_error.clone(),
             waiting: inner.waiting.clone(),
+            // The embedder's own status; `daemon status` fills it in.
+            embeddings: Default::default(),
         }
     }
 
@@ -349,9 +364,13 @@ async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
         .db_write(move |db| chatgpt_store::coverage(db, None, versions))
         .await
         .map_err(|failure| failure.message)?;
-    let mut inner = state.indexer.inner();
-    inner.chats = chats;
-    inner.indexed = indexed;
+    {
+        let mut inner = state.indexer.inner();
+        inner.chats = chats;
+        inner.indexed = indexed;
+    }
+    // New chunks to embed.
+    state.embedder.wake();
     Ok(())
 }
 
@@ -425,8 +444,8 @@ fn rate_limited(state: &State, error: ApiError) -> String {
 }
 
 /// Wait while a `sync` or `export` reads ChatGPT, so neither queues behind
-/// a long indexing run.
-async fn yield_to_requests(state: &State) {
+/// a long indexing or embedding run.
+pub(super) async fn yield_to_requests(state: &State) {
     while state.indexer.foreground.load(Ordering::SeqCst) > 0 || state.syncer.is_running() {
         tokio::time::sleep(YIELD_POLL).await;
     }

@@ -5,8 +5,9 @@
 //! The daemon writes one request per text and reads one response:
 //!
 //! - request: `u32` little-endian length, then that many bytes of UTF-8;
-//! - response: [`OK`] then [`DIM`] little-endian `f32`s, or [`FAILED`] then
-//!   a `u32` length and a UTF-8 message that never holds the text.
+//! - response: [`OK`] then [`DIM`] little-endian `f32`s; or [`FAILED`] (this
+//!   text) or [`UNUSABLE`] (the model won't load), then a `u32` length and a
+//!   UTF-8 message that never holds the text.
 //!
 //! The worker exits when its stdin closes.
 
@@ -18,6 +19,7 @@ use crate::embedder::{DIM, EmbedError, Embedder, FakeEmbedder, TractEmbedder};
 
 pub const OK: u8 = 0;
 pub const FAILED: u8 = 1;
+pub const UNUSABLE: u8 = 2;
 /// The longest text a request may carry. Chunks are a few kilobytes.
 pub const MAX_TEXT_BYTES: u32 = 1 << 20;
 
@@ -27,8 +29,8 @@ pub enum Model {
     /// The pinned revision's directory.
     Files(PathBuf),
     /// [`FakeEmbedder`], for tests (the daemon asks for it only in debug
-    /// builds).
-    Fake,
+    /// builds), taking this long per text.
+    Fake { delay: std::time::Duration },
 }
 
 /// A request's bytes.
@@ -42,7 +44,10 @@ pub fn request(text: &str) -> Vec<u8> {
 /// A vector's bytes as the search index stores them (`Float32Array`'s
 /// little-endian layout, as the TS CLI writes them).
 pub fn vector_bytes(vector: &[f32]) -> Vec<u8> {
-    vector.iter().flat_map(|value| value.to_le_bytes()).collect()
+    vector
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
 }
 
 /// The vector in `bytes`, if it is [`DIM`] little-endian `f32`s.
@@ -52,8 +57,10 @@ pub fn vector_from_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
     }
     Some(
         bytes
-            .chunks_exact(4)
-            .map(|four| f32::from_le_bytes([four[0], four[1], four[2], four[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|four| f32::from_le_bytes(*four))
             .collect(),
     )
 }
@@ -92,8 +99,12 @@ pub fn serve(model: Model) -> ExitCode {
                 .and_then(|()| output.write_all(&vector_bytes(&vector))),
             Err(error) => {
                 let message = error.to_string();
+                let tag = match error {
+                    EmbedError::Run(_) => FAILED,
+                    EmbedError::Model(_) | EmbedError::Load(_) => UNUSABLE,
+                };
                 output
-                    .write_all(&[FAILED])
+                    .write_all(&[tag])
                     .and_then(|()| output.write_all(&(message.len() as u32).to_le_bytes()))
                     .and_then(|()| output.write_all(message.as_bytes()))
             }
@@ -111,7 +122,7 @@ fn load<'a>(
     if embedder.is_none() {
         *embedder = Some(match model {
             Model::Files(dir) => Box::new(TractEmbedder::load(dir)?),
-            Model::Fake => Box::new(FakeEmbedder),
+            Model::Fake { delay } => Box::new(FakeEmbedder { delay: *delay }),
         });
     }
     embedder
@@ -125,7 +136,10 @@ mod tests {
 
     #[test]
     fn frames_round_trip() {
-        assert_eq!(request("héllo"), [6, 0, 0, 0, b'h', 0xC3, 0xA9, b'l', b'l', b'o']);
+        assert_eq!(
+            request("héllo"),
+            [6, 0, 0, 0, b'h', 0xC3, 0xA9, b'l', b'l', b'o']
+        );
         let vector: Vec<f32> = (0..DIM).map(|i| i as f32 / 7.0).collect();
         let bytes = vector_bytes(&vector);
         assert_eq!(bytes.len(), DIM * 4);

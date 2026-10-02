@@ -19,6 +19,8 @@ path = "src/main.rs"
 [dependencies]
 chatgpt-core = { workspace = true }
 chatgpt-daemon = { workspace = true }
+# `chatgpt daemon embed-worker`, the process the daemon runs the model in.
+chatgpt-embed = { workspace = true }
 chatgpt-launcher = { workspace = true }
 chatgpt-protocol = { workspace = true }
 chrono = { workspace = true }

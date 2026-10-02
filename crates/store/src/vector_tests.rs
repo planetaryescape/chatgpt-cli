@@ -58,9 +58,7 @@ fn embed_all(store: &Store) -> usize {
             text: chunk.text,
         })
         .collect();
-    store
-        .write(|db| save_vectors(db, &vectors, MODEL))
-        .unwrap()
+    store.write(|db| save_vectors(db, &vectors, MODEL)).unwrap()
 }
 
 fn vector_count(store: &Store) -> i64 {
@@ -100,7 +98,9 @@ fn pending_chunks_are_current_ones_without_a_vector_from_this_model() {
         (2, 2)
     );
     assert_eq!(
-        store.read(|db| vector_coverage(db, None, V, MODEL)).unwrap(),
+        store
+            .read(|db| vector_coverage(db, None, V, MODEL))
+            .unwrap(),
         (3, 3)
     );
     // Another model's vectors don't count.
@@ -123,14 +123,20 @@ fn pending_chunks_are_current_ones_without_a_vector_from_this_model() {
         .write(|db| apply_delta(db, &[chat("a", "t2", false)], &[], "t2"))
         .unwrap();
     assert_eq!(
-        store.read(|db| vector_coverage(db, None, V, MODEL)).unwrap(),
+        store
+            .read(|db| vector_coverage(db, None, V, MODEL))
+            .unwrap(),
         (1, 1)
     );
     let mut seen = Vec::new();
     store
         .read(|db| {
             each_vector(db, None, V, MODEL, |row| {
-                seen.push((row.conversation_id.to_owned(), row.archived, row.embedding.len()));
+                seen.push((
+                    row.conversation_id.to_owned(),
+                    row.archived,
+                    row.embedding.len(),
+                ));
                 Ok(())
             })
         })
@@ -201,7 +207,10 @@ fn a_vector_for_text_the_chunk_no_longer_holds_is_dropped() {
         text: b"x".to_vec(),
         embedding: vec![0; 384 * 4],
     };
-    assert_eq!(store.write(|db| save_vectors(db, &[gone], MODEL)).unwrap(), 0);
+    assert_eq!(
+        store.write(|db| save_vectors(db, &[gone], MODEL)).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -238,7 +247,9 @@ fn an_index_from_before_vectors_upgrades_in_place() {
         1
     );
     assert_eq!(
-        store.read(|db| vector_coverage(db, None, V, MODEL)).unwrap(),
+        store
+            .read(|db| vector_coverage(db, None, V, MODEL))
+            .unwrap(),
         (1, 0),
         "the existing chunks wait for vectors"
     );

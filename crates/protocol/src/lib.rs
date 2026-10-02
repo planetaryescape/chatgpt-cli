@@ -27,7 +27,9 @@ pub use export::ExportedChat;
 pub use reads::{Filter, Jev, ListRows, MemoryCounts, Row, StatsReport, TopicCounts};
 pub use request::{Request, SessionChoice};
 pub use response::{ErrorPayload, Response, ResponseData};
-pub use search::{SearchHit, SearchIndexStatus, SearchResults};
+pub use search::{
+    EmbeddingStatus, SearchHit, SearchIndexReport, SearchIndexStatus, SearchMode, SearchResults,
+};
 use serde::{Deserialize, Serialize};
 pub use status::{
     Backoff, ClassificationInfo, DaemonStatus, ImportStatus, SyncStatus, TsSyncStatus,
@@ -113,6 +115,41 @@ mod tests {
         let payload: Message =
             serde_json::from_str(r#"{"id":1,"payload":{"type":"hologram"}}"#).expect("decode");
         assert_eq!(payload.payload, Payload::Unknown);
+    }
+
+    #[test]
+    fn search_messages_from_0_1_1_still_decode() {
+        let request: Request =
+            serde_json::from_str(r#"{"method":"search","query":"rust","limit":5}"#)
+                .expect("decode");
+        assert!(matches!(
+            request,
+            Request::Search {
+                mode: SearchMode::Lexical,
+                ..
+            }
+        ));
+        let unknown: Request = serde_json::from_str(
+            r#"{"method":"search","query":"rust","limit":5,"mode":"telepathic"}"#,
+        )
+        .expect("decode");
+        assert!(matches!(
+            unknown,
+            Request::Search {
+                mode: SearchMode::Unknown,
+                ..
+            }
+        ));
+        let results: SearchResults = serde_json::from_str(
+            r#"{"hits":[{"id":"a","title":"T","updated":"u","archived":false,"score":1.5,"snippet":"s"}],
+                "synced_at":"t","chats":1,"indexed":1}"#,
+        )
+        .expect("decode");
+        assert_eq!(results.hits[0].score, Some(1.5));
+        assert_eq!(results.hits[0].snippet_cut, None);
+        assert_eq!(results.embedded, 0);
+        let status: SearchIndexStatus = serde_json::from_str(r#"{"chats":3}"#).expect("decode");
+        assert_eq!(status.embeddings, EmbeddingStatus::default());
     }
 
     #[test]

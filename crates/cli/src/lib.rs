@@ -1,8 +1,7 @@
-//! The `chatgpt` command. `sync`, `list`, `stats`, `export`, lexical
-//! `search`, `daemon` and `import-legacy` are native: they ask the daemon
-//! over IPC and print its answer. Every other command, and `search` with
-//! `--semantic`, `--hybrid` or `--remote`, is handed, unchanged, to the TS
-//! CLI (the bridge).
+//! The `chatgpt` command. `sync`, `list`, `stats`, `export`, `search` (every
+//! mode), `search-index`, `daemon` and `import-legacy` are native: they ask
+//! the daemon over IPC and print its answer. Every other command is handed,
+//! unchanged, to the TS CLI (the bridge).
 //!
 //! This crate never touches the index or chatgpt.com itself: only the
 //! daemon does (tests/workspace_boundaries.rs). `main.rs` passes the
@@ -52,8 +51,7 @@ const VALUE_OPTIONS: &[&str] = &["--browser", "--profile", "--instance"];
 /// Whether this build runs the command itself: a native command, `help`
 /// for one, top-level `--help`/`--version`, or no command at all.
 /// Anything else, unknown commands and options included, goes to the TS CLI,
-/// which knows what to say about them, and so does a `search` in a mode
-/// only the TS CLI has.
+/// which knows what to say about them.
 fn is_native(args: &[OsString]) -> bool {
     let mut words = args.iter().skip(1).map(|arg| arg.to_string_lossy());
     let mut command = None;
@@ -79,9 +77,6 @@ fn is_native(args: &[OsString]) -> bool {
         Some("help") => words
             .next()
             .is_none_or(|topic| args::NATIVE.contains(&topic.as_ref())),
-        Some("search") => !words
-            .take_while(|word| word != "--")
-            .any(|word| args::BRIDGED_SEARCH_FLAGS.contains(&word.as_ref())),
         Some(command) => args::NATIVE.contains(&command),
     }
 }
@@ -99,6 +94,9 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
         Command::Daemon(DaemonCommand::Launch) => Ok(chatgpt_launcher::launch(&paths)),
         Command::Daemon(DaemonCommand::Install) => launch_agent::install(&paths),
         Command::Daemon(DaemonCommand::Uninstall) => launch_agent::uninstall(),
+        Command::Daemon(DaemonCommand::EmbedWorker { model_dir, fake }) => {
+            Ok(embed_worker(model_dir, fake))
+        }
         Command::Daemon(DaemonCommand::Logs { follow, lines }) => {
             daemon_cmd::logs(&paths, lines, follow)
         }
@@ -108,7 +106,8 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
                 Command::List(list) => reads::list(&paths, list).await,
                 Command::Stats(filters) => reads::stats(&paths, filters, session).await,
                 Command::Export(export) => export_cmd::export(&paths, export, session, args).await,
-                Command::Search(search) => search_cmd::search(&paths, search).await,
+                Command::Search(search) => search_cmd::search(&paths, search, session).await,
+                Command::SearchIndex(scope) => search_cmd::search_index(&paths, scope).await,
                 Command::ImportLegacy => sync_cmd::import_legacy(&paths).await,
                 Command::Daemon(DaemonCommand::Status { json }) => {
                     daemon_cmd::status(&paths, json).await
@@ -117,6 +116,26 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
                 Command::Daemon(_) => Ok(ExitCode::SUCCESS),
             }
         })?,
+    }
+}
+
+/// The embedding worker the daemon starts. The fake embedder is for tests
+/// of debug builds only; `CHATGPT_TEST_EMBED_DELAY_MS` slows it down.
+fn embed_worker(model_dir: Option<std::path::PathBuf>, fake: bool) -> ExitCode {
+    use chatgpt_embed::worker::{Model, serve};
+    match (model_dir, fake && cfg!(debug_assertions)) {
+        (_, true) => {
+            let delay = std::env::var("CHATGPT_TEST_EMBED_DELAY_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map_or(std::time::Duration::ZERO, std::time::Duration::from_millis);
+            serve(Model::Fake { delay })
+        }
+        (Some(dir), false) => serve(Model::Files(dir)),
+        (None, false) => {
+            output::error_line("--fake is only for debug builds");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -171,10 +190,11 @@ mod tests {
         assert!(native("help export"));
         assert!(native("search rust --format json --limit 5"));
         assert!(native("search -- --semantic"));
-        assert!(!native("search rust --semantic"));
-        assert!(!native("search --hybrid rust"));
-        assert!(!native("--browser chrome search rust --remote --limit 5"));
-        assert!(!native("search-index"));
+        assert!(native("search rust --semantic"));
+        assert!(native("search --hybrid rust"));
+        assert!(native("--browser chrome search rust --remote --limit 5"));
+        assert!(native("search-index --all"));
+        assert!(native("help search-index"));
         assert!(!native("--browser chrome classify"));
         assert!(!native("help classify"));
         assert!(!native("frobnicate"));

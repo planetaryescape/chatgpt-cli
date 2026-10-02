@@ -11,6 +11,7 @@ use rusqlite::Connection;
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::progress::Reporter;
+use crate::search::embedder::Embedder;
 use crate::search::indexer::Indexer;
 use crate::session::Sessions;
 use crate::sync::Syncer;
@@ -26,6 +27,7 @@ pub struct State {
     pub reporter: Reporter,
     pub syncer: Syncer,
     pub indexer: Indexer,
+    pub embedder: Embedder,
     pub started_at: i64,
     pub version: String,
     profile: RwLock<Arc<Profile>>,
@@ -80,6 +82,7 @@ impl State {
             reporter,
             syncer: Syncer::new(synced_age),
             indexer: Indexer::default(),
+            embedder: Embedder::default(),
             started_at: now_unix(),
             version,
             profile: RwLock::new(Arc::new(profile)),

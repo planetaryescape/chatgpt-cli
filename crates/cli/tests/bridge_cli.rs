@@ -36,25 +36,30 @@ fn an_unported_command_runs_in_the_ts_cli_unchanged() {
 }
 
 #[test]
-fn search_modes_the_ts_cli_still_runs_are_bridged() {
+fn no_search_goes_to_the_ts_cli() {
     let mut env = Env::new();
     env.fake_ts_cli(ECHO_CLI);
-    for mode in ["--semantic", "--hybrid", "--remote"] {
-        let output = env
-            .cmd()
-            .args(["search", "kids", mode, "--limit", "5"])
-            .output()
-            .unwrap();
+    for args in [
+        &["search", "kids", "--semantic", "--limit", "5"][..],
+        &["search", "kids", "--hybrid"],
+        &["search-index", "--all"],
+    ] {
+        let output = env.cmd().args(args).output().unwrap();
+        assert!(output.stdout.is_empty(), "{args:?} was bridged");
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout).lines().next(),
-            Some(format!("argv: [search] [kids] [{mode}] [--limit] [5]").as_str())
+            String::from_utf8_lossy(&output.stderr),
+            "error: No local index yet. Run `chatgpt sync` first.\n",
+            "{args:?}"
         );
     }
-    let output = env.cmd().args(["search-index", "--all"]).output().unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).lines().next(),
-        Some("argv: [search-index] [--all]")
-    );
+    // --remote needs no index; here it has no session to read either.
+    let output = env
+        .cmd()
+        .args(["search", "kids", "--remote"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "--remote was bridged");
 }
 
 #[test]
