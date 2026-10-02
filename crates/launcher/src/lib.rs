@@ -44,6 +44,8 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(3);
 const STALL_TIMEOUT: Duration = Duration::from_secs(300);
 const STALL_TIMEOUT_ENV: &str = "CHATGPT_REQUEST_TIMEOUT_MS";
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
+/// In debug builds, a shorter `READY_TIMEOUT` for tests (milliseconds).
+const READY_TIMEOUT_ENV: &str = "CHATGPT_TEST_READY_TIMEOUT_MS";
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `daemon launch` relays the daemon's exit: past `READY_TIMEOUT`,
 /// so it outlasts its client's wait, but bounded, so a launcher whose client
@@ -51,6 +53,12 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(READY_TIMEOUT.as_secs() * 2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOG_TAIL_LINES: usize = 5;
+/// How many times `connect` looks again after finding the daemon it meant
+/// to restart already replaced.
+const RESTART_LOOKS: usize = 3;
+/// How many times a status probe is asked again when the daemon it asked
+/// was replaced before the answer failed.
+const PROBE_LOOKS: usize = 3;
 
 /// A failure talking to the daemon, or one the daemon reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,13 +252,28 @@ fn stall_timeout() -> Duration {
 /// now if it wasn't running, and restarted if it's older or speaks another
 /// protocol.
 pub async fn connect(paths: &Paths) -> Result<(DaemonClient, DaemonStatus), ClientError> {
-    match probe(paths).await {
-        Probe::Ready(client, status) => return Ok((*client, *status)),
-        Probe::Incompatible(why) => {
-            eprintln!("Restarting the chatgpt daemon: {why}.");
-            stop(paths).await?;
+    for _ in 0..RESTART_LOOKS {
+        match probe(paths).await {
+            Probe::Ready(client, status) => return Ok((*client, *status)),
+            Probe::Incompatible { why, identity } => {
+                eprintln!("Restarting the chatgpt daemon: {why}.");
+                // Only the daemon found incompatible, as it was found:
+                // another client may already have replaced it, with one
+                // this client can use or one to judge afresh.
+                let Some(seen) = identity else {
+                    return Err(unavailable(format!(
+                        "a chatgpt daemon on {} can't be restarted ({why}): its PID can't be \
+                         confirmed; stop it with `chatgpt daemon stop`",
+                        paths.socket_path().display()
+                    )));
+                };
+                if stop_daemon(paths, Some(&seen)).await?.is_none() {
+                    continue;
+                }
+            }
+            Probe::Unreachable => {}
         }
-        Probe::Unreachable => {}
+        break;
     }
     start(paths).await
 }
@@ -282,7 +305,7 @@ pub async fn ask(
 pub async fn inspect(paths: &Paths) -> Inspection {
     match probe(paths).await {
         Probe::Ready(_, status) => Inspection::Ready(status),
-        Probe::Incompatible(why) => Inspection::Unhealthy {
+        Probe::Incompatible { why, .. } => Inspection::Unhealthy {
             pid: read_pid_file(paths).map(|(pid, _)| pid),
             why,
         },
@@ -303,33 +326,71 @@ pub enum Inspection {
 /// Stop the daemon. Done only when the socket is unreachable and the
 /// daemon's PID has exited (spotuify's rule). Returns the PID it stopped.
 pub async fn stop(paths: &Paths) -> Result<Option<u32>, ClientError> {
+    stop_daemon(paths, None).await
+}
+
+/// A daemon as a client saw it: its PID and that process's start time, so
+/// a PID handed to another process since never matches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonIdentity {
+    pub pid: u32,
+    pub started: String,
+}
+
+impl DaemonIdentity {
+    /// `pid` as it is now, if `ps` can say when it started.
+    pub fn of(pid: u32) -> Option<Self> {
+        chatgpt_core::process_start_time(pid).map(|started| Self { pid, started })
+    }
+
+    /// The daemon its PID file names now, with the start time recorded there.
+    fn recorded(paths: &Paths) -> Option<Self> {
+        match read_pid_file(paths)? {
+            (pid, Some(started)) => Some(Self { pid, started }),
+            (_, None) => None,
+        }
+    }
+
+    /// Whether `pid` is still this process.
+    fn still_running(&self) -> bool {
+        Self::of(self.pid).as_ref() == Some(self)
+    }
+}
+
+/// Compare-and-stop: [`stop`], but only the daemon `seen`, as this client
+/// observed it. One another client started since is left running
+/// (`Ok(None)`), so two clients restarting the same old daemon never stop
+/// each other's new one.
+pub async fn stop_if_still(
+    paths: &Paths,
+    seen: &DaemonIdentity,
+) -> Result<Option<u32>, ClientError> {
+    stop_daemon(paths, Some(seen)).await
+}
+
+/// Stop the daemon; with `seen`, only that one, whichever way it's found
+/// now (answering, not answering, or not listening).
+async fn stop_daemon(
+    paths: &Paths,
+    seen: Option<&DaemonIdentity>,
+) -> Result<Option<u32>, ClientError> {
     let pid = match probe(paths).await {
         Probe::Ready(mut client, status) => {
-            // The daemon answers, then exits; a lost answer is fine, since
-            // the wait below is what counts.
+            if seen.is_some_and(|seen| seen.pid != status.pid || !seen.still_running()) {
+                return Ok(None);
+            }
+            // Asked on the connection that just named its PID, so it's that
+            // daemon that stops. It answers, then exits; a lost answer is
+            // fine, since the wait below is what counts.
             let _ = client
                 .request_within(Request::Shutdown, QUICK_TIMEOUT, |_| {})
                 .await;
             status.pid
         }
-        Probe::Incompatible(_) | Probe::Unreachable => {
-            if !daemon_lock_held(paths) {
-                return Ok(None);
-            }
-            // It holds the lock but can't be asked to stop, so signal it.
-            // The PID is safe to signal: the daemon wrote it under the lock
-            // it still holds, so it can't have been reused.
-            let (pid, _) = read_pid_file(paths).ok_or_else(|| {
-                unavailable(format!(
-                    "a daemon holds {} but wrote no PID to {}",
-                    paths.daemon_lock_file().display(),
-                    paths.pid_file().display()
-                ))
-            })?;
-            verify_daemon_pid(paths, pid)?;
-            terminate(pid)?;
-            pid
-        }
+        Probe::Incompatible { .. } | Probe::Unreachable => match signal_lock_holder(paths, seen)? {
+            Some(pid) => pid,
+            None => return Ok(None),
+        },
     };
     if wait_until_gone(paths, pid, EXIT_TIMEOUT).await {
         return Ok(Some(pid));
@@ -345,36 +406,97 @@ pub async fn stop(paths: &Paths) -> Result<Option<u32>, ClientError> {
     )))
 }
 
+/// SIGTERM the daemon holding the lock, one that can't be asked to stop:
+/// only if its PID file names `seen` (when given), PID and start time, and
+/// the PID's start time still matches. `None` when no daemon holds the
+/// lock, or another one than `seen` does now.
+fn signal_lock_holder(
+    paths: &Paths,
+    seen: Option<&DaemonIdentity>,
+) -> Result<Option<u32>, ClientError> {
+    if !daemon_lock_held(paths) {
+        return Ok(None);
+    }
+    // The PID is safe to signal: the daemon wrote it under the lock it
+    // still holds, and its start time is checked, so it can't be reused.
+    let (pid, started) = read_pid_file(paths).ok_or_else(|| {
+        unavailable(format!(
+            "a daemon holds {} but wrote no PID to {}",
+            paths.daemon_lock_file().display(),
+            paths.pid_file().display()
+        ))
+    })?;
+    if seen.is_some_and(|seen| seen.pid != pid || started.as_deref() != Some(&seen.started)) {
+        return Ok(None);
+    }
+    verify_daemon_pid(paths, pid)?;
+    terminate(pid)?;
+    Ok(Some(pid))
+}
+
 enum Probe {
     Ready(Box<DaemonClient>, Box<DaemonStatus>),
-    /// Something answers, but not in a way this build can use.
-    Incompatible(String),
+    /// Something answers, but not in a way this build can use. `identity`:
+    /// the PID it reported as that process is now, else the daemon its PID
+    /// file names.
+    Incompatible {
+        why: String,
+        identity: Option<DaemonIdentity>,
+    },
     Unreachable,
 }
 
+/// Ask the daemon for its status. A failure is pinned on the daemon the PID
+/// file named before asking; if another took its place meanwhile, the
+/// failure was the old one's, so ask again rather than blame the new one.
 async fn probe(paths: &Paths) -> Probe {
+    for _ in 0..PROBE_LOOKS {
+        let before = DaemonIdentity::recorded(paths);
+        if let Some(probe) = probe_as(paths, before).await {
+            return probe;
+        }
+    }
+    Probe::Incompatible {
+        why: "another daemon took its place each time it was asked for its status".into(),
+        identity: None,
+    }
+}
+
+/// One status probe, failures attributed to `before`; `None` when the PID
+/// file no longer names `before` once it failed.
+async fn probe_as(paths: &Paths, before: Option<DaemonIdentity>) -> Option<Probe> {
+    let failed = |why: String| {
+        (DaemonIdentity::recorded(paths) == before).then(|| Probe::Incompatible {
+            why,
+            identity: before.clone(),
+        })
+    };
     let mut client = match DaemonClient::connect(&paths.socket_path()).await {
         Ok(client) => client,
         // Something holds the socket but never accepts: not missing.
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-            return Probe::Incompatible(error.to_string());
+            return failed(error.to_string());
         }
         // Missing, or a stale file nobody listens on. A new daemon removes
         // a stale socket itself, under its lock.
-        Err(_) => return Probe::Unreachable,
+        Err(_) => return Some(Probe::Unreachable),
     };
     match client
         .request_within(Request::Status, QUICK_TIMEOUT, |_| {})
         .await
     {
         Ok(ResponseData::Status(status)) => {
-            match incompatibility(&status, env!("CARGO_PKG_VERSION")) {
+            Some(match incompatibility(&status, env!("CARGO_PKG_VERSION")) {
                 None => Probe::Ready(Box::new(client), status),
-                Some(why) => Probe::Incompatible(why),
-            }
+                // The answer names its own PID: no doubt whose it is.
+                Some(why) => Probe::Incompatible {
+                    why,
+                    identity: DaemonIdentity::of(status.pid),
+                },
+            })
         }
-        Ok(_) => Probe::Incompatible("its status answer isn't one this version can read".into()),
-        Err(error) => Probe::Incompatible(error.message),
+        Ok(_) => failed("its status answer isn't one this version can read".into()),
+        Err(error) => failed(error.message),
     }
 }
 
@@ -423,7 +545,45 @@ fn version_at_least(candidate: &str, baseline: &str) -> bool {
 }
 
 async fn start(paths: &Paths) -> Result<(DaemonClient, DaemonStatus), ClientError> {
-    let mut launcher = spawn(paths)?;
+    match spawn_and_wait(paths).await {
+        // A daemon that took the lock but never bound its socket (stuck in
+        // startup) would turn every client away until someone stopped it.
+        // Stop it, only as it was seen holding the lock, and start once more.
+        Err(Startup::NotReady { error, holder }) => {
+            if let Some(stuck) = holder
+                && stop_stuck(paths, &stuck).await
+            {
+                eprintln!("Restarted a chatgpt daemon that was stuck starting up.");
+                spawn_and_wait(paths).await.map_err(Startup::into_error)
+            } else {
+                Err(error)
+            }
+        }
+        started => started.map_err(Startup::into_error),
+    }
+}
+
+/// Why a daemon this client launched isn't answering.
+enum Startup {
+    /// It wasn't ready in time. `holder`: the daemon first seen holding the
+    /// lock while this client waited.
+    NotReady {
+        error: ClientError,
+        holder: Option<DaemonIdentity>,
+    },
+    Failed(ClientError),
+}
+
+impl Startup {
+    fn into_error(self) -> ClientError {
+        match self {
+            Self::NotReady { error, .. } | Self::Failed(error) => error,
+        }
+    }
+}
+
+async fn spawn_and_wait(paths: &Paths) -> Result<(DaemonClient, DaemonStatus), Startup> {
+    let mut launcher = spawn(paths).map_err(Startup::Failed)?;
     let started = wait_until_ready(paths, &mut launcher).await;
     // The launcher is the daemon's parent only while it relays an early
     // exit. Ending it hands the daemon to launchd or init, which reap it, so
@@ -433,19 +593,57 @@ async fn start(paths: &Paths) -> Result<(DaemonClient, DaemonStatus), ClientErro
     started
 }
 
+/// Stop `stuck`, the daemon seen holding the lock without a socket that
+/// answers, if it still is that daemon. Whether it's gone.
+async fn stop_stuck(paths: &Paths, stuck: &DaemonIdentity) -> bool {
+    if matches!(probe(paths).await, Probe::Ready(..)) {
+        return false;
+    }
+    match signal_lock_holder(paths, Some(stuck)) {
+        Ok(Some(pid)) => {
+            let deadline = Instant::now() + EXIT_TIMEOUT;
+            while pid_alive(pid) {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+            true
+        }
+        Ok(None) | Err(_) => false,
+    }
+}
+
+fn ready_timeout() -> Duration {
+    if cfg!(debug_assertions)
+        && let Some(millis) = std::env::var(READY_TIMEOUT_ENV)
+            .ok()
+            .and_then(|value| value.parse().ok())
+    {
+        return Duration::from_millis(millis);
+    }
+    READY_TIMEOUT
+}
+
 async fn wait_until_ready(
     paths: &Paths,
     launcher: &mut Child,
-) -> Result<(DaemonClient, DaemonStatus), ClientError> {
-    let deadline = Instant::now() + READY_TIMEOUT;
+) -> Result<(DaemonClient, DaemonStatus), Startup> {
+    let deadline = Instant::now() + ready_timeout();
+    // The daemon holding the lock, as first seen: the only one a timeout
+    // may stop, so a replacement started meanwhile is never signalled.
+    let mut holder: Option<DaemonIdentity> = None;
     loop {
+        if holder.is_none() && daemon_lock_held(paths) {
+            holder = DaemonIdentity::recorded(paths);
+        }
         match probe(paths).await {
             Probe::Ready(client, status) => return Ok((*client, *status)),
-            Probe::Incompatible(why) => {
-                return Err(unavailable(format!(
+            Probe::Incompatible { why, .. } => {
+                return Err(Startup::Failed(unavailable(format!(
                     "another chatgpt daemon answered on {}: {why}; stop it with `chatgpt daemon stop`",
                     paths.socket_path().display()
-                )));
+                ))));
             }
             Probe::Unreachable => {}
         }
@@ -456,25 +654,28 @@ async fn wait_until_ready(
             && !exit.success()
         {
             if exit.code() == Some(i32::from(EXIT_DATABASE_TOO_NEW)) {
-                return Err(ClientError::new(
+                return Err(Startup::Failed(ClientError::new(
                     ErrorKind::DatabaseTooNew,
                     format!(
                         "this index was upgraded by a newer chatgpt; install the latest version ({})",
                         paths.database_file().display()
                     ),
-                ));
+                )));
             }
-            return Err(unavailable(format!(
+            return Err(Startup::Failed(unavailable(format!(
                 "the daemon exited during startup ({exit}){}",
                 log_tail(&paths.daemon_stderr_file())
-            )));
+            ))));
         }
         if Instant::now() >= deadline {
-            return Err(unavailable(format!(
-                "the daemon wasn't ready after {} seconds{}",
-                READY_TIMEOUT.as_secs(),
-                log_tail(&paths.daemon_stderr_file())
-            )));
+            return Err(Startup::NotReady {
+                error: unavailable(format!(
+                    "the daemon wasn't ready after {} seconds{}",
+                    ready_timeout().as_secs_f64().round(),
+                    log_tail(&paths.daemon_stderr_file())
+                )),
+                holder,
+            });
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
@@ -583,7 +784,10 @@ fn log_tail(path: &Path) -> String {
 async fn wait_until_gone(paths: &Paths, pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        let socket_gone = connect_socket(&paths.socket_path()).await.is_err();
+        // A socket that answers again belongs to a daemon another client
+        // started since, once the PID file names it.
+        let socket_gone = connect_socket(&paths.socket_path()).await.is_err()
+            || read_pid_file(paths).is_some_and(|(recorded, _)| recorded != pid);
         if socket_gone && !pid_alive(pid) {
             return true;
         }
@@ -844,6 +1048,7 @@ mod tests {
             sync: Default::default(),
             backoff: None,
             session: None,
+            session_reading: false,
             classification: Default::default(),
             search_index: Default::default(),
             embeddings: Default::default(),

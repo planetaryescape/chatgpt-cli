@@ -51,9 +51,27 @@ fn summary(report: &SyncReport) -> String {
                 if change >= 0 { "+" } else { "" }
             )
         }
-        _ => format!(
+        SyncMode::Delta => format!(
             "Sync done in {elapsed}: {} new, {} updated, {} newly archived, {} unarchived, {} deleted. `sync --full` also drops chats deleted in the browser.",
             report.added, report.updated, report.newly_archived, report.unarchived, report.deleted
         ),
+        // A newer daemon's kind of pass: its counts may mean something else.
+        SyncMode::Unknown => format!("Sync done in {elapsed}."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kind_of_sync_this_version_doesnt_know_gets_a_plain_summary() {
+        let report = SyncReport {
+            mode: SyncMode::Unknown,
+            elapsed_ms: 1500,
+            added: 3,
+            ..SyncReport::default()
+        };
+        assert_eq!(summary(&report), "Sync done in 1.5s.");
     }
 }

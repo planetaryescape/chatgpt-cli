@@ -6,6 +6,11 @@
 //!   and the cache reconcile run at most hourly there.
 //! - `chatgpt sync`: a pass now, with the sweep and the reconcile; `--full`
 //!   for a full pass. The first pass of an empty index lists everything.
+//! - A full pass about once a day, in the background, once nobody has used
+//!   the CLI for a while and the last full pass is a day old: the only way
+//!   a chat deleted while active leaves the index. It checks at most
+//!   [`full::BACKGROUND_OMISSION_CHECKS`] chats one by one, and after a
+//!   rate limit it waits another day.
 //! - After a successful pass: Jev on new and changed chats, in the
 //!   background (`crate::classify::auto_jev`).
 //! - A rate limit backs off for as long as ChatGPT asked (clamped), and
@@ -27,10 +32,50 @@ use crate::api::{Api, ApiError};
 use crate::handlers::Failure;
 use crate::state::{State, now_unix};
 
-const ACTIVE_INTERVAL: Duration = Duration::from_secs(2 * 60);
-const IDLE_INTERVAL: Duration = Duration::from_secs(15 * 60);
-const ACTIVE_WINDOW: Duration = Duration::from_secs(10 * 60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// The index's meta key for when a full pass last succeeded (Unix seconds).
+pub(crate) const FULL_SYNCED_KEY: &str = "full_synced_at";
+/// In debug builds: every cadence below in milliseconds instead, so tests
+/// can see background passes, a full one included, without waiting.
+const SCHEDULE_ENV: &str = "CHATGPT_TEST_SCHEDULE_MS";
+
+/// How often background passes run.
+#[derive(Clone, Copy, Debug)]
+struct Cadence {
+    /// Between passes while a client has been active in `active_window`…
+    active_interval: Duration,
+    /// …and otherwise.
+    idle_interval: Duration,
+    active_window: Duration,
+    /// Between full passes, and after one hit a rate limit (a night off).
+    full_interval: Duration,
+    /// After a full pass failed some other way.
+    full_retry: Duration,
+}
+
+impl Cadence {
+    fn new() -> Self {
+        match chatgpt_core::debug_env(SCHEDULE_ENV).and_then(|ms| ms.parse().ok()) {
+            Some(ms) => {
+                let every = Duration::from_millis(ms);
+                Self {
+                    active_interval: every,
+                    idle_interval: every,
+                    active_window: every,
+                    full_interval: every,
+                    full_retry: every,
+                }
+            }
+            None => Self {
+                active_interval: Duration::from_secs(2 * 60),
+                idle_interval: Duration::from_secs(15 * 60),
+                active_window: Duration::from_secs(10 * 60),
+                full_interval: Duration::from_secs(24 * 60 * 60),
+                full_retry: Duration::from_secs(60 * 60),
+            },
+        }
+    }
+}
 /// A rate limit is waited out for at least this long, even when ChatGPT
 /// gave no `retry-after` (its 429s clear after about a minute)…
 const MIN_BACKOFF: Duration = Duration::from_secs(60);
@@ -51,6 +96,7 @@ pub struct Syncer {
 }
 
 struct Schedule {
+    cadence: Cadence,
     status: SyncStatus,
     /// The browser choice passes read with: the last one `chatgpt sync`
     /// sent. It only changes under `running`, between passes.
@@ -59,6 +105,12 @@ struct Schedule {
     last_pass: Option<Instant>,
     last_sweep: Option<Instant>,
     backoff: Option<(Instant, Backoff)>,
+    /// When a full pass last succeeded, Unix seconds (from the index, so a
+    /// restart keeps it).
+    last_full: Option<i64>,
+    /// The last background full pass that failed, and whether a rate limit
+    /// stopped it.
+    full_failed: Option<(Instant, bool)>,
 }
 
 pub struct PassOptions {
@@ -79,10 +131,13 @@ impl Syncer {
     /// the rest of it, so a cold `list` sends no request. An older index, or
     /// an empty one, gets a background pass at once (`list` still answers
     /// from the index without waiting for it).
-    pub fn new(synced_age: Option<Duration>) -> Self {
+    /// `last_full`: when a full pass last succeeded (Unix seconds), if one
+    /// ever did.
+    pub fn new(synced_age: Option<Duration>, last_full: Option<i64>) -> Self {
         Self {
             running: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Schedule {
+                cadence: Cadence::new(),
                 status: SyncStatus::default(),
                 choice: SessionChoice::default(),
                 last_client: Instant::now(),
@@ -91,6 +146,8 @@ impl Syncer {
                 last_pass: synced_age.and_then(|age| Instant::now().checked_sub(age)),
                 last_sweep: synced_age.and_then(|age| Instant::now().checked_sub(age)),
                 backoff: None,
+                last_full,
+                full_failed: None,
             }),
             wake: Notify::new(),
         }
@@ -104,7 +161,7 @@ impl Syncer {
     pub fn client_active(&self) {
         let was_idle = {
             let mut schedule = self.schedule();
-            let was_idle = schedule.last_client.elapsed() > ACTIVE_WINDOW;
+            let was_idle = schedule.last_client.elapsed() > schedule.cadence.active_window;
             schedule.last_client = Instant::now();
             was_idle
         };
@@ -119,6 +176,8 @@ impl Syncer {
         let mut status = schedule.status.clone();
         status.synced_at = synced_at;
         status.next_at = Some(now_unix() + secs(schedule.until_due()));
+        status.last_full_at = schedule.last_full;
+        status.next_full_at = Some(schedule.next_full_at(now_unix()));
         let backoff = schedule
             .backoff
             .as_ref()
@@ -140,6 +199,11 @@ impl Syncer {
         self.running.lock().await
     }
 
+    /// [`Syncer::exclusive`] if no pass runs now, without waiting.
+    pub fn try_exclusive(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.running.try_lock().ok()
+    }
+
     /// Whether a pass is running now.
     pub fn is_running(&self) -> bool {
         self.running.try_lock().is_err()
@@ -155,12 +219,39 @@ impl Syncer {
 }
 
 impl Schedule {
+    fn idle(&self) -> bool {
+        self.last_client.elapsed() > self.cadence.active_window
+    }
+
     fn interval(&self) -> Duration {
-        if self.last_client.elapsed() <= ACTIVE_WINDOW {
-            ACTIVE_INTERVAL
+        if self.idle() {
+            self.cadence.idle_interval
         } else {
-            IDLE_INTERVAL
+            self.cadence.active_interval
         }
+    }
+
+    /// The earliest a background full pass may run (Unix seconds): a day
+    /// after the last one, a day after one a rate limit stopped, an hour
+    /// after one that failed otherwise. It waits for an idle moment too.
+    fn next_full_at(&self, now: i64) -> i64 {
+        let after_last = self.last_full.map_or(now, |at| {
+            at.saturating_add(secs(self.cadence.full_interval))
+        });
+        let after_failure = self.full_failed.map_or(now, |(at, rate_limited)| {
+            let wait = if rate_limited {
+                self.cadence.full_interval
+            } else {
+                self.cadence.full_retry
+            };
+            now.saturating_add(secs(wait.saturating_sub(at.elapsed())))
+        });
+        after_last.max(after_failure)
+    }
+
+    /// Whether the background pass due now should be a full one.
+    fn full_due(&self, now: i64) -> bool {
+        self.idle() && self.backoff.is_none() && self.next_full_at(now) <= now
     }
 
     /// How long until the next background pass may run.
@@ -197,13 +288,20 @@ fn secs(duration: Duration) -> i64 {
 /// life.
 pub async fn run_scheduled(state: std::sync::Arc<State>) {
     loop {
-        let due = state.syncer.schedule().until_due();
+        state.sessions.prune(&state.syncer.choice());
+        let (due, full) = {
+            let schedule = state.syncer.schedule();
+            (schedule.until_due(), schedule.full_due(now_unix()))
+        };
         if due.is_zero() {
+            if full {
+                tracing::info!("starting the daily full sync");
+            }
             if let Err(failure) = run_pass(
                 &state,
                 PassOptions {
                     explicit: false,
-                    full: false,
+                    full,
                     choice: None,
                     progress: None,
                 },
@@ -280,9 +378,16 @@ pub async fn run_pass(
                     schedule.last_sweep = Some(Instant::now());
                     schedule.status.last_sweep_at = Some(finished_at);
                 }
+                if report.mode == SyncMode::Full {
+                    schedule.last_full = Some(finished_at);
+                    schedule.full_failed = None;
+                }
             }
             Err(error) => {
                 schedule.status.last_error = Some(error.message.clone());
+                if options.full && !options.explicit {
+                    schedule.full_failed = Some((Instant::now(), error.is_rate_limit()));
+                }
                 if error.is_rate_limit() {
                     let wait = backoff_for(error);
                     schedule.backoff = Some((
@@ -376,7 +481,8 @@ async fn pass(state: &State, api: &Api, options: &PassOptions) -> Result<SyncRep
                     .is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL);
             delta::run(state, api, &watermark, sweep).await
         }
-        _ => full::run(state, api).await,
+        // A background full pass is bounded; one someone asked for isn't.
+        _ => full::run(state, api, !options.explicit).await,
     }
 }
 
@@ -406,3 +512,58 @@ fn summary(report: &SyncReport) -> String {
 /// Chats from the conversation lists by id, in first-seen order: a JS
 /// `Map`, as the TS CLI dedupes them (`insert` overwrites in place).
 pub(crate) type Listing = indexmap::IndexMap<String, crate::api::ConversationSummary>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOUR: i64 = 60 * 60;
+
+    fn idle_schedule(last_full: Option<i64>) -> Schedule {
+        let syncer = Syncer::new(None, last_full);
+        let mut schedule = syncer.inner.into_inner().expect("schedule");
+        schedule.last_client = Instant::now()
+            .checked_sub(schedule.cadence.active_window + Duration::from_secs(1))
+            .expect("an instant that long ago");
+        schedule
+    }
+
+    #[test]
+    fn the_daily_full_sync_waits_for_a_day_and_for_nobody_using_the_cli() {
+        let now = now_unix();
+        assert!(
+            idle_schedule(None).full_due(now),
+            "never ran: due once idle"
+        );
+        assert!(!idle_schedule(Some(now - HOUR)).full_due(now));
+        assert!(idle_schedule(Some(now - 25 * HOUR)).full_due(now));
+
+        let mut busy = idle_schedule(None);
+        busy.last_client = Instant::now();
+        assert!(!busy.full_due(now), "a client is active");
+
+        let mut backing_off = idle_schedule(None);
+        backing_off.backoff = Some((
+            Instant::now() + Duration::from_secs(60),
+            Backoff {
+                until: now + 60,
+                reason: "rate limited".into(),
+            },
+        ));
+        assert!(!backing_off.full_due(now));
+    }
+
+    #[test]
+    fn a_rate_limited_full_sync_skips_a_day_and_another_failure_an_hour() {
+        let now = now_unix();
+        let mut limited = idle_schedule(None);
+        limited.full_failed = Some((Instant::now(), true));
+        assert!(!limited.full_due(now));
+        assert!((now + 24 * HOUR - 5..=now + 24 * HOUR).contains(&limited.next_full_at(now)));
+
+        let mut failed = idle_schedule(None);
+        failed.full_failed = Some((Instant::now(), false));
+        assert!(!failed.full_due(now));
+        assert!((now + HOUR - 5..=now + HOUR).contains(&failed.next_full_at(now)));
+    }
+}

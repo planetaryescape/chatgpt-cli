@@ -212,3 +212,22 @@ fn a_judgment_without_a_topic_has_none_and_fails_nothing() {
     );
     assert_eq!(ids(&env, &["list", "--topic", "other"]).len(), 0);
 }
+
+#[test]
+fn stats_never_counts_another_accounts_saved_memories() {
+    let env = two_accounts();
+    env.cmd().arg("sync").assert().success();
+    let output = env
+        .cmd()
+        .args(["--browser", "chrome", "stats"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Saved-memory stats unavailable: this index holds another ChatGPT account"),
+        "{stderr}"
+    );
+    // The chat counts are this index's, as before.
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("3 chat(s)"));
+}

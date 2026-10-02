@@ -28,6 +28,8 @@ use crate::state::State;
 
 /// `sun_path` is 104 bytes on macOS (108 on Linux), including the final NUL.
 const MAX_SOCKET_PATH_BYTES: usize = 103;
+/// See its use in `serve`.
+const STALL_STARTUP_ENV: &str = "CHATGPT_TEST_STALL_STARTUP";
 
 /// Why the daemon stopped for good.
 pub(crate) enum Fatal {
@@ -80,6 +82,13 @@ pub(crate) async fn serve(paths: Paths) -> Result<(), Fatal> {
         chatgpt_core::pid_file_contents(pid, &started).as_bytes(),
     )
     .map_err(|error| describe(&paths.pid_file(), &error))?;
+    // Debug builds only: stall here once (the marker file goes first), as a
+    // daemon stuck opening its index would, for the launcher's tests.
+    if let Some(marker) = chatgpt_core::debug_env(STALL_STARTUP_ENV)
+        && std::fs::remove_file(marker).is_ok()
+    {
+        std::future::pending::<()>().await;
+    }
     // Open the index before binding: a daemon that can't start (an index a
     // newer chatgpt migrated) then never has a socket, and the client that
     // started it reads its exit status instead.
@@ -151,15 +160,22 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
     tasks.spawn(crate::sync::run_scheduled(Arc::clone(&state)));
     tasks.spawn(crate::search::indexer::run(Arc::clone(&state)));
     tasks.spawn(crate::search::embedder::run(Arc::clone(&state)));
+    let mut accept_backoff = AcceptBackoff::default();
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
+                    accept_backoff = AcceptBackoff::default();
                     tasks.spawn(serve_connection(stream, Arc::clone(&state), Arc::clone(&shutdown)));
                 }
-                // One failed accept (out of file descriptors) mustn't take
-                // the daemon down.
-                Err(error) => tracing::warn!("accept failed: {error}"),
+                // A failed accept (out of file descriptors) mustn't take the
+                // daemon down, nor, when it keeps failing, spin a core: wait
+                // a little longer after each one.
+                Err(error) => {
+                    let wait = accept_backoff.next_wait();
+                    tracing::warn!(wait_ms = wait.as_millis() as u64, "accept failed: {error}");
+                    tokio::time::sleep(wait).await;
+                }
             },
             () = shutdown.notified() => break,
             _ = terminate.recv() => break,
@@ -170,6 +186,23 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
     }
     tracing::info!("shutting down");
     Ok(())
+}
+
+/// How long to wait after each failed `accept` in a row: 10 ms, doubling
+/// up to a second.
+#[derive(Default)]
+struct AcceptBackoff {
+    failures: u32,
+}
+
+impl AcceptBackoff {
+    fn next_wait(&mut self) -> std::time::Duration {
+        let wait = std::time::Duration::from_millis(10)
+            .saturating_mul(1 << self.failures.min(7))
+            .min(std::time::Duration::from_secs(1));
+        self.failures = self.failures.saturating_add(1);
+        wait
+    }
 }
 
 async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<Notify>) {
@@ -402,6 +435,13 @@ fn describe(path: &Path, error: &std::io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_accepts_in_a_row_wait_longer_up_to_a_second() {
+        let mut backoff = AcceptBackoff::default();
+        let waits: Vec<u128> = (0..10).map(|_| backoff.next_wait().as_millis()).collect();
+        assert_eq!(waits, [10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000]);
+    }
 
     #[test]
     fn pieces_join_back_to_the_text_and_never_split_a_character() {

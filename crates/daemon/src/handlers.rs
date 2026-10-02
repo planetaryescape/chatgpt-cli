@@ -11,7 +11,7 @@ use chatgpt_protocol::{
 use rusqlite::Connection;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::api::{Api, ApiError};
+use crate::api::ApiError;
 use crate::filters::InvalidFilter;
 use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
@@ -84,6 +84,18 @@ pub async fn handle(
     progress: Option<UnboundedSender<Progress>>,
     answers: UnboundedReceiver<bool>,
 ) -> Response {
+    // The HTTP client's retry notes for this request's calls go to this
+    // request's client.
+    let notes = crate::progress::Reporter::for_client(progress.clone());
+    crate::progress::with_request_notes(notes, answer(state, request, progress, answers)).await
+}
+
+async fn answer(
+    state: &Arc<State>,
+    request: Request,
+    progress: Option<UnboundedSender<Progress>>,
+    answers: UnboundedReceiver<bool>,
+) -> Response {
     let answered = match request {
         Request::Status => Ok(ResponseData::Status(Box::new(status(state).await))),
         Request::Shutdown => Ok(ResponseData::Ack),
@@ -97,7 +109,7 @@ pub async fn handle(
                 choice: Some(session),
                 progress,
             };
-            tokio::spawn(async move { run_pass(&state, options).await })
+            crate::progress::spawn(async move { run_pass(&state, options).await })
                 .await
                 .map_err(Failure::join)
                 .and_then(|result| result)
@@ -324,9 +336,11 @@ async fn stats(
         reads::chat_stats(db, &filter, profile, now)
     })
     .await?;
-    // Its own session for this choice: a sync running meanwhile keeps its.
-    let api = Api::new(Arc::clone(&state.sessions), session.clone());
-    match api.memories().await {
+    // Its own session for this choice (a sync running meanwhile keeps its),
+    // pinned to the index's account: another account's memories would be
+    // counted against this index's classifications.
+    let memories = async { pinned_api(state, session.clone()).await?.memories().await };
+    match memories.await {
         Ok(memories) => {
             let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
             let counted = read(state, move |db, profile, _| {
@@ -367,6 +381,7 @@ async fn status(state: &State) -> DaemonStatus {
         sync,
         backoff,
         session: state.sessions.source(&state.syncer.choice()),
+        session_reading: state.sessions.reading(&state.syncer.choice()),
         classification: state.profile().info(),
         search_index: state.indexer.status(),
         embeddings: state.embedder.status(),

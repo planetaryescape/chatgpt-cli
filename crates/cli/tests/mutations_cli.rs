@@ -452,3 +452,18 @@ fn a_chat_named_twice_is_changed_once() {
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(writes(&env), ["PATCH /backend-api/conversation/c-old"]);
 }
+
+#[test]
+fn a_change_hears_the_rate_limit_it_waits_on() {
+    let env = synced();
+    env.wait_for_indexer();
+    // The archive's own write is the next request, and ChatGPT turns it
+    // away once.
+    env.fake().state().rate_limit = Some((1, 0));
+    let (code, _, stderr) = run(&env, &["archive", "b-old", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("rate limited by ChatGPT; waiting 0s"),
+        "{stderr}"
+    );
+}

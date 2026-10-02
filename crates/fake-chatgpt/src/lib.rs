@@ -144,6 +144,7 @@ pub struct State {
     /// first repeats the previous page's last two chats and skips two.
     pub flaky_listings: u32,
     flaky_now: bool,
+    short_now: bool,
     /// Leave `user.id` out of session exchanges.
     pub omit_user_id: bool,
     /// Hold every batch answer this long.
@@ -152,6 +153,12 @@ pub struct State {
     pub batch_bodies: Vec<Vec<String>>,
     /// Answer this many next batch reads with a 500.
     pub fail_batch: u32,
+    /// Answer this many next batch reads with a 401, as for a session
+    /// ChatGPT no longer accepts.
+    pub reject_batch: u32,
+    /// Make this many next active listings end after their first page,
+    /// without repeating anything.
+    pub short_listings: u32,
     /// `global/search` items, served in order (at most the asked `limit`).
     pub search_items: Vec<Value>,
     /// The body of every `global/search` request, in order.
@@ -264,6 +271,10 @@ impl Respond for Handler {
             return ResponseTemplate::new(429)
                 .insert_header("retry-after", retry_after.to_string());
         }
+        if matches!(self.route, Route::Batch) && state.reject_batch > 0 {
+            state.reject_batch -= 1;
+            return ResponseTemplate::new(401);
+        }
         if matches!(self.route, Route::Batch) && state.fail_batch > 0 {
             state.fail_batch -= 1;
             return ResponseTemplate::new(500).set_body_string("{\"detail\":\"oops\"}");
@@ -279,7 +290,14 @@ impl Respond for Handler {
             state.flaky_now = state.flaky_listings > 0;
             state.flaky_listings = state.flaky_listings.saturating_sub(1);
         }
+        if active_listing && query(request, "offset").as_deref() == Some("0") {
+            state.short_now = state.short_listings > 0;
+            state.short_listings = state.short_listings.saturating_sub(1);
+        }
         let flaky = active_listing && state.flaky_now;
+        if active_listing && state.short_now && query(request, "offset").as_deref() != Some("0") {
+            return ResponseTemplate::new(200).set_body_json(json!({ "items": [], "total": 0 }));
+        }
         let chats = if other {
             &state.other_account_chats
         } else {

@@ -20,7 +20,7 @@ pub async fn delete(
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
     let api = crate::sync::pinned_api(state, session).await?;
-    let task = tokio::spawn(async move {
+    let task = crate::progress::spawn(async move {
         let mut outcome = Outcome::default();
         for (number, id) in ids.iter().enumerate() {
             if stop.load(Ordering::SeqCst) {

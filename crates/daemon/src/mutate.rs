@@ -123,7 +123,7 @@ pub async fn apply(
     let api = crate::sync::pinned_api(state, session).await?;
     let state = Arc::clone(state);
     let reporter = Reporter::for_client(progress);
-    let task = tokio::spawn(async move {
+    let task = crate::progress::spawn(async move {
         let _no_pass = state.syncer.exclusive().await;
         let _foreground = state.indexer.foreground();
         let step = reporter.step(doing, Some(targets.len()));
@@ -205,7 +205,7 @@ pub async fn rename(
 ) -> Result<(String, String, String), Failure> {
     let state = Arc::clone(state);
     // Its own task: once ChatGPT has the new title, the index gets it too.
-    tokio::spawn(async move {
+    crate::progress::spawn(async move {
         let profile = state.profile();
         let (chat, synced_at) = state
             .db(move |db| Ok(select::one(db, &reference, archived, all, profile)))

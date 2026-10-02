@@ -12,13 +12,48 @@ use serde_json::Value;
 use super::{Listing, reconcile};
 use crate::api::{Api, ApiError, ConversationSummary, PAGE_SIZE};
 use crate::js;
-use crate::state::State;
+use crate::state::{State, now_unix};
 
-pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError> {
+/// A listing this many chats shorter than the index's count for that list
+/// is read again before chats are checked one by one: a day's deletions
+/// rarely reach it, and another listing costs a few requests where each
+/// single-chat read costs one.
+const SHORT_BY: usize = 5;
+/// A background full pass checks at most this many chats the lists left
+/// out one by one (the single-chat endpoint rate-limits at bulk pace),
+/// a quarter second apart. More than that leaves the index as it was and
+/// says to run `chatgpt sync --full`.
+pub(super) const BACKGROUND_OMISSION_CHECKS: usize = 50;
+const BACKGROUND_CHECK_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `bounded`: a background pass, which checks only a few omitted chats.
+pub(super) async fn run(state: &State, api: &Api, bounded: bool) -> Result<SyncReport, ApiError> {
     let started_at = js::now_iso();
+    let previous: Vec<IndexedConversation> = state
+        .db(|db| {
+            chatgpt_store::query(
+                db,
+                &IndexFilter {
+                    include_pinned: true,
+                    ..IndexFilter::default()
+                },
+                0,
+            )
+        })
+        .await?;
     let mut listed = Listing::new();
     for archived in [false, true] {
         let kind = if archived { "archived" } else { "active" };
+        let known = previous
+            .iter()
+            .filter(|chat| chat.is_archived == archived)
+            .count();
+        let in_list = |listed: &Listing| {
+            listed
+                .values()
+                .filter(|chat| chat.is_archived == archived)
+                .count()
+        };
         let step = state.reporter.step(&format!("Listing {kind} chats"), None);
         let mut seen = 0;
         let mut repeated = list_once(api, archived, &mut listed, || {
@@ -28,19 +63,30 @@ pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError
         .await?;
         step.finish(&format!("Listed {seen} {kind} chat(s)"));
         // Observed 2026-10-01: a listing can repeat some chats and skip
-        // others (662 entries, 657 distinct). A repeat means the pages
-        // shifted, so list again, up to twice, while that still finds chats.
+        // others (662 entries, 657 distinct), or end early without
+        // repeating any (536 of 662). Either way the pages shifted, so list
+        // again, up to twice, while that still finds chats: a chat found
+        // there keeps the list's times, where a single-chat read has its
+        // own.
         for _ in 0..2 {
-            if repeated == 0 {
+            let have = in_list(&listed);
+            let short = known.saturating_sub(have) > SHORT_BY;
+            if repeated == 0 && !short {
                 break;
             }
             let before = listed.len();
             let repeated_before = repeated;
             repeated = list_once(api, archived, &mut listed, || {}).await?;
             let found = listed.len() - before;
-            state.reporter.note(format!(
-                "The {kind} list repeated {repeated_before} chat(s); listing it again found {found} more."
-            ));
+            state.reporter.note(if repeated_before > 0 {
+                format!(
+                    "The {kind} list repeated {repeated_before} chat(s); listing it again found {found} more."
+                )
+            } else {
+                format!(
+                    "The {kind} list had {have} chat(s) where the index has {known}; listing it again found {found} more."
+                )
+            });
             if found == 0 {
                 break;
             }
@@ -66,19 +112,23 @@ pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError
         }
     }
 
-    let previous: Vec<IndexedConversation> = state
-        .db(|db| {
-            chatgpt_store::query(
-                db,
-                &IndexFilter {
-                    include_pinned: true,
-                    ..IndexFilter::default()
-                },
-                0,
-            )
-        })
-        .await?;
-    let recovered = recover_omissions(api, &mut listed, &previous).await?;
+    let omitted: Vec<&IndexedConversation> = previous
+        .iter()
+        .filter(|old| !listed.contains_key(&old.id))
+        .collect();
+    if bounded && omitted.len() > BACKGROUND_OMISSION_CHECKS {
+        return Err(ApiError::new(
+            ErrorKind::Api,
+            format!(
+                "the conversation lists left out {} indexed chat(s), more than the daily full sync \
+                 checks one by one ({BACKGROUND_OMISSION_CHECKS}); the index is unchanged. \
+                 Run `chatgpt sync --full` to check them all",
+                omitted.len()
+            ),
+        ));
+    }
+    let gap = bounded.then_some(BACKGROUND_CHECK_GAP);
+    let recovered = recover_omissions(api, &mut listed, &omitted, gap).await?;
     if recovered > 0 {
         state.reporter.note(format!(
             "Recovered {recovered} chat(s) omitted from the conversation lists after individual checks."
@@ -92,7 +142,10 @@ pub(super) async fn run(state: &State, api: &Api) -> Result<SyncReport, ApiError
     let before = state.db(chatgpt_store::count_all).await?;
     let synced_at = js::now_iso();
     state
-        .db_write(move |db| chatgpt_store::replace_all(db, &all, &synced_at))
+        .db_write(move |db| {
+            chatgpt_store::replace_all(db, &all, &synced_at)?;
+            chatgpt_store::set_meta(db, super::FULL_SYNCED_KEY, &now_unix().to_string())
+        })
         .await?;
     let reconciled = reconcile::run(state, api, &ids).await?;
     Ok(SyncReport {
@@ -137,15 +190,17 @@ async fn list_once(
 
 /// Check every previously indexed chat the lists left out through the
 /// single-chat endpoint: a 404 is a deletion, anything found goes back in.
+/// `gap`: a pause between checks.
 async fn recover_omissions(
     api: &Api,
     listed: &mut Listing,
-    previous: &[IndexedConversation],
+    omitted: &[&IndexedConversation],
+    gap: Option<std::time::Duration>,
 ) -> Result<u64, ApiError> {
     let mut recovered = 0;
-    for old in previous {
-        if listed.contains_key(&old.id) {
-            continue;
+    for (number, old) in omitted.iter().enumerate() {
+        if let Some(gap) = gap.filter(|_| number > 0) {
+            tokio::time::sleep(gap).await;
         }
         let Some(chat) = api.conversation(&old.id).await? else {
             continue;

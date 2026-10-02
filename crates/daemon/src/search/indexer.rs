@@ -187,21 +187,47 @@ async fn index(state: &State) -> Result<(), String> {
     let (cached, missing): (Vec<Unindexed>, Vec<Unindexed>) =
         targets.into_iter().partition(|chat| chat.cached);
     for group in cached.chunks(LOCAL_GROUP) {
+        // Read and chunked off the writer, so a sync's writes never wait
+        // on the chunking.
         let group = group.to_vec();
+        let read: Vec<(Unindexed, String)> = state
+            .db(move |db| {
+                let mut read = Vec::new();
+                for chat in group {
+                    if let Some(transcript) =
+                        chatgpt_store::transcript(db, &chat.id, &chat.update_time, versions.render)?
+                    {
+                        read.push((chat, transcript.markdown));
+                    }
+                }
+                Ok(read)
+            })
+            .await
+            .map_err(|failure| failure.message)?;
+        let chunked: Vec<(Unindexed, String, Vec<Vec<u8>>)> = read
+            .into_iter()
+            .map(|(chat, markdown)| {
+                let bodies = chunk_bytes(&markdown);
+                (chat, markdown, bodies)
+            })
+            .collect();
         state
             .db_write(move |db| {
-                for chat in &group {
-                    let Some(transcript) = chatgpt_store::transcript(
+                for (chat, markdown, bodies) in &chunked {
+                    // Only while the transcript is still the one chunked: a
+                    // write in between left these chunks stale, and the
+                    // next run chunks the new one.
+                    let current = chatgpt_store::transcript(
                         db,
                         &chat.id,
                         &chat.update_time,
                         versions.render,
-                    )?
-                    else {
-                        continue;
-                    };
-                    let bodies = chunk_bytes(&transcript.markdown);
-                    chatgpt_store::replace_chunks(db, chat, versions, &bodies)?;
+                    )?;
+                    if current.is_some_and(|transcript| transcript.markdown == *markdown)
+                        && still_at(db, chat)?
+                    {
+                        chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
+                    }
                 }
                 Ok(())
             })
@@ -240,7 +266,10 @@ async fn index(state: &State) -> Result<(), String> {
         if number > 0 {
             tokio::time::sleep(BATCH_GAP).await;
         }
-        yield_to_requests(state).await;
+        // Holds off sync passes (and changes) for this batch's read and
+        // save, so a pass can't start between the check and the request,
+        // nor move the chats on between the read and the save.
+        let admitted = admit_fetch(state).await;
         if let Some(why) = cannot_fetch(state) {
             state.indexer.inner().waiting = Some(why);
             break;
@@ -250,8 +279,11 @@ async fn index(state: &State) -> Result<(), String> {
             Ok(items) => items,
             Err(error) if error.is_rate_limit() => return Err(rate_limited(state, error)),
             // A timeout or a dropped connection says nothing about these
-            // chats: stop, and the run after the next pass tries again.
-            Err(error) if error.kind == ErrorKind::Network => return Err(error.message),
+            // chats, and a session ChatGPT refuses would refuse every batch:
+            // stop, and the run after the next pass tries again.
+            Err(error) if matches!(error.kind, ErrorKind::Network | ErrorKind::AuthRequired) => {
+                return Err(error.message);
+            }
             // ChatGPT answered with an error for this batch: set its chats
             // aside for a while, so they can't hold up the rest.
             Err(error) => {
@@ -266,6 +298,7 @@ async fn index(state: &State) -> Result<(), String> {
             }
         };
         let saved = save_batch(state, batch.to_vec(), items, versions).await?;
+        drop(admitted);
         fetched += saved;
         state.indexer.inner().fetched += saved;
         count(state, versions).await?;
@@ -335,10 +368,12 @@ async fn save_batch(
         }
     }
     unavailable(state, &failed);
-    let saved = u64::try_from(ready.len() + preserved.len()).unwrap_or(u64::MAX);
     let preserved: Vec<_> = preserved
         .into_iter()
-        .map(|(chat, markdown)| (chat, chunk_bytes(&markdown)))
+        .map(|(chat, markdown)| {
+            let bodies = chunk_bytes(&markdown);
+            (chat, markdown, bodies)
+        })
         .collect();
     // Chunked before taking the writer.
     let ready: Vec<_> = ready
@@ -349,18 +384,48 @@ async fn save_batch(
         })
         .collect();
     state
-        .db_write(move |db| {
-            for (chat, transcript, bodies) in &ready {
-                chatgpt_store::save_indexed(db, transcript, chat, versions, bodies)?;
-            }
-            for (chat, bodies) in &preserved {
-                chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
-            }
-            Ok(())
-        })
+        .db_write(move |db| save_fetched(db, &ready, &preserved, versions))
         .await
-        .map_err(|failure| failure.message)?;
+        .map_err(|failure| failure.message)
+}
+
+/// Write what a batch brought, for each chat only while the index still
+/// has it at the `update_time` it was fetched for (and, for chunks of a
+/// kept transcript, while that transcript is unchanged): a snapshot a
+/// write overtook is never saved over the newer caches, and the next run
+/// fetches the chat again. How many were saved.
+fn save_fetched(
+    db: &mut rusqlite::Connection,
+    ready: &[(Unindexed, chatgpt_store::Transcript, Vec<Vec<u8>>)],
+    preserved: &[(Unindexed, String, Vec<Vec<u8>>)],
+    versions: ChunkVersions,
+) -> chatgpt_store::Result<u64> {
+    let mut saved = 0;
+    for (chat, transcript, bodies) in ready {
+        if still_at(db, chat)? {
+            chatgpt_store::save_indexed(db, transcript, chat, versions, bodies)?;
+            saved += 1;
+        }
+    }
+    for (chat, markdown, bodies) in preserved {
+        let kept = chatgpt_store::transcript(db, &chat.id, &chat.update_time, versions.render)?
+            .is_some_and(|transcript| transcript.markdown == *markdown);
+        if kept && still_at(db, chat)? {
+            chatgpt_store::replace_chunks(db, chat, versions, bodies)?;
+            saved += 1;
+        }
+    }
     Ok(saved)
+}
+
+/// Whether the index still has `chat` at the `update_time` it was read at.
+fn still_at(db: &rusqlite::Connection, chat: &Unindexed) -> chatgpt_store::Result<bool> {
+    let current: Option<String> = rusqlite::OptionalExtension::optional(db.query_row(
+        "select update_time from conversations where id = ?",
+        [&chat.id],
+        |row| row.get(0),
+    ))?;
+    Ok(current.as_deref() == Some(chat.update_time.as_str()))
 }
 
 /// Refresh the counts `daemon status` shows.
@@ -385,20 +450,27 @@ pub(crate) fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
 /// `missing` without chats ChatGPT recently didn't return (unless they
 /// changed since).
 fn retryable(state: &State, missing: Vec<Unindexed>) -> Vec<Unindexed> {
-    let mut inner = state.indexer.inner();
-    inner
-        .unavailable
-        .retain(|_, (_, at)| at.elapsed() < RETRY_UNAVAILABLE);
-    let ready: Vec<Unindexed> = missing
-        .into_iter()
-        .filter(|chat| {
-            inner
-                .unavailable
-                .get(&chat.id)
-                .is_none_or(|(update_time, _)| *update_time != chat.update_time)
-        })
+    without_set_aside(&mut state.indexer.inner().unavailable, missing)
+}
+
+/// Drops set-aside entries that no longer hold (expired, or for a chat that
+/// changed, got indexed or left the index), so `daemon status` counts only
+/// chats still waiting, then `missing` without the ones that do.
+fn without_set_aside(
+    unavailable: &mut HashMap<String, (String, Instant)>,
+    missing: Vec<Unindexed>,
+) -> Vec<Unindexed> {
+    let current: HashMap<&str, &str> = missing
+        .iter()
+        .map(|chat| (chat.id.as_str(), chat.update_time.as_str()))
         .collect();
-    ready
+    unavailable.retain(|id, (update_time, at)| {
+        at.elapsed() < RETRY_UNAVAILABLE && current.get(id.as_str()) == Some(&update_time.as_str())
+    });
+    missing
+        .into_iter()
+        .filter(|chat| !unavailable.contains_key(&chat.id))
+        .collect()
 }
 
 fn unavailable(state: &State, chats: &[Unindexed]) {
@@ -444,10 +516,112 @@ fn rate_limited(state: &State, error: ApiError) -> String {
     error.message
 }
 
+/// Wait until no `export` reads ChatGPT and no sync pass (or change) runs,
+/// then hold the pass lock: until the guard drops, no pass can start, so
+/// the indexer's read and a pass's never overlap.
+async fn admit_fetch(state: &State) -> tokio::sync::MutexGuard<'_, ()> {
+    loop {
+        if state.indexer.foreground.load(Ordering::SeqCst) == 0
+            && let Some(guard) = state.syncer.try_exclusive()
+        {
+            return guard;
+        }
+        tokio::time::sleep(YIELD_POLL).await;
+    }
+}
+
 /// Wait while a `sync` or `export` reads ChatGPT, so neither queues behind
 /// a long indexing or embedding run.
 pub(super) async fn yield_to_requests(state: &State) {
     while state.indexer.foreground.load(Ordering::SeqCst) > 0 || state.syncer.is_running() {
         tokio::time::sleep(YIELD_POLL).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chat(id: &str, update_time: &str) -> Unindexed {
+        Unindexed {
+            id: id.into(),
+            title: id.into(),
+            update_time: update_time.into(),
+            cached: false,
+        }
+    }
+
+    #[test]
+    fn a_fetch_a_sync_overtook_never_replaces_the_newer_transcript() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = chatgpt_store::Store::open(&dir.path().join("chatgpt.db")).expect("store");
+        let versions = ChunkVersions {
+            render: 2,
+            chunk: 2,
+        };
+        let transcript = |update_time: &str, markdown: &str| chatgpt_store::Transcript {
+            id: "a".into(),
+            update_time: update_time.into(),
+            render_version: 2,
+            markdown: markdown.into(),
+            turns: 1,
+            approx_tokens: 1,
+        };
+        // A sync moved the chat to t2 and cached its transcript there
+        // while the indexer held a t1 snapshot.
+        let at_t2 = chat("a", "t2");
+        store
+            .write(|db| {
+                chatgpt_store::replace_all(
+                    db,
+                    &[chatgpt_store::NewConversation {
+                        id: "a".into(),
+                        title: "a".into(),
+                        create_time: "t0".into(),
+                        update_time: "t2".into(),
+                        is_archived: false,
+                        pinned: false,
+                        project_id: None,
+                    }],
+                    "now",
+                )?;
+                chatgpt_store::save_indexed(db, &transcript("t2", "newer"), &at_t2, versions, &[])
+            })
+            .expect("t2");
+        let stale = vec![(chat("a", "t1"), transcript("t1", "older"), Vec::new())];
+        let saved = store
+            .write(|db| save_fetched(db, &stale, &[], versions))
+            .expect("saved");
+        assert_eq!(saved, 0);
+        let kept = store
+            .read(|db| chatgpt_store::transcript(db, "a", "t2", 2))
+            .expect("read")
+            .expect("the t2 transcript");
+        assert_eq!(kept.markdown, "newer");
+
+        // A current one is saved.
+        let current = vec![(at_t2, transcript("t2", "fetched"), Vec::new())];
+        let saved = store
+            .write(|db| save_fetched(db, &current, &[], versions))
+            .expect("saved");
+        assert_eq!(saved, 1);
+    }
+
+    #[test]
+    fn a_set_aside_chat_that_changed_or_left_stops_counting_as_failed() {
+        let mut unavailable: HashMap<String, (String, Instant)> =
+            [("same", "t1"), ("changed", "t1"), ("indexed-since", "t1")]
+                .into_iter()
+                .map(|(id, time)| (id.to_owned(), (time.to_owned(), Instant::now())))
+                .collect();
+        let ready = without_set_aside(
+            &mut unavailable,
+            vec![chat("same", "t1"), chat("changed", "t2"), chat("new", "t1")],
+        );
+        let ready: Vec<&str> = ready.iter().map(|chat| chat.id.as_str()).collect();
+        assert_eq!(ready, ["changed", "new"]);
+        let mut left: Vec<&str> = unavailable.keys().map(String::as_str).collect();
+        left.sort_unstable();
+        assert_eq!(left, ["same"], "only the unchanged chat stays set aside");
     }
 }
