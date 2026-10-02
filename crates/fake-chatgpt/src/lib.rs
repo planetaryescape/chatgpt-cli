@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
+pub mod fixtures;
+
 pub const ACCESS_TOKEN: &str = "fake-access-token";
 pub const COOKIE: &str = "__Secure-next-auth.session-token=fake-session";
 /// A second ChatGPT account, with chats of its own
@@ -30,8 +32,13 @@ pub struct Chat {
     pub archived: bool,
     pub pinned: bool,
     pub gizmo_id: Option<String>,
-    /// The user's one message.
+    /// The user's one message, when `tree` is `None`.
     pub text: String,
+    /// A whole conversation tree (`mapping`, `current_node`) instead of
+    /// `text` alone; see [`fixtures`].
+    pub tree: Option<(Value, String)>,
+    /// `default_model_slug` on the single-chat endpoint.
+    pub model: Option<String>,
 }
 
 impl Chat {
@@ -45,6 +52,8 @@ impl Chat {
             pinned: false,
             gizmo_id: None,
             text: format!("Hello from {id}"),
+            tree: None,
+            model: Some("gpt-4".into()),
         }
     }
 
@@ -58,6 +67,9 @@ impl Chat {
     }
 
     fn mapping(&self) -> Value {
+        if let Some((mapping, _)) = &self.tree {
+            return mapping.clone();
+        }
         json!({
             "root": { "id": "root", "parent": null, "children": ["m1"], "message": null },
             "m1": { "id": "m1", "parent": "root", "children": [], "message": {
@@ -66,22 +78,29 @@ impl Chat {
         })
     }
 
-    /// The single-chat endpoint: epoch seconds.
-    fn detail(&self) -> Value {
+    fn current_node(&self) -> &str {
+        self.tree
+            .as_ref()
+            .map_or("m1", |(_, current)| current.as_str())
+    }
+
+    /// The single-chat endpoint's answer: epoch seconds, the model.
+    pub fn detail(&self) -> Value {
         json!({
             "conversation_id": self.id, "title": self.title,
             "create_time": seconds(&self.create_time), "update_time": seconds(&self.update_time),
             "is_archived": self.archived, "pinned_time": null, "gizmo_id": self.gizmo_id,
-            "default_model_slug": "gpt-4", "mapping": self.mapping(), "current_node": "m1",
+            "default_model_slug": self.model, "mapping": self.mapping(),
+            "current_node": self.current_node(),
         })
     }
 
     /// A batch item: `id`, ISO times, no model.
-    fn batch_item(&self) -> Value {
+    pub fn batch_item(&self) -> Value {
         json!({
             "id": self.id, "title": self.title, "create_time": self.create_time,
             "update_time": self.update_time, "is_archived": self.archived,
-            "mapping": self.mapping(), "current_node": "m1",
+            "mapping": self.mapping(), "current_node": self.current_node(),
         })
     }
 }
@@ -120,6 +139,10 @@ pub struct State {
     flaky_now: bool,
     /// Leave `user.id` out of session exchanges.
     pub omit_user_id: bool,
+    /// Hold every batch answer this long.
+    pub batch_delay_ms: u64,
+    /// The ids of every batch read answered, in order.
+    pub batch_bodies: Vec<Vec<String>>,
 }
 
 pub struct FakeChatGpt {
@@ -295,7 +318,10 @@ impl Respond for Handler {
                     .filter_map(|id| chats.iter().find(|chat| &chat.id == id))
                     .map(Chat::batch_item)
                     .collect();
-                ResponseTemplate::new(200).set_body_json(items)
+                state.batch_bodies.push(ids);
+                ResponseTemplate::new(200)
+                    .set_body_json(items)
+                    .set_delay(std::time::Duration::from_millis(state.batch_delay_ms))
             }
             Route::Memories => match &state.memories {
                 Some(memories) => {

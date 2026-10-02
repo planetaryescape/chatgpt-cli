@@ -139,7 +139,7 @@ fn chunk_bytes_that_are_not_utf8_are_stored_and_read_as_they_are() {
                 db,
                 &target("a", "T", "2026-01-01T00:00:00Z"),
                 V,
-                &[body.clone()],
+                std::slice::from_ref(&body),
             )
         })
         .unwrap();
