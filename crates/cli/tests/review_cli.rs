@@ -121,7 +121,7 @@ fn a_rate_limit_during_the_reconcile_ends_the_pass() {
     // read the chat through the batch endpoint.
     env.index_db()
         .execute(
-            "insert or replace into transcripts values ('a-one', '2026-09-01T00:00:00Z', 2, '# One', 1, 1)",
+            "insert or replace into transcripts values ('a-one', '2026-09-01T00:00:00Z', 3, '# One', 1, 1)",
             [],
         )
         .unwrap();

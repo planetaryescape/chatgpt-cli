@@ -45,18 +45,18 @@ impl Tree {
     }
 
     /// Add `message` under `parent` (a regeneration or an edit when
-    /// `parent` already has a child); it becomes the last node.
+    /// `parent` already has a child); it becomes the last node. A parent
+    /// the tree doesn't have is a mistake in the fixture, so it panics
+    /// rather than leave an orphan.
     pub fn push_under(&mut self, parent: &str, message: Value) -> String {
         self.count += 1;
         let id = format!("n{:03}", self.count);
-        if let Some(children) = self
-            .nodes
+        self.nodes
             .get_mut(parent)
             .and_then(|node| node.get_mut("children"))
             .and_then(Value::as_array_mut)
-        {
-            children.push(json!(id));
-        }
+            .expect("push_under: no such parent in the tree")
+            .push(json!(id));
         self.nodes.insert(
             id.clone(),
             json!({ "id": id, "parent": parent, "children": [], "message": message }),
@@ -500,7 +500,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixtures_are_deterministic_and_cover_every_kind() {
+    #[should_panic(expected = "no such parent")]
+    fn a_node_under_an_unknown_parent_is_refused() {
+        Tree::new().push_under("nowhere", json!({}));
+    }
+
+    // Per-kind coverage is checked where it matters: the golden outputs
+    // in crates/cli/tests/golden.rs render every kind.
+    #[test]
+    fn fixtures_are_deterministic() {
         let first = rich_chats(KINDS * 2, 7);
         let again = rich_chats(KINDS * 2, 7);
         assert_eq!(first.len(), KINDS * 2);

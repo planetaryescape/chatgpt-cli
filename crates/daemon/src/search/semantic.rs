@@ -10,6 +10,8 @@ use chatgpt_core::ErrorKind;
 use chatgpt_embed::{DIM, MODEL_VERSION};
 use chatgpt_protocol::{SearchHit, SearchMode, SearchResults};
 use chatgpt_store::ChunkVersions;
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use rusqlite::Connection;
 
@@ -37,15 +39,17 @@ fn js_descending(a: f64, b: f64) -> std::cmp::Ordering {
 /// A chat's best chunk so far.
 struct Best {
     chunk_id: i64,
+    chunk_index: i64,
     title: String,
     updated: String,
     archived: bool,
     score: f64,
 }
 
-/// `SearchStore.semantic`: each chat's best-scoring chunk (the first of
-/// equal scores), best first (a stable sort, as JS's), at most `limit`,
-/// with an excerpt of that chunk's body.
+/// `SearchStore.semantic`: each chat's best-scoring chunk, best first, at
+/// most `limit`, with an excerpt of that chunk's body. Exact ties go to the
+/// earlier chunk in a chat and the smaller chat id between chats, which
+/// every index agrees on (SQLite's row order and chunk ids don't).
 pub fn semantic_hits(
     db: &Connection,
     query: &[f32],
@@ -53,7 +57,8 @@ pub fn semantic_hits(
     archived: Option<bool>,
     versions: ChunkVersions,
 ) -> Result<Vec<SearchHit>, Failure> {
-    let mut best: IndexMap<String, Best> = IndexMap::new();
+    // Fully ordered below, so insertion order doesn't matter.
+    let mut best: HashMap<String, Best> = HashMap::new();
     let mut bad = None;
     chatgpt_store::each_vector(db, archived, versions, MODEL_VERSION, |row| {
         if row.embedding.len() != DIM * 4 {
@@ -61,18 +66,17 @@ pub fn semantic_hits(
             return Ok(());
         }
         let score = dot(query, row.embedding);
-        // A later chunk replaces an earlier one only with a higher score;
-        // `insert` keeps the chat where it was first seen.
-        if best
-            .get(row.conversation_id)
-            .is_some_and(|previous| score <= previous.score)
-        {
+        if best.get(row.conversation_id).is_some_and(|previous| {
+            score < previous.score
+                || (score == previous.score && row.chunk_index > previous.chunk_index)
+        }) {
             return Ok(());
         }
         best.insert(
             row.conversation_id.to_owned(),
             Best {
                 chunk_id: row.chunk_id,
+                chunk_index: row.chunk_index,
                 title: row.title.to_owned(),
                 updated: row.updated.to_owned(),
                 archived: row.archived,
@@ -89,7 +93,9 @@ pub fn semantic_hits(
         ));
     }
     let mut ranked: Vec<(String, Best)> = best.into_iter().collect();
-    ranked.sort_by(|(_, a), (_, b)| js_descending(a.score, b.score));
+    ranked.sort_by(|(a_id, a), (b_id, b)| {
+        js_descending(a.score, b.score).then_with(|| a_id.cmp(b_id))
+    });
     ranked
         .into_iter()
         .take(usize::try_from(limit).unwrap_or(usize::MAX))
@@ -97,7 +103,7 @@ pub fn semantic_hits(
             let body = chatgpt_store::chunk_body(db, best.chunk_id)
                 .map_err(Failure::store)?
                 .unwrap_or_default();
-            let snippet = excerpt(&String::from_utf8_lossy(&body));
+            let snippet = excerpt(&body);
             Ok(SearchHit {
                 id,
                 title: best.title,
@@ -316,8 +322,7 @@ mod tests {
             .write(|db| {
                 chatgpt_store::replace_all(db, &chats, "t")?;
                 for (id, bodies, _) in &chunks {
-                    let bodies: Vec<Vec<u8>> =
-                        bodies.iter().map(|body| body.as_bytes().to_vec()).collect();
+                    let bodies: Vec<String> = bodies.iter().map(|&body| body.to_owned()).collect();
                     let target = Unindexed {
                         id: (*id).into(),
                         title: format!("Title {id}"),
@@ -326,7 +331,8 @@ mod tests {
                     };
                     chatgpt_store::replace_chunks(db, &target, versions, &bodies)?;
                 }
-                let pending = chatgpt_store::pending_vectors(db, versions, MODEL_VERSION, 0, 100)?;
+                let pending =
+                    chatgpt_store::pending_vectors(db, versions, MODEL_VERSION, 0, 100, 0)?;
                 let vectors: Vec<NewVector> = pending
                     .into_iter()
                     .zip(chunks.iter().flat_map(|(_, _, vectors)| vectors))
@@ -360,5 +366,69 @@ mod tests {
             .expect("hits");
         let ids: Vec<&str> = all.iter().map(|hit| hit.id.as_str()).collect();
         assert_eq!(ids, ["c", "b"]);
+    }
+
+    // docs/issues/semantic-search-followups.md: exact ties don't depend on
+    // chunk ids or SQLite's row order.
+    #[test]
+    fn equal_scores_rank_by_chat_id_and_chunk_order() {
+        use chatgpt_store::{NewConversation, NewVector, Store, Unindexed};
+        let dir = tempfile::tempdir().expect("dir");
+        let store = Store::open(&dir.path().join("chatgpt.db")).expect("store");
+        let versions = ChunkVersions {
+            render: 2,
+            chunk: 1,
+        };
+        let same = bytes(&[1.0f32; DIM]);
+        store
+            .write(|db| {
+                let chat = |id: &str| NewConversation {
+                    id: id.into(),
+                    title: id.into(),
+                    create_time: "t".into(),
+                    update_time: "t".into(),
+                    is_archived: false,
+                    pinned: false,
+                    project_id: None,
+                };
+                chatgpt_store::replace_all(db, &[chat("z"), chat("y")], "t")?;
+                // z first, so its chunks get the smaller ids; its second
+                // chunk is written before its first.
+                for (id, bodies) in [("z", ["z one", "z two"]), ("y", ["y one", "y two"])] {
+                    let target = Unindexed {
+                        id: id.into(),
+                        title: id.into(),
+                        update_time: "t".into(),
+                        cached: false,
+                    };
+                    chatgpt_store::replace_chunks(db, &target, versions, &bodies.map(str::to_owned))?;
+                }
+                db.execute_batch(
+                    "update search_chunks set chunk_index = chunk_index + 10 where conversation_id = 'z';
+                     update search_chunks set chunk_index = 11 - chunk_index where conversation_id = 'z';",
+                )?;
+                let vectors: Vec<NewVector> =
+                    chatgpt_store::pending_vectors(db, versions, MODEL_VERSION, 0, 100, 0)?
+                        .into_iter()
+                        .map(|chunk| NewVector {
+                            chunk_id: chunk.id,
+                            text: chunk.text,
+                            embedding: same.clone(),
+                        })
+                        .collect();
+                chatgpt_store::save_vectors(db, &vectors, MODEL_VERSION)?;
+                Ok(())
+            })
+            .expect("index");
+        let query = vec![1.0f32; DIM];
+        let hits = store
+            .read(|db| Ok(semantic_hits(db, &query, 10, None, versions).map_err(|f| f.message)))
+            .expect("read")
+            .expect("hits");
+        let found: Vec<(&str, &str)> = hits
+            .iter()
+            .map(|hit| (hit.id.as_str(), hit.snippet.as_str()))
+            .collect();
+        assert_eq!(found, [("y", "y one"), ("z", "z two")]);
     }
 }

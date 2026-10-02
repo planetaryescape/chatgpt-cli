@@ -22,7 +22,7 @@ use crate::render::{Conversation, render_transcript};
 use crate::state::State;
 
 /// `/[0-9a-f]{8}-…-[0-9a-f]{12}/i`, through `js::regex` like every JS regex.
-static UUID: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+static UUID: LazyLock<js::JsRegex> = LazyLock::new(|| {
     #[allow(clippy::unwrap_used, reason = "a fixed pattern that compiles")]
     js::regex(
         "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
@@ -80,8 +80,8 @@ async fn resolve(
             "Shared links (/share/…) aren't supported; use the chat's own /c/… link.".to_owned(),
         ));
     }
-    if let Ok(Some(found)) = UUID.find(&reference) {
-        return Ok((found.as_str().to_lowercase(), None));
+    if let Some(found) = UUID.find(&reference) {
+        return Ok((found.to_lowercase(), None));
     }
     let local_title_version = state.profile().local_title_version;
     state

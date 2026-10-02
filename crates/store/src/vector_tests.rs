@@ -39,7 +39,7 @@ fn store_with(chats: &[NewConversation]) -> (tempfile::TempDir, Store) {
 }
 
 fn chunk(store: &Store, id: &str, update_time: &str, bodies: &[&str]) {
-    let bodies: Vec<Vec<u8>> = bodies.iter().map(|body| body.as_bytes().to_vec()).collect();
+    let bodies: Vec<String> = bodies.iter().map(|&body| body.to_owned()).collect();
     store
         .write(|db| replace_chunks(db, &target(id, update_time), V, &bodies))
         .unwrap();
@@ -47,8 +47,12 @@ fn chunk(store: &Store, id: &str, update_time: &str, bodies: &[&str]) {
 
 /// Embed every pending chunk with a vector of its id.
 fn embed_all(store: &Store) -> usize {
+    embed_all_at(store, V)
+}
+
+fn embed_all_at(store: &Store, versions: ChunkVersions) -> usize {
     let pending = store
-        .read(|db| pending_vectors(db, V, MODEL, 0, 1000))
+        .read(|db| pending_vectors(db, versions, MODEL, 0, 1000, 0))
         .unwrap();
     let vectors: Vec<NewVector> = pending
         .into_iter()
@@ -73,21 +77,21 @@ fn pending_chunks_are_current_ones_without_a_vector_from_this_model() {
     chunk(&store, "a", "t1", &["alpha one", "alpha two"]);
     chunk(&store, "b", "t1", &["beta"]);
     let pending = store
-        .read(|db| pending_vectors(db, V, MODEL, 0, 10))
+        .read(|db| pending_vectors(db, V, MODEL, 0, 10, 0))
         .unwrap();
     assert_eq!(pending.len(), 3);
     // The TS CLI embeds `title || '\n' || body`.
-    assert_eq!(pending[0].text, b"Title a\nalpha one");
+    assert_eq!(pending[0].text, "Title a\nalpha one");
     // Paging resumes after an id.
     let rest = store
-        .read(|db| pending_vectors(db, V, MODEL, pending[0].id, 1))
+        .read(|db| pending_vectors(db, V, MODEL, pending[0].id, 1, 0))
         .unwrap();
     assert_eq!(rest, vec![pending[1].clone()]);
 
     assert_eq!(embed_all(&store), 3);
     assert!(
         store
-            .read(|db| pending_vectors(db, V, MODEL, 0, 10))
+            .read(|db| pending_vectors(db, V, MODEL, 0, 10, 0))
             .unwrap()
             .is_empty()
     );
@@ -106,7 +110,7 @@ fn pending_chunks_are_current_ones_without_a_vector_from_this_model() {
     // Another model's vectors don't count.
     assert_eq!(
         store
-            .read(|db| pending_vectors(db, V, "model@2", 0, 10))
+            .read(|db| pending_vectors(db, V, "model@2", 0, 10, 0))
             .unwrap()
             .len(),
         3
@@ -182,13 +186,13 @@ fn a_vector_for_text_the_chunk_no_longer_holds_is_dropped() {
     let (_dir, store) = store_with(&[chat("a", "t1", false)]);
     chunk(&store, "a", "t1", &["old text"]);
     let pending = store
-        .read(|db| pending_vectors(db, V, MODEL, 0, 10))
+        .read(|db| pending_vectors(db, V, MODEL, 0, 10, 0))
         .unwrap();
     // The indexer replaces the chunk while its vector is being made; the
     // new chunk gets the same id.
     chunk(&store, "a", "t1", &["new text"]);
     let reused = store
-        .read(|db| pending_vectors(db, V, MODEL, 0, 10))
+        .read(|db| pending_vectors(db, V, MODEL, 0, 10, 0))
         .unwrap();
     assert_eq!(reused[0].id, pending[0].id, "SQLite reused the rowid");
     let stale = NewVector {
@@ -204,7 +208,7 @@ fn a_vector_for_text_the_chunk_no_longer_holds_is_dropped() {
     // A deleted chunk gets no vector either.
     let gone = NewVector {
         chunk_id: 999,
-        text: b"x".to_vec(),
+        text: "x".to_owned(),
         embedding: vec![0; 384 * 4],
     };
     assert_eq!(
@@ -215,50 +219,155 @@ fn a_vector_for_text_the_chunk_no_longer_holds_is_dropped() {
 
 #[test]
 fn an_index_from_before_vectors_upgrades_in_place() {
+    const V2: ChunkVersions = ChunkVersions {
+        render: 2,
+        chunk: 2,
+    };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chatgpt.db");
     {
-        // 0.1.1's schema, with a chat already chunked.
+        // 0.1.1's schema, with a chat already chunked (at chunk version 2,
+        // which the text migration keeps).
         let mut db = Connection::open(&path).unwrap();
-        let transaction = db.transaction().unwrap();
-        for sql in [
-            include_str!("../migrations/0001_index.sql"),
-            include_str!("../migrations/0002_search.sql"),
-            include_str!("../migrations/0003_search_follows_transcripts.sql"),
-        ] {
-            transaction.execute_batch(sql).unwrap();
-        }
-        transaction.pragma_update(None, "user_version", 3).unwrap();
-        transaction.commit().unwrap();
+        crate::schema::migrate_to(&mut db, 3).unwrap();
         replace_all(&mut db, &[chat("a", "t1", false)], "t").unwrap();
-        replace_chunks(&mut db, &target("a", "t1"), V, &[b"kept".to_vec()]).unwrap();
+        replace_chunks(&mut db, &target("a", "t1"), V2, &["kept".to_owned()]).unwrap();
     }
     let store = Store::open(&path).unwrap();
     let version: i64 = store
         .read(|db| Ok(db.query_row("pragma user_version", [], |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 6);
-    assert_eq!(store.read(|db| coverage(db, None, V)).unwrap(), (1, 1));
+    assert_eq!(version, 8);
+    assert_eq!(store.read(|db| coverage(db, None, V2)).unwrap(), (1, 1));
     assert_eq!(
         store
-            .read(|db| lexical(db, "\"kept\"", None, V, 10))
+            .read(|db| lexical(db, "\"kept\"", None, V2, 10))
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
         store
-            .read(|db| vector_coverage(db, None, V, MODEL))
+            .read(|db| vector_coverage(db, None, V2, MODEL))
             .unwrap(),
         (1, 0),
         "the existing chunks wait for vectors"
     );
-    assert_eq!(embed_all(&store), 1);
+    assert_eq!(embed_all_at(&store, V2), 1);
     let body = store
         .read(|db| {
             let id: i64 = db.query_row("select id from search_chunks", [], |r| r.get(0))?;
             chunk_body(db, id)
         })
         .unwrap();
-    assert_eq!(body.as_deref(), Some(&b"kept"[..]));
+    assert_eq!(body.as_deref(), Some("kept"));
+}
+
+// docs/issues/semantic-search-followups.md: a chunk the model failed on
+// stays set aside across restarts, until its retry time.
+#[test]
+fn a_failed_chunk_waits_until_its_retry_time() {
+    let (_dir, store) = store_with(&[chat("a", "t1", false)]);
+    chunk(&store, "a", "t1", &["one", "two"]);
+    let pending = |now: i64| {
+        store
+            .read(|db| pending_vectors(db, V, MODEL, 0, 10, now))
+            .unwrap()
+            .into_iter()
+            .map(|chunk| chunk.id)
+            .collect::<Vec<_>>()
+    };
+    let ids = pending(100);
+    store
+        .write(|db| record_vector_failure(db, ids[0], &text_of(db, ids[0])?, MODEL, 200))
+        .unwrap();
+    assert_eq!(pending(100), [ids[1]], "set aside");
+    assert_eq!(pending(200), ids, "due again");
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 1);
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 200)).unwrap(), 0);
+    assert_eq!(
+        store
+            .read(|db| pending_vectors(db, V, "model@2", 0, 10, 100))
+            .unwrap()
+            .len(),
+        2,
+        "another model tries it"
+    );
+    // New chunks for the chat take the failure with the old ones.
+    chunk(&store, "a", "t1", &["one", "two"]);
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 0);
+    // And a vector saved for a chunk clears its failure.
+    let ids = pending(100);
+    store
+        .write(|db| record_vector_failure(db, ids[0], &text_of(db, ids[0])?, MODEL, 200))
+        .unwrap();
+    assert_eq!(embed_all_at(&store, V), 1);
+    store
+        .write(|db| {
+            let text: String = db.query_row(
+                "select title || char(10) || body from search_chunks where id = ?",
+                [ids[0]],
+                |r| r.get(0),
+            )?;
+            let vector = NewVector {
+                chunk_id: ids[0],
+                text,
+                embedding: vec![0; 384 * 4],
+            };
+            save_vectors(db, &[vector], MODEL)
+        })
+        .unwrap();
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 0);
+}
+
+/// A chunk's `title || '\n' || body`, as the embedder reads it.
+fn text_of(db: &Connection, chunk_id: i64) -> Result<String> {
+    Ok(db.query_row(
+        "select title || char(10) || body from search_chunks where id = ?",
+        [chunk_id],
+        |r| r.get(0),
+    )?)
+}
+
+// A failure read from one chunk never lands on another that took its id:
+// the indexer replaced the chunk while the model ran, and SQLite handed the
+// rowid to a healthy one.
+#[test]
+fn a_failure_is_recorded_only_for_the_text_that_failed() {
+    let (_dir, store) = store_with(&[chat("a", "t1", false)]);
+    chunk(&store, "a", "t1", &["broken"]);
+    let (id, failed_text) = store
+        .read(|db| {
+            let pending = pending_vectors(db, V, MODEL, 0, 10, 0)?;
+            Ok((pending[0].id, pending[0].text.clone()))
+        })
+        .unwrap();
+    // Replaced meanwhile; the replacement reuses the rowid.
+    chunk(&store, "a", "t1", &["healthy"]);
+    let reused = store
+        .read(|db| Ok(pending_vectors(db, V, MODEL, 0, 10, 0)?[0].id))
+        .unwrap();
+    assert_eq!(reused, id, "SQLite reused the rowid");
+    assert!(
+        !store
+            .write(|db| record_vector_failure(db, id, &failed_text, MODEL, 200))
+            .unwrap()
+    );
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 0);
+    assert_eq!(
+        store
+            .read(|db| pending_vectors(db, V, MODEL, 0, 10, 100))
+            .unwrap()
+            .len(),
+        1,
+        "the healthy chunk is still pending"
+    );
+    // The text that did fail, still there, is set aside.
+    let text = store.read(|db| text_of(db, id)).unwrap();
+    assert!(
+        store
+            .write(|db| record_vector_failure(db, id, &text, MODEL, 200))
+            .unwrap()
+    );
+    assert_eq!(store.read(|db| vector_failures(db, MODEL, 100)).unwrap(), 1);
 }

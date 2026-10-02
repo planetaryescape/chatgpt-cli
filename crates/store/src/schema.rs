@@ -12,7 +12,25 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_search_vectors.sql"),
     include_str!("../migrations/0005_native_rows.sql"),
     include_str!("../migrations/0006_drop_native_rows.sql"),
+    include_str!("../migrations/0007_chunk_bodies_text.sql"),
+    include_str!("../migrations/0008_vector_failures.sql"),
 ];
+
+/// An index at migration `version`, as an older build left it.
+#[cfg(test)]
+pub(crate) fn migrate_to(connection: &mut Connection, version: usize) -> Result<()> {
+    let transaction = connection.transaction()?;
+    for sql in &MIGRATIONS[..version] {
+        transaction.execute_batch(sql)?;
+    }
+    transaction.pragma_update(
+        None,
+        "user_version",
+        i64::try_from(version).unwrap_or(i64::MAX),
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<()> {
     let known = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);

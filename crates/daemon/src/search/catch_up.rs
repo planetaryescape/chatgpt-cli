@@ -3,12 +3,13 @@
 //! the TS CLI's `search-index` does, and retrying a failed model download),
 //! shows their progress, and reports on the scope once neither has work
 //! left. `--archived` and `--all` scope the report as the TS CLI scopes its
-//! work.
+//! work. `--browser` and `--profile` choose the session the fetches use,
+//! and stay the daemon's choice, as a `sync`'s do.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chatgpt_protocol::{Progress, SearchIndexReport};
+use chatgpt_protocol::{Progress, SearchIndexReport, SessionChoice};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::Coverage;
@@ -32,10 +33,16 @@ pub async fn search_index(
     state: &Arc<State>,
     archived: bool,
     all: bool,
+    session: SessionChoice,
     progress: Option<UnboundedSender<Progress>>,
 ) -> Result<SearchIndexReport, Failure> {
     let started = Instant::now();
     state.db(|db| Ok(require_synced(db))).await??;
+    if session != state.syncer.choice() {
+        // Refuses another account's session before anything is fetched.
+        crate::sync::pinned_api(state, session.clone()).await?;
+        state.syncer.use_choice(session);
+    }
     let scope = (!all).then_some(archived);
     let reporter = Reporter::default();
     let _attached = progress.map(|sender| reporter.attach(sender));
@@ -93,18 +100,15 @@ pub async fn search_index(
         ));
     }
 
-    let unavailable = state.indexer.unavailable_ids();
+    let set_aside = state.indexer.set_aside();
     let profile = state.profile();
     let failures = state
         .db(move |db| {
             let mut failures = Vec::new();
-            for id in unavailable {
+            for (id, why) in set_aside {
                 for chat in chatgpt_store::get(db, &id, profile.local_title_version)? {
                     if scope.is_none_or(|archived| chat.is_archived == archived) {
-                        failures.push(format!(
-                            "{} {}: not returned by ChatGPT; run sync.",
-                            chat.id, chat.title
-                        ));
+                        failures.push(format!("{} {}: {why}", chat.id, chat.title));
                     }
                 }
             }

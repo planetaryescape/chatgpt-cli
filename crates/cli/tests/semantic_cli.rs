@@ -151,6 +151,63 @@ fn search_index_waits_for_the_daemon_and_reports_the_scope() {
     );
 }
 
+// docs/issues/semantic-search-followups.md: a chat set aside says why,
+// without the response body.
+#[test]
+fn search_index_failures_say_why_without_the_body() {
+    let env = Env::with_fake(chats());
+    env.fake().state().fail_batch = 1000;
+    synced(&env);
+    env.wait_for_indexer();
+    let (code, _, stderr) = run(&env, &["search-index"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains(
+            "failed: a-rust Rust runtimes: 500 Internal Server Error from /backend-api/conversations/batch\n"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("oops"), "{stderr}");
+    // The fake records the batch reads it failed too.
+    assert!(
+        env.fake()
+            .state()
+            .batch_bodies
+            .iter()
+            .any(|ids| ids.contains(&"a-rust".to_owned()))
+    );
+}
+
+// docs/issues/semantic-search-followups.md: `--browser` chooses the session
+// `search-index` fetches with, refusing another account's.
+#[test]
+fn search_index_fetches_with_the_chosen_browser() {
+    let mut env = Env::with_fake(chats());
+    env.extra_env.push((
+        "CHATGPT_TEST_COOKIE_CHROME".into(),
+        fake_chatgpt::OTHER_COOKIE.into(),
+    ));
+    env.extra_env.push((
+        "CHATGPT_TEST_COOKIE_SAFARI".into(),
+        fake_chatgpt::COOKIE.into(),
+    ));
+    synced(&env);
+    let (code, _, stderr) = run(&env, &["--browser", "chrome", "search-index"]);
+    assert_ne!(code, Some(0));
+    assert!(
+        stderr.contains("this index holds another ChatGPT account's chats"),
+        "{stderr}"
+    );
+    let exchanges = env.fake().state().session_exchanges;
+    let (code, _, stderr) = run(&env, &["--browser", "safari", "search-index"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        env.fake().state().session_exchanges,
+        exchanges + 1,
+        "safari's session was read"
+    );
+}
+
 #[test]
 fn semantic_search_says_how_far_the_embedder_has_got() {
     let mut env = Env::with_fake(many_chats());
@@ -348,6 +405,7 @@ fn an_index_from_0_1_1_upgrades_in_place_and_embeds_in_the_background() {
     let db = Connection::open(env.data_dir().join("chatgpt.db")).unwrap();
     db.execute_batch(
         "drop trigger search_chunks_delete_vectors; drop table search_vectors;
+         drop trigger search_chunks_delete_vector_failures; drop table search_vector_failures;
          pragma user_version = 3;",
     )
     .unwrap();

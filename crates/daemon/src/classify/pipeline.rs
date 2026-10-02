@@ -470,7 +470,7 @@ async fn save(
     only_current: bool,
 ) -> Result<usize, Failure> {
     let versions = crate::search::versions(state.profile());
-    let rows: Vec<(Unindexed, Transcript, Vec<Vec<u8>>)> = saved
+    let rows: Vec<(Unindexed, Transcript, Vec<String>)> = saved
         .iter()
         .map(|(chat, transcript)| {
             let target = Unindexed {
@@ -479,7 +479,7 @@ async fn save(
                 update_time: chat.update_time.clone(),
                 cached: true,
             };
-            let bodies = crate::search::indexer::chunk_bytes(&transcript.markdown);
+            let bodies = crate::search::chunks::transcript_chunks(&transcript.markdown);
             (target, transcript.clone(), bodies)
         })
         .collect();

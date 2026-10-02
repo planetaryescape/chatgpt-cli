@@ -350,7 +350,21 @@ fn an_interrupted_indexer_resumes_without_fetching_again() {
         std::thread::sleep(Duration::from_millis(50));
     }
     env.cmd().args(["daemon", "stop"]).assert().success();
-    let asked_before: Vec<String> = batch_ids(&env);
+    // What the stopped daemon saved, rather than what it asked for: the
+    // batch in flight at the stop was asked for but never saved.
+    let saved: Vec<String> = {
+        let db = env.index_db();
+        let mut statement = db
+            .prepare("select conversation_id from search_indexed")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(saved.len() >= 10, "{saved:?}");
+    let asked_before = batch_ids(&env).len();
     env.fake().state().batch_delay_ms = 0;
 
     // A new daemon chunks nothing it has and fetches only the rest, after
@@ -358,9 +372,9 @@ fn an_interrupted_indexer_resumes_without_fetching_again() {
     env.cmd().arg("sync").assert().success();
     wait_indexed(&env);
     let asked = batch_ids(&env);
-    let again: Vec<&String> = asked[asked_before.len()..]
+    let again: Vec<&String> = asked[asked_before..]
         .iter()
-        .filter(|id| asked_before[..asked_before.len().saturating_sub(10)].contains(id))
+        .filter(|id| saved.contains(id))
         .collect();
     assert!(again.is_empty(), "fetched again: {again:?}");
     assert_eq!(status(&env)["indexed"], 35);
@@ -662,4 +676,26 @@ fn a_session_refused_mid_indexing_ends_the_run_without_setting_chats_aside() {
     env.fake().state().reject_batch = 0;
     env.cmd().arg("search-index").assert().success();
     wait_indexed(&env);
+}
+
+/// docs/issues/export-search-followups.md: a `search --limit` whose hits
+/// don't fit one frame comes back in parts, as a big export does. A
+/// lowered frame cap (debug builds only) stands in for 16 MiB.
+#[test]
+fn search_hits_larger_than_a_frame_come_back_whole() {
+    let reference = synced(many());
+    wait_indexed(&reference);
+    let args = ["search", "needle", "--limit", "100000", "--format", "json"];
+    let whole = reference.stdout(&args);
+    assert!(whole.len() > 4_000, "{}", whole.len());
+
+    let mut env = Env::with_fake(many());
+    env.extra_env
+        .push(("CHATGPT_TEST_MAX_FRAME_BYTES".into(), "2000".into()));
+    env.cmd().arg("sync").assert().success();
+    wait_indexed(&env);
+    let parted = env.stdout(&args);
+    let hits = |json: &str| serde_json::from_str::<Vec<Value>>(json).unwrap();
+    assert_eq!(hits(&parted).len(), 35);
+    assert_eq!(hits(&parted), hits(&whole));
 }

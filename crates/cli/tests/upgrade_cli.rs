@@ -5,15 +5,18 @@
 //! `fixtures/v0.1.5-list.json` is what that build's `list --json --all`
 //! printed for it. Nothing in it is anyone's real data.
 //!
-//! The new daemon must keep every row, drop `native_rows` (migration 6),
-//! and rebuild every search chunk at `CHUNK_VERSION` 2 from the cached
-//! transcripts, then embed them, without the network: this environment has
-//! no browser session and no reachable chatgpt.com.
+//! The new daemon must keep every row, drop `native_rows` (migration 6)
+//! and the chunks that may not be UTF-8 (migration 7). Its transcripts
+//! were rendered at version 2, which render version 3 (canvas edits by
+//! UTF-16 unit) makes stale, so the indexer fetches each chat once more
+//! through the batch endpoint, from the same fake chatgpt.com the fixture
+//! came from (`rich_chats(18, 0x5eed)`), then chunks and embeds them.
 
 #![allow(clippy::unwrap_used)]
 
 mod support;
 
+use fake_chatgpt::fixtures::rich_chats;
 use rusqlite::Connection;
 use serde_json::Value;
 use support::Env;
@@ -26,14 +29,14 @@ fn count(db: &Connection, sql: &str) -> i64 {
 }
 
 /// Every row of the tables a user's work lives in, as text, in a stable
-/// order.
+/// order. Transcripts are a cache the upgrade fetches again, and
+/// `synced_at` moves with the sync the new daemon runs.
 fn kept_rows(db: &Connection) -> Vec<String> {
     let mut rows = Vec::new();
     for table in [
         "conversations",
         "meta",
         "local_titles",
-        "transcripts",
         "summaries",
         "judgments",
         "deep_judgments",
@@ -52,6 +55,7 @@ fn kept_rows(db: &Connection) -> Vec<String> {
             rows.push(format!("{table}: {}", values.join(" | ")));
         }
     }
+    rows.retain(|row| !row.starts_with("meta: Text(\"synced_at\")"));
     rows
 }
 
@@ -76,8 +80,8 @@ fn non_utf8_chunks(db: &Connection) -> i64 {
 }
 
 #[test]
-fn an_index_from_0_1_5_keeps_its_data_and_rechunks_without_the_network() {
-    let env = Env::new();
+fn an_index_from_0_1_5_keeps_its_data_and_fetches_its_transcripts_again() {
+    let env = Env::with_fake(rich_chats(18, 0x5eed));
     std::fs::create_dir_all(env.data_dir()).unwrap();
     let database = env.data_dir().join("chatgpt.db");
     std::fs::copy(FIXTURE, &database).unwrap();
@@ -105,20 +109,27 @@ fn an_index_from_0_1_5_keeps_its_data_and_rechunks_without_the_network() {
     let expected: Value = serde_json::from_str(LIST).unwrap();
     assert_eq!(listed, expected, "list --json --all as v0.1.5 printed it");
 
+    // The indexer fetches once the daemon's first sync pass has opened the
+    // session; until then it has nothing it may do.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while env.status()["search_index"]["indexed"] != 18 {
+        assert!(std::time::Instant::now() < deadline, "{}", env.status());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let embeddings = env.wait_for_embedder();
     let status = env.status();
     let index = &status["search_index"];
     assert_eq!(index["indexed"], 18, "{index}");
     assert_eq!(index["chats"], 18, "{index}");
-    assert_eq!(index["fetched"], 0, "re-chunked from the cache: {index}");
+    assert_eq!(
+        index["fetched"], 18,
+        "render 2 transcripts are stale: {index}"
+    );
     assert!(embeddings["chunks"].as_u64().unwrap() > 0, "{embeddings}");
     assert_eq!(embeddings["embedded"], embeddings["chunks"], "{embeddings}");
-    // No pass could succeed: there's no session here, and chatgpt.com
-    // points at a closed port.
-    assert!(status["sync"]["last_summary"].is_null(), "{status}");
 
     let db = Connection::open(&database).unwrap();
-    assert_eq!(count(&db, "pragma user_version"), 6);
+    assert_eq!(count(&db, "pragma user_version"), 8);
     assert_eq!(
         count(
             &db,
@@ -127,6 +138,14 @@ fn an_index_from_0_1_5_keeps_its_data_and_rechunks_without_the_network() {
         0
     );
     assert_eq!(kept_rows(&db), before, "every row kept as it was");
+    assert_eq!(
+        count(
+            &db,
+            "select count(*) from transcripts where render_version = 3"
+        ),
+        18
+    );
+    assert_eq!(count(&db, "select count(*) from transcripts"), 18);
     let chunks = count(&db, "select count(*) from search_chunks");
     assert!(chunks > 0);
     assert_eq!(

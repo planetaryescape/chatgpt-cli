@@ -2,12 +2,11 @@
 //! Ported from the TS CLI's `src/search/store.ts` and the transcript half of
 //! `src/index/classification-store.ts` @ 1b8c950.
 //!
-//! Chunk bodies are bytes, not `&str`: chunks from before `CHUNK_VERSION` 2
-//! held half an emoji in the bytes Bun gave SQLite, which aren't UTF-8.
-//! Such chunks are stale and rebuilt, but may still be read until then.
+//! A chunk is current for its chat while it carries the chat's
+//! `update_time` and title and this build's render and chunk versions;
+//! every query here counts and reads only current chunks.
 
-use rusqlite::types::{ToSqlOutput, ValueRef};
-use rusqlite::{Connection, OptionalExtension, ToSql, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::Result;
 
@@ -51,17 +50,8 @@ pub struct LexicalRow {
     pub archived: bool,
     /// `bm25(search_fts, 5.0, 1.0)`: lower is better.
     pub bm25: f64,
-    /// `snippet(…)` as SQLite returns it, possibly not UTF-8.
-    pub snippet: Vec<u8>,
-}
-
-/// Chunk text, bound as SQLite TEXT without a UTF-8 check.
-struct RawText<'a>(&'a [u8]);
-
-impl ToSql for RawText<'_> {
-    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::Borrowed(ValueRef::Text(self.0)))
-    }
+    /// `snippet(…)` as SQLite returns it.
+    pub snippet: String,
 }
 
 /// `ClassificationStore.transcript`: the cached transcript for exactly this
@@ -140,7 +130,7 @@ pub fn replace_chunks(
     connection: &mut Connection,
     chat: &Unindexed,
     versions: ChunkVersions,
-    bodies: &[Vec<u8>],
+    bodies: &[String],
 ) -> Result<()> {
     let transaction = connection.transaction()?;
     write_chunks(&transaction, chat, versions, bodies)?;
@@ -155,7 +145,7 @@ pub fn save_indexed(
     transcript: &Transcript,
     chat: &Unindexed,
     versions: ChunkVersions,
-    bodies: &[Vec<u8>],
+    bodies: &[String],
 ) -> Result<()> {
     let transaction = connection.transaction()?;
     save_transcript(&transaction, transcript)?;
@@ -168,7 +158,7 @@ fn write_chunks(
     connection: &Connection,
     chat: &Unindexed,
     versions: ChunkVersions,
-    bodies: &[Vec<u8>],
+    bodies: &[String],
 ) -> Result<()> {
     connection
         .prepare_cached("delete from search_chunks where conversation_id = ?")?
@@ -186,7 +176,7 @@ fn write_chunks(
             versions.chunk,
             i64::try_from(index).unwrap_or(i64::MAX),
             chat.title,
-            RawText(body),
+            body,
         ])?;
     }
     connection
@@ -216,8 +206,8 @@ pub fn prune_search(connection: &mut Connection) -> Result<usize> {
 }
 
 /// Chats in scope, and how many of them have current chunks
-/// (`SearchStore.coverage`'s `chats` and `indexed`). `archived`: `None` for
-/// both.
+/// (`SearchStore.coverage`'s `chats` and `indexed`), by the same test as
+/// [`unindexed`]. `archived`: `None` for both.
 pub fn coverage(
     connection: &Connection,
     archived: Option<bool>,
@@ -228,8 +218,9 @@ pub fn coverage(
         "select
             (select count(*) from conversations where (?1 is null or is_archived = ?1)),
             (select count(*) from search_indexed si join conversations c on c.id = si.conversation_id
+                join search_chunks sc on sc.conversation_id = si.conversation_id and sc.chunk_index = 0
                 where si.update_time = c.update_time and si.render_version = ?2 and si.chunk_version = ?3
-                and (?1 is null or c.is_archived = ?1))",
+                and sc.title = c.title and (?1 is null or c.is_archived = ?1))",
         params![scope, versions.render, versions.chunk],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -256,7 +247,7 @@ pub fn lexical(
             from search_fts join search_chunks sc on sc.id = search_fts.rowid
             join conversations c on c.id = sc.conversation_id and c.update_time = sc.update_time
             where search_fts match ? and sc.render_version = ? and sc.chunk_version = ?
-            and (?4 is null or c.is_archived = ?4)
+            and sc.title = c.title and (?4 is null or c.is_archived = ?4)
             order by score limit ?5",
     )?;
     let rows = statement
@@ -275,7 +266,7 @@ pub fn lexical(
                     updated: row.get(2)?,
                     archived: row.get::<_, i64>(3)? != 0,
                     bm25: row.get(4)?,
-                    snippet: crate::vectors::text_bytes(row.get_ref(5)?),
+                    snippet: row.get(5)?,
                 })
             },
         )?
