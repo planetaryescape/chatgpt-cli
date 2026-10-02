@@ -32,11 +32,6 @@ pub struct SearchHit {
     /// `None` for `--remote`, which ChatGPT doesn't score.
     pub score: Option<f64>,
     pub snippet: String,
-    /// The snippet was cut to a length in UTF-16 units through an emoji:
-    /// the JS string ends in this lone high surrogate, which `snippet` ends
-    /// in as U+FFFD (as Bun prints it as text). JSON shows it as an escape.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub snippet_cut: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1,14 +1,15 @@
-//! `transcriptChunks` from the TS CLI's `src/search/chunks.ts` @ 1b8c950,
-//! and the bytes Bun stores for each chunk.
-//!
-//! JS strings are UTF-16, and the TS CLI cuts chunks at UTF-16 offsets, so
-//! a cut can fall inside an emoji's surrogate pair. Chunking here works on
-//! UTF-16 code units for the same cuts, and [`bun_sqlite_text`] encodes a
-//! chunk the way Bun binds such a string to SQLite. Matching those bytes
-//! keeps the FTS index, its bm25 ranking and its snippets the TS CLI's.
+//! `transcriptChunks` from the TS CLI's `src/search/chunks.ts` @ 1b8c950:
+//! chunk lengths and overlaps are counted in UTF-16 code units, as there.
+//! Unlike there, a cut never falls inside an emoji's surrogate pair, so
+//! every chunk is valid text.
 
-/// Bump when the text sent to FTS changes (`CHUNK_VERSION`).
-pub const CHUNK_VERSION: u32 = 1;
+/// Bump when the text sent to FTS changes. Chunks of another version are
+/// stale: the indexer rebuilds them from the cached transcripts, without
+/// fetching, and the embedder embeds the new ones.
+///
+/// 2: cuts no longer split a surrogate pair (version 1 kept half an emoji,
+/// stored as the bytes Bun gave SQLite for it, for parity with the TS CLI).
+pub const CHUNK_VERSION: u32 = 2;
 const MAX_CHUNK_CHARS: usize = 800;
 const OVERLAP_CHARS: usize = 80;
 
@@ -16,10 +17,10 @@ const OVERLAP_CHARS: usize = 80;
 /// `transcriptChunks` splits on it (`/\n---\n\n/`).
 const TURN_SEPARATOR: &str = "\n---\n\n";
 
-/// A transcript's chunks, each as UTF-16: every turn and canvas (the header
-/// dropped) cut into pieces of at most 800 code units, preferably at a
-/// space or line break, overlapping by 80.
-pub fn transcript_chunks(markdown: &str) -> Vec<Vec<u16>> {
+/// A transcript's chunks: every turn and canvas (the header dropped) cut
+/// into pieces of at most 800 UTF-16 code units, preferably at a space or
+/// line break, overlapping by 80, never inside a surrogate pair.
+pub fn transcript_chunks(markdown: &str) -> Vec<String> {
     let messages: Vec<&str> = markdown.split(TURN_SEPARATOR).skip(1).collect();
     let sections = if messages.is_empty() {
         vec![markdown]
@@ -37,23 +38,38 @@ pub fn transcript_chunks(markdown: &str) -> Vec<Vec<u16>> {
                     last_index_of(&text, b'\n', end).max(last_index_of(&text, b' ', end));
                 if let Some(at) = boundary.filter(|&at| at > start + MAX_CHUNK_CHARS / 2) {
                     end = at;
+                } else if is_high_surrogate(text[end - 1]) {
+                    // Keep the pair whole: in the next chunk, or (when it
+                    // would be all this one holds) in this one.
+                    end = if end - 1 > start { end - 1 } else { end + 1 };
                 }
             }
             let chunk = trim_units(&text[start..end]);
             if !chunk.is_empty() {
-                chunks.push(chunk.to_vec());
+                chunks.push(String::from_utf16_lossy(chunk));
             }
             if end == text.len() {
                 break;
             }
             start = (start + 1).max(end.saturating_sub(OVERLAP_CHARS));
+            if is_low_surrogate(text[start]) {
+                start += 1;
+            }
         }
     }
     if chunks.is_empty() {
-        vec![chatgpt_core::js::trim(markdown).encode_utf16().collect()]
+        vec![chatgpt_core::js::trim(markdown).to_owned()]
     } else {
         chunks
     }
+}
+
+fn is_high_surrogate(unit: u16) -> bool {
+    (0xD800..0xDC00).contains(&unit)
+}
+
+fn is_low_surrogate(unit: u16) -> bool {
+    (0xDC00..0xE000).contains(&unit)
 }
 
 /// `text.lastIndexOf(c, from)`: the last `c` at or before `from`.
@@ -80,84 +96,23 @@ fn trim_units(units: &[u16]) -> &[u16] {
     &units[start..end]
 }
 
-/// The bytes Bun (1.3) gives SQLite for a JS string. Valid UTF-16 becomes
-/// UTF-8. A surrogate followed by any code unit is combined with it as if
-/// they were a pair (`0x10000 + (hi & 0x3FF) << 10 | lo & 0x3FF`); a
-/// surrogate at the very end becomes its three-byte form, which isn't valid
-/// UTF-8. Observed with `select hex(?)` from `bun:sqlite`.
-pub fn bun_sqlite_text(units: &[u16]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(units.len() + units.len() / 2);
-    let mut index = 0;
-    while let Some(&unit) = units.get(index) {
-        let surrogate = (0xD800..=0xDFFF).contains(&unit);
-        let code_point = match units.get(index + 1) {
-            Some(&next) if surrogate => {
-                index += 2;
-                0x10000 + ((u32::from(unit & 0x3FF) << 10) | u32::from(next & 0x3FF))
-            }
-            _ => {
-                index += 1;
-                u32::from(unit)
-            }
-        };
-        push_utf8(&mut out, code_point);
-    }
-    out
-}
-
-/// UTF-8's encoding of `code_point`, surrogates included (as CESU-8 would).
-fn push_utf8(out: &mut Vec<u8>, code_point: u32) {
-    // Each `as u8` takes six or fewer bits, by the masks and shifts.
-    match code_point {
-        0..=0x7F => out.push(code_point as u8),
-        0x80..=0x7FF => out.extend([
-            0xC0 | (code_point >> 6) as u8,
-            0x80 | (code_point & 0x3F) as u8,
-        ]),
-        0x800..=0xFFFF => out.extend([
-            0xE0 | (code_point >> 12) as u8,
-            0x80 | ((code_point >> 6) & 0x3F) as u8,
-            0x80 | (code_point & 0x3F) as u8,
-        ]),
-        _ => out.extend([
-            0xF0 | (code_point >> 18) as u8,
-            0x80 | ((code_point >> 12) & 0x3F) as u8,
-            0x80 | ((code_point >> 6) & 0x3F) as u8,
-            0x80 | (code_point & 0x3F) as u8,
-        ]),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn text(units: &[u16]) -> String {
-        String::from_utf16_lossy(units)
-    }
-
     #[test]
     fn turns_are_chunked_without_the_header() {
         let markdown = "# Title\n\nhttps://chatgpt.com/c/x · 2026-01-01 · gpt\n\n---\n\n## Me\n\nhello\n\n---\n\n## ChatGPT\n\n  hi there  \n";
-        let chunks: Vec<String> = transcript_chunks(markdown)
-            .iter()
-            .map(|c| text(c))
-            .collect();
+        let chunks = transcript_chunks(markdown);
         assert_eq!(chunks, ["## Me\n\nhello", "## ChatGPT\n\n  hi there"]);
-        assert_eq!(
-            text(&transcript_chunks("  just a header ")[0]),
-            "just a header"
-        );
+        assert_eq!(transcript_chunks("  just a header ")[0], "just a header");
     }
 
     #[test]
     fn long_turns_split_at_a_space_and_overlap() {
         let words: String = (0..300).map(|n| format!("w{n:03} ")).collect();
         let markdown = format!("# T\n\n---\n\n{words}");
-        let chunks: Vec<String> = transcript_chunks(&markdown)
-            .iter()
-            .map(|c| text(c))
-            .collect();
+        let chunks = transcript_chunks(&markdown);
         assert!(chunks.len() > 1);
         for chunk in &chunks {
             assert!(chunk.len() <= MAX_CHUNK_CHARS);
@@ -172,33 +127,37 @@ mod tests {
     #[test]
     fn a_long_run_without_spaces_is_cut_at_800_units() {
         let markdown = format!("# T\n\n---\n\n{}", "x".repeat(1700));
-        let lengths: Vec<usize> = transcript_chunks(&markdown).iter().map(Vec::len).collect();
+        let lengths: Vec<usize> = transcript_chunks(&markdown)
+            .iter()
+            .map(String::len)
+            .collect();
         assert_eq!(lengths, [800, 800, 260]);
     }
 
     #[test]
-    fn surrogates_encode_as_bun_binds_them() {
-        let encode = |s: &[u16]| bun_sqlite_text(s);
-        let hex = |bytes: Vec<u8>| bytes.iter().map(|b| format!("{b:02X}")).collect::<String>();
-        // Each case observed from bun:sqlite's `select hex(?)`.
-        assert_eq!(hex(encode(&[0xDC4D])), "EDB18D");
-        assert_eq!(hex(encode(&[0x78, 0xDC4D])), "78EDB18D");
-        assert_eq!(hex(encode(&[0xDC4D, 0xD83D, 0xDC4D])), "F0A390BDEDB18D");
-        assert_eq!(hex(encode(&[0xD83D, 0xD83D])), "F09F90BD");
-        assert_eq!(hex(encode(&[0x61, 0xD83D, 0xE9])), "61F09F93A9");
-        assert_eq!(hex(encode(&[0x61, 0xD83D, 0x4E2D])), "61F09F98AD");
-        assert_eq!(hex(encode(&[0xE9, 0xD83D, 0x71])), "C3A9F09F91B1");
-        let valid: Vec<u16> = "👍 ok é 中".encode_utf16().collect();
-        assert_eq!(encode(&valid), "👍 ok é 中".as_bytes());
-    }
-
-    #[test]
-    fn a_cut_inside_an_emoji_keeps_half_of_it() {
-        // 799 x's then an emoji: the 800-unit cut falls between its halves.
+    fn a_cut_never_splits_an_emoji() {
+        let units = |text: &str| text.encode_utf16().count();
+        // 799 x's then an emoji: the 800-unit cut would fall between its
+        // halves, so the emoji goes whole into the next chunk.
         let markdown = format!("# T\n\n---\n\n{}👍{}", "x".repeat(799), "y".repeat(100));
         let chunks = transcript_chunks(&markdown);
-        assert_eq!(chunks[0].len(), 800);
-        assert_eq!(chunks[0][799], 0xD83D);
-        assert!(std::str::from_utf8(&bun_sqlite_text(&chunks[0])).is_err());
+        assert_eq!(chunks[0], "x".repeat(799));
+        assert!(chunks[1].ends_with(&format!("👍{}", "y".repeat(100))));
+        // An overlap that would start on an emoji's second half starts
+        // after it.
+        let markdown = format!(
+            "# T\n\n---\n\n{}{}{}",
+            "x".repeat(719),
+            "👍".repeat(2),
+            "y".repeat(200)
+        );
+        for chunk in transcript_chunks(&markdown) {
+            assert!(units(&chunk) <= MAX_CHUNK_CHARS, "{}", units(&chunk));
+        }
+        // Emoji all the way: every cut still lands between pairs.
+        let markdown = format!("# T\n\n---\n\n{}", "👍".repeat(900));
+        let chunks = transcript_chunks(&markdown);
+        assert!(chunks.iter().all(|chunk| chunk.chars().all(|c| c == '👍')));
+        assert!(chunks.iter().all(|chunk| units(chunk) <= MAX_CHUNK_CHARS));
     }
 }

@@ -13,9 +13,7 @@ use chatgpt_store::ChunkVersions;
 use indexmap::IndexMap;
 use rusqlite::Connection;
 
-use super::{
-    Coverage, bun_text, coverage, excerpt, in_snapshot, query::lexical_hits, with_display_titles,
-};
+use super::{Coverage, coverage, excerpt, in_snapshot, query::lexical_hits, with_display_titles};
 use crate::handlers::Failure;
 use crate::reads::require_synced;
 use crate::state::State;
@@ -99,7 +97,7 @@ pub fn semantic_hits(
             let body = chatgpt_store::chunk_body(db, best.chunk_id)
                 .map_err(Failure::store)?
                 .unwrap_or_default();
-            let (snippet, snippet_cut) = excerpt(&bun_text(&body));
+            let snippet = excerpt(&String::from_utf8_lossy(&body));
             Ok(SearchHit {
                 id,
                 title: best.title,
@@ -107,7 +105,6 @@ pub fn semantic_hits(
                 archived: best.archived,
                 score: Some(best.score),
                 snippet,
-                snippet_cut,
             })
         })
         .collect()
@@ -234,7 +231,6 @@ mod tests {
             archived: false,
             score: Some(0.0),
             snippet: format!("from {id}"),
-            snippet_cut: None,
         }
     }
 

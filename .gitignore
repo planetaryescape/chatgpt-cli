@@ -38,6 +38,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 *.har
 auth-state*.json
 *.db
+# The upgrade test's index from v0.1.5: synthetic chats only.
+!crates/cli/tests/fixtures/v0.1.5.db
 *.db-shm
 *.db-wal
 *.sqlite

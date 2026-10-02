@@ -166,17 +166,6 @@ fn quoted(text: &str) -> String {
     serde_json::Value::from(text).to_string()
 }
 
-/// A hit's snippet as JSON: `JSON.stringify` escapes a lone surrogate left
-/// by a cut, where text output shows U+FFFD.
-fn snippet_json(hit: &SearchHit) -> String {
-    let Some(unit) = hit.snippet_cut else {
-        return quoted(&hit.snippet);
-    };
-    let kept = quoted(hit.snippet.strip_suffix('\u{FFFD}').unwrap_or(&hit.snippet));
-    let open = kept.strip_suffix('"').unwrap_or(&kept);
-    format!("{open}\\u{unit:04x}\"")
-}
-
 /// `JSON.stringify(results, null, 2)`, numbers formatted as JS does.
 fn json_text(hits: &[SearchHit]) -> String {
     if hits.is_empty() {
@@ -192,7 +181,7 @@ fn json_text(hits: &[SearchHit]) -> String {
                 quoted(&hit.title),
                 quoted(&hit.updated),
                 hit.archived,
-                snippet_json(hit),
+                quoted(&hit.snippet),
             )
         })
         .collect();
@@ -306,25 +295,23 @@ mod tests {
             archived,
             score: Some(score),
             snippet: snippet.into(),
-            snippet_cut: None,
         }
     }
 
     #[test]
     fn json_is_written_as_json_stringify_writes_it() {
-        let mut remote = hit("r", "Line\nbreak \"q\"", true, 0.0, "cut \u{FFFD}");
+        let mut remote = hit("r", "Line\nbreak \"q\"", true, 0.0, "cut 👍");
         remote.score = None;
-        remote.snippet_cut = Some(0xD83D);
         let hits = [hit("a", "T", false, 1.5e-7, "é"), remote];
         // `bun -e 'console.log(JSON.stringify([...], null, 2))'` for the
-        // same values, with "cut \ud83d" as the second snippet.
+        // same values.
         assert_eq!(
             json_text(&hits),
-            "[\n  {\n    \"id\": \"a\",\n    \"title\": \"T\",\n    \"updated\": \"2026-09-27T11:05:37.123456Z\",\n    \"archived\": false,\n    \"score\": 1.5e-7,\n    \"snippet\": \"é\"\n  },\n  {\n    \"id\": \"r\",\n    \"title\": \"Line\\nbreak \\\"q\\\"\",\n    \"updated\": \"2026-09-27T11:05:37.123456Z\",\n    \"archived\": true,\n    \"score\": null,\n    \"snippet\": \"cut \\ud83d\"\n  }\n]"
+            "[\n  {\n    \"id\": \"a\",\n    \"title\": \"T\",\n    \"updated\": \"2026-09-27T11:05:37.123456Z\",\n    \"archived\": false,\n    \"score\": 1.5e-7,\n    \"snippet\": \"é\"\n  },\n  {\n    \"id\": \"r\",\n    \"title\": \"Line\\nbreak \\\"q\\\"\",\n    \"updated\": \"2026-09-27T11:05:37.123456Z\",\n    \"archived\": true,\n    \"score\": null,\n    \"snippet\": \"cut 👍\"\n  }\n]"
         );
         assert_eq!(json_text(&[]), "[]");
-        // Text formats show the cut as U+FFFD; CSV leaves a null score empty.
-        assert!(render(&hits[1..], Format::Text).ends_with("cut \u{FFFD}"));
+        // CSV leaves a null score empty.
+        assert!(render(&hits[1..], Format::Text).ends_with("cut 👍"));
         assert!(render(&hits[1..], Format::Csv).contains("\"true\",\"\",\"cut"));
     }
 

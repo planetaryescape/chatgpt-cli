@@ -27,7 +27,7 @@ use chatgpt_protocol::SearchIndexStatus;
 use chatgpt_store::{Candidate, ChunkVersions, Unindexed};
 use tokio::sync::Notify;
 
-use super::chunks::{bun_sqlite_text, transcript_chunks};
+use super::chunks::transcript_chunks;
 use crate::api::{ApiError, BATCH_MAX, BatchItem};
 use crate::render::cached_transcript;
 use crate::state::{State, now_unix};
@@ -377,8 +377,8 @@ async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
 
 pub(crate) fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
     transcript_chunks(markdown)
-        .iter()
-        .map(|chunk| bun_sqlite_text(chunk))
+        .into_iter()
+        .map(String::into_bytes)
         .collect()
 }
 

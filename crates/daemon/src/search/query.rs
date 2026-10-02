@@ -13,7 +13,7 @@ use chatgpt_store::ChunkVersions;
 use regex::Regex;
 use rusqlite::Connection;
 
-use super::{bun_text, excerpt, in_snapshot, with_display_titles};
+use super::{excerpt, in_snapshot, with_display_titles};
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::reads::require_synced;
@@ -69,7 +69,7 @@ pub fn lexical_hits(
         if !seen.insert(row.id.clone()) {
             continue;
         }
-        let (snippet, snippet_cut) = match bun_text(&row.snippet).as_ref() {
+        let snippet = match String::from_utf8_lossy(&row.snippet).as_ref() {
             "" => excerpt(&row.title),
             text => excerpt(text),
         };
@@ -80,7 +80,6 @@ pub fn lexical_hits(
             archived: row.archived,
             score: Some(-row.bm25),
             snippet,
-            snippet_cut,
         });
     }
     Ok(hits)

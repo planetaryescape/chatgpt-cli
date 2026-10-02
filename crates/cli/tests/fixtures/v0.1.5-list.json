@@ -1,0 +1,350 @@
+[
+  {
+    "id": "chat-017",
+    "title": "👍 embedding 17",
+    "create_time": "2025-06-18T23:59:59.900000Z",
+    "update_time": "2026-09-18T17:17:59.000629Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "👍 embedding 17",
+    "topic": null
+  },
+  {
+    "id": "chat-008",
+    "title": "\"quoted\" notes 8",
+    "create_time": "2025-09-09T23:59:59.900000Z",
+    "update_time": "2026-09-09T08:08:56.000296Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "\"quoted\" notes 8",
+    "topic": null
+  },
+  {
+    "id": "chat-016",
+    "title": "한국어 taxes 16",
+    "create_time": "2025-05-17T23:59:59.900000Z",
+    "update_time": "2026-08-17T16:16:52.000592Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "한국어 taxes 16",
+    "topic": null
+  },
+  {
+    "id": "chat-007",
+    "title": "ideas semi;colon 7",
+    "create_time": "2025-08-08T23:59:59.900000Z",
+    "update_time": "2026-08-08T07:07:49.000259Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "ideas semi;colon 7",
+    "topic": null
+  },
+  {
+    "id": "chat-015",
+    "title": "👨‍👩‍👧 مرحبا 15",
+    "create_time": "2025-04-16T23:59:59.900000Z",
+    "update_time": "2026-07-16T15:15:45.000555Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "👨‍👩‍👧 مرحبا 15",
+    "topic": null
+  },
+  {
+    "id": "chat-006",
+    "title": "café launch 6",
+    "create_time": "2025-07-07T23:59:59.900000Z",
+    "update_time": "2026-07-07T06:06:42.000222Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "café launch 6",
+    "topic": null
+  },
+  {
+    "id": "chat-014",
+    "title": "100% 2026 14",
+    "create_time": "2025-03-15T23:59:59.900000Z",
+    "update_time": "2026-06-15T14:14:38.000518Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "100% 2026 14",
+    "topic": null
+  },
+  {
+    "id": "chat-005",
+    "title": "newsletter kids 5",
+    "create_time": "2025-06-06T23:59:59.900000Z",
+    "update_time": "2026-06-06T05:05:35.000185Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "newsletter kids 5",
+    "topic": null
+  },
+  {
+    "id": "chat-013",
+    "title": "Zürich newsletter 13",
+    "create_time": "2025-02-14T23:59:59.900000Z",
+    "update_time": "2026-05-14T13:13:31.000481Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "Zürich newsletter 13",
+    "topic": null
+  },
+  {
+    "id": "chat-004",
+    "title": "kebab-case 👍 4",
+    "create_time": "2025-05-05T23:59:59.900000Z",
+    "update_time": "2026-05-05T04:04:28.000148Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "kebab-case 👍 4",
+    "topic": null
+  },
+  {
+    "id": "chat-012",
+    "title": "notes snake_case 12",
+    "create_time": "2025-01-13T23:59:59.900000Z",
+    "update_time": "2026-04-13T12:12:24.000444Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "notes snake_case 12",
+    "topic": null
+  },
+  {
+    "id": "chat-003",
+    "title": "👨‍👩‍👧 meeting 3",
+    "create_time": "2025-04-04T23:59:59.900000Z",
+    "update_time": "2026-04-04T03:03:21.000111Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "👨‍👩‍👧 meeting 3",
+    "topic": "other",
+    "jev": {
+      "suggestion": "delete",
+      "unsure": false,
+      "reason": "nothing 0.95 · re-askable 0.90 · worth 0.2/3 · unfinished 0.05 · personal 0.05 · brainstorm 0.05 · product idea 0.00 · time-bound 0.00 · overtaken 0.00",
+      "brainstorm": null,
+      "answers": {
+        "worth_keeping": {
+          "score": 0.2,
+          "confidence": 0.9
+        },
+        "nothing_there": {
+          "noul": 0.95
+        },
+        "unfinished": {
+          "noul": 0.05
+        },
+        "personal_record": {
+          "noul": 0.05
+        },
+        "re_askable": {
+          "noul": 0.9
+        },
+        "brainstorming": {
+          "noul": 0.05
+        },
+        "brainstorm_for": {
+          "choice": "none"
+        },
+        "topic": {
+          "choice": "other"
+        }
+      }
+    }
+  },
+  {
+    "id": "chat-011",
+    "title": "🚀 ❤️ 11",
+    "create_time": "2025-12-12T23:59:59.900000Z",
+    "update_time": "2026-03-12T11:11:17.000407Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "🚀 ❤️ 11",
+    "topic": null
+  },
+  {
+    "id": "chat-002",
+    "title": "@mention async 2",
+    "create_time": "2025-03-03T23:59:59.900000Z",
+    "update_time": "2026-03-03T02:02:14.000074Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": "Mine, kept",
+    "display_title": "Mine, kept",
+    "topic": "other",
+    "jev": {
+      "suggestion": "delete",
+      "unsure": false,
+      "reason": "nothing 0.95 · re-askable 0.90 · worth 0.2/3 · unfinished 0.05 · personal 0.05 · brainstorm 0.05 · product idea 0.00 · time-bound 0.00 · overtaken 0.00",
+      "brainstorm": null,
+      "answers": {
+        "worth_keeping": {
+          "score": 0.2,
+          "confidence": 0.9
+        },
+        "nothing_there": {
+          "noul": 0.95
+        },
+        "unfinished": {
+          "noul": 0.05
+        },
+        "personal_record": {
+          "noul": 0.05
+        },
+        "re_askable": {
+          "noul": 0.9
+        },
+        "brainstorming": {
+          "noul": 0.05
+        },
+        "brainstorm_for": {
+          "choice": "none"
+        },
+        "topic": {
+          "choice": "other"
+        }
+      }
+    }
+  },
+  {
+    "id": "chat-010",
+    "title": "🚀 kids 10",
+    "create_time": "2025-11-11T23:59:59.900000Z",
+    "update_time": "2026-02-11T10:10:10.000370Z",
+    "is_archived": 1,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "🚀 kids 10",
+    "topic": null
+  },
+  {
+    "id": "chat-001",
+    "title": "notes newsletter 1",
+    "create_time": "2025-02-02T23:59:59.900000Z",
+    "update_time": "2026-02-02T01:01:07.000037Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": "A Luna title",
+    "display_title": "A Luna title",
+    "topic": "other",
+    "jev": {
+      "suggestion": "delete",
+      "unsure": false,
+      "reason": "nothing 0.95 · re-askable 0.90 · worth 0.2/3 · unfinished 0.05 · personal 0.05 · brainstorm 0.05 · product idea 0.00 · time-bound 0.00 · overtaken 0.00",
+      "brainstorm": null,
+      "answers": {
+        "worth_keeping": {
+          "score": 0.2,
+          "confidence": 0.9
+        },
+        "nothing_there": {
+          "noul": 0.95
+        },
+        "unfinished": {
+          "noul": 0.05
+        },
+        "personal_record": {
+          "noul": 0.05
+        },
+        "re_askable": {
+          "noul": 0.9
+        },
+        "brainstorming": {
+          "noul": 0.05
+        },
+        "brainstorm_for": {
+          "choice": "none"
+        },
+        "topic": {
+          "choice": "other"
+        }
+      }
+    }
+  },
+  {
+    "id": "chat-009",
+    "title": "garden running 9",
+    "create_time": "2025-10-10T23:59:59.900000Z",
+    "update_time": "2026-01-10T09:09:03.000333Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "garden running 9",
+    "topic": null
+  },
+  {
+    "id": "chat-000",
+    "title": "Lagos recipe 0",
+    "create_time": "2025-01-01T23:59:59.900000Z",
+    "update_time": "2026-01-01T00:00:00.000000Z",
+    "is_archived": 0,
+    "pinned": 0,
+    "project_id": null,
+    "local_title": null,
+    "display_title": "Lagos recipe 0",
+    "topic": "other",
+    "jev": {
+      "suggestion": "delete",
+      "unsure": false,
+      "reason": "nothing 0.95 · re-askable 0.90 · worth 0.2/3 · unfinished 0.05 · personal 0.05 · brainstorm 0.05 · product idea 0.00 · time-bound 0.00 · overtaken 0.00",
+      "brainstorm": null,
+      "answers": {
+        "worth_keeping": {
+          "score": 0.2,
+          "confidence": 0.9
+        },
+        "nothing_there": {
+          "noul": 0.95
+        },
+        "unfinished": {
+          "noul": 0.05
+        },
+        "personal_record": {
+          "noul": 0.05
+        },
+        "re_askable": {
+          "noul": 0.9
+        },
+        "brainstorming": {
+          "noul": 0.05
+        },
+        "brainstorm_for": {
+          "choice": "none"
+        },
+        "topic": {
+          "choice": "other"
+        }
+      }
+    }
+  }
+]

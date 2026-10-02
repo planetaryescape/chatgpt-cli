@@ -49,7 +49,7 @@ fn text<'a>(row: &'a rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'a st
     })
 }
 
-/// Stored chunk text as bytes, which may not be UTF-8.
+/// Stored chunk text as bytes, which may not be UTF-8 (`search.rs`).
 pub(crate) fn text_bytes(value: ValueRef<'_>) -> Vec<u8> {
     match value {
         ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.to_vec(),

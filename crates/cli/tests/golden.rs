@@ -17,7 +17,8 @@
 //!
 //! An intended change to one of these outputs updates its line
 //! (`CHATGPT_UPDATE_GOLDEN=1` rewrites them all from this build), with the
-//! reason in the commit.
+//! reason in the commit. Changed since the TS CLI, on purpose: search
+//! snippets and chunks no longer hold half an emoji (`CHUNK_VERSION` 2).
 
 #![allow(clippy::unwrap_used)]
 

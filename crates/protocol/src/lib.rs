@@ -149,7 +149,6 @@ mod tests {
         )
         .expect("decode");
         assert_eq!(results.hits[0].score, Some(1.5));
-        assert_eq!(results.hits[0].snippet_cut, None);
         assert_eq!(results.embedded, 0);
         let status: DaemonStatus = serde_json::from_str(
             r#"{"protocol_version":1,"version":"0.1.1","pid":4,"instance":"dev","started_at":0}"#,
