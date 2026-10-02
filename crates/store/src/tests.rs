@@ -302,3 +302,43 @@ fn the_index_file_and_its_wal_and_shm_are_private() {
     assert_eq!(mode(&sidecar("-wal")), 0o600, "older -wal");
     assert_eq!(mode(&sidecar("-shm")), 0o600, "older -shm");
 }
+
+#[test]
+fn chats_new_since_the_background_jev_baseline_compare_by_time_not_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let chats = [
+        // 100 µs after the baseline, though it sorts before it as text.
+        chat("a-later", "2026-10-01T14:05:59.2061Z"),
+        // Before it, though it sorts after it as text.
+        chat("b-earlier", "2026-10-01T14:05:59Z"),
+        // The same moment, written another way.
+        chat("c-same", "2026-10-01T14:05:59.206000Z"),
+        chat("d-next-day", "2026-10-02T00:00:00.000Z"),
+    ];
+    store
+        .write(|db| replace_all(db, &chats, "2026-10-02T00:00:00.000Z"))
+        .unwrap();
+    let new_since = |after: &str| {
+        store
+            .read(|db| {
+                unjudged(
+                    db,
+                    Unjudged {
+                        after,
+                        questions_version: "v",
+                        render_version: 1,
+                        max_tokens: 12_000,
+                        summary_version: 1,
+                        limit: 10,
+                    },
+                )
+            })
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(new_since("2026-10-01T14:05:59.206Z"), ["d-next-day", "a-later"]);
+    assert_eq!(new_since("").len(), 4, "no baseline: every chat");
+}

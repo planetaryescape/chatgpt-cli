@@ -337,11 +337,18 @@ pub struct Unjudged<'a> {
     pub limit: usize,
 }
 
+/// SQL for a sortable key of the UTC ISO time in `{0}`, so times compare
+/// by when they are rather than as text: the date and time to the second,
+/// then the fraction padded to nine digits. As text, `…59.2061Z` sorts
+/// before `…59.206Z` and `…59Z` after `…59.5Z`.
+const ISO_KEY: &str =
+    "(substr({0}, 1, 19) || substr(trim(substr({0}, 20), '.Z') || '000000000', 1, 9))";
+
 /// [`Unjudged`]'s chats, newest first: `(id, update_time)`.
 pub fn unjudged(connection: &Connection, query: Unjudged<'_>) -> Result<Vec<(String, String)>> {
-    let mut statement = connection.prepare_cached(
+    let sql = format!(
         "select c.id, c.update_time from conversations c
-         where c.is_archived = 0 and c.pinned = 0 and c.update_time > ?
+         where c.is_archived = 0 and c.pinned = 0 and {} > {}
          and not exists (select 1 from judgments j
             where j.id = c.id and j.update_time = c.update_time and j.version = ?)
          and not exists (select 1 from transcripts t
@@ -349,8 +356,12 @@ pub fn unjudged(connection: &Connection, query: Unjudged<'_>) -> Result<Vec<(Str
             and t.approx_tokens > ?
             and not exists (select 1 from summaries s
                where s.id = c.id and s.update_time = c.update_time and s.prompt_version = ?))
-         order by c.update_time desc limit ?",
-    )?;
+         order by {} desc limit ?",
+        ISO_KEY.replace("{0}", "c.update_time"),
+        ISO_KEY.replace("{0}", "?1"),
+        ISO_KEY.replace("{0}", "c.update_time"),
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
     let rows = statement
         .query_map(
             params![
