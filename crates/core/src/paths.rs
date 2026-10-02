@@ -11,8 +11,9 @@
 //! - `CHATGPT_INSTANCE=<name>` (or `--instance <name>`) uses
 //!   `chatgpt-cli-<name>`, except `default`, which picks the installed
 //!   instance from any build.
-//! - A binary run from Cargo's `target/` tree, or any debug build, defaults to
-//!   the `dev` instance.
+//! - A binary run from Cargo's `target/` tree or any other Cargo output
+//!   directory (a custom `CARGO_TARGET_DIR`), or any debug build, defaults
+//!   to the `dev` instance.
 //! - Everything else uses plain `chatgpt-cli`.
 //!
 //! The data directory is `dirs::data_dir()` (`~/Library/Application Support`
@@ -182,7 +183,19 @@ fn current_exe_is_cargo_target_build() -> bool {
         return false;
     };
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-    path_has_cargo_target_profile_ancestor(&exe)
+    path_has_cargo_target_profile_ancestor(&exe) || in_cargo_output_dir(&exe)
+}
+
+/// Whether `exe` sits in a Cargo profile directory, whatever the target
+/// directory is called (`CARGO_TARGET_DIR=~/.cache/cargo`): Cargo keeps
+/// its `.fingerprint` directory next to the binaries it builds (and one
+/// level up from `deps/` and `examples/`). An installed binary
+/// (`~/.local/bin`, Homebrew, `cargo install`) has none.
+fn in_cargo_output_dir(exe: &Path) -> bool {
+    exe.ancestors()
+        .skip(1)
+        .take(2)
+        .any(|dir| dir.join(".fingerprint").is_dir())
 }
 
 fn path_has_cargo_target_profile_ancestor(path: &Path) -> bool {
@@ -259,6 +272,20 @@ mod tests {
         assert!(!path_has_cargo_target_profile_ancestor(Path::new(
             "/home/bk/.local/bin/chatgpt"
         )));
+    }
+
+    #[test]
+    fn detects_a_build_under_a_custom_target_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = dir.path().join("cargo-cache/release");
+        std::fs::create_dir_all(profile.join(".fingerprint")).expect("mkdir");
+        std::fs::create_dir_all(profile.join("deps")).expect("mkdir");
+        assert!(!path_has_cargo_target_profile_ancestor(&profile.join("chatgpt")));
+        assert!(in_cargo_output_dir(&profile.join("chatgpt")));
+        assert!(in_cargo_output_dir(&profile.join("deps/chatgpt-0123")));
+        let installed = dir.path().join("bin");
+        std::fs::create_dir_all(&installed).expect("mkdir");
+        assert!(!in_cargo_output_dir(&installed.join("chatgpt")));
     }
 
     #[test]

@@ -91,7 +91,7 @@ After each successful sync pass, the daemon judges chats that are new or changed
 
 A client keeps a running daemon that speaks its protocol and is at least as new as itself, and restarts an older one. It stops only the daemon it found too old (compare-and-stop on its PID, asked on the connection that named it or signalled after checking its start time), so when two clients restart the same old daemon at once, the second leaves the first one's new daemon running and uses it. A daemon that took the lock but isn't answering 15 seconds after a client started it (stuck opening its index) is stopped, PID-checked, and started once more. A request a daemon doesn't know (one this build retired, such as 0.1.5's `import_legacy`) gets an error at once, never a hang. `chatgpt daemon install` writes a LaunchAgent that starts the installed daemon at login (it doesn't load it; the command prints how).
 
-Debug builds and binaries under `target/` use the `dev` instance (`chatgpt-cli-dev`), so a local build never touches the installed daemon. `CHATGPT_INSTANCE=<name>` picks another.
+Debug builds and binaries in a Cargo build directory (`target/`, or wherever `CARGO_TARGET_DIR` points: Cargo's `.fingerprint` directory sits beside them) use the `dev` instance (`chatgpt-cli-dev`), so a local build never touches the installed daemon. `CHATGPT_INSTANCE=<name>` picks another.
 
 ## Which versions count
 
