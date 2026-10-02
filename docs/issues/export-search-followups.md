@@ -30,7 +30,7 @@ Comments fixed in the PR are left out. Each line names the place and the claim.
 - `crates/daemon/src/server.rs:254`: `CHATGPT_TEST_MAX_FRAME_BYTES` applies to every connection of a debug daemon that has it set. Verified by reading; debug builds only.
 - `crates/protocol/src/request.rs:37`: a 0.1.0 daemon gets the new requests as unknown; clients restart a daemon older than themselves, so only an unbumped dev build would hit "doesn't know that request". Verified by reading.
 - `crates/protocol/src/response.rs:45`: a huge `search --limit` could exceed the 16 MiB frame and fail instead of answering. Unverified; needs tens of thousands of hits.
-- `crates/cli/src/bridge.rs:59`: a SIGTERM to the CLI during the oversized-export fallback doesn't reach the spawned TS CLI. Verified by reading; see `export-frame-limit.md`.
+- ~~`crates/cli/src/bridge.rs:59`: a SIGTERM to the CLI during the oversized-export fallback doesn't reach the spawned TS CLI.~~ Gone in 0.1.5: exports are streamed and never fall back.
 - `crates/cli/tests/export_search_cli.rs:371`: the resume test excludes the last 10 ids it saw, which can be the only completed batch. Verified by reading; test only.
 - `crates/cli/tests/support/mod.rs:226`: `bun()` takes the first `bun` file on PATH even when it isn't executable. Verified by reading; test only.
 - `crates/cli/tests/parity_export_search.rs:40`: the harness takes `slugify` from `src/commands/export.ts` by regex, which breaks if the function is reformatted. Verified by reading; it fails loudly.
