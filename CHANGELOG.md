@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.1](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.0...v0.2.1) (2026-10-02)
+
+
+### Features
+
+* project delete, Homebrew formula, and TUI/review gap fixes ([#21](https://github.com/planetaryescape/chatgpt-cli/issues/21)) ([54bb05e](https://github.com/planetaryescape/chatgpt-cli/commit/54bb05e372f21ef5a19de65ccca140500a21be2c))
+
+
+### Bug Fixes
+
+* close the search, JS-compatibility and CLI parsing gaps ([#20](https://github.com/planetaryescape/chatgpt-cli/issues/20)) ([360615f](https://github.com/planetaryescape/chatgpt-cli/commit/360615f1c82bbef1cf54e1b7fd997acd032d908a))
+* close the sync and daemon robustness gaps ([#18](https://github.com/planetaryescape/chatgpt-cli/issues/18)) ([cb797a8](https://github.com/planetaryescape/chatgpt-cli/commit/cb797a87269ededfe26a68b9bd13fae026f9217e))
+
 ## [0.2.0](https://github.com/planetaryescape/chatgpt-cli/compare/v0.1.5...v0.2.0) (2026-10-02)
 
 
