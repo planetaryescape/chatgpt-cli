@@ -209,7 +209,10 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
         // Progress of a sync goes back as events with the request's ID,
         // each resetting the client's stall deadline.
         let (progress, mut updates) = mpsc::unbounded_channel();
-        let work = handle(&state, request, Some(progress));
+        // The client's answers to what the request asks it (`Ask`).
+        let (answer, answers) = mpsc::unbounded_channel();
+        let mut answer = Some(answer);
+        let work = handle(&state, request, Some(progress), answers);
         tokio::pin!(work);
         let mut heartbeat = tokio::time::interval(crate::progress::HEARTBEAT);
         heartbeat.tick().await;
@@ -232,6 +235,19 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
                         return;
                     }
                 }
+                frame = framed.next(), if answer.is_some() => match frame {
+                    Some(Ok(Message { id, payload: Payload::Request(Request::Answer { yes }) }))
+                        if id == message.id =>
+                    {
+                        if let Some(answer) = &answer {
+                            let _ = answer.send(yes);
+                        }
+                    }
+                    // A client sends nothing else while it waits.
+                    Some(Ok(_)) => {}
+                    // It went away: whatever waits for an answer gets none.
+                    None | Some(Err(_)) => answer = None,
+                },
             }
         };
         // Lines sent just before the answer still go first.

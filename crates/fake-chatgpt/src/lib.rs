@@ -13,6 +13,8 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 pub mod fixtures;
+pub mod model_answers;
+pub mod models;
 pub mod typesafe;
 mod writes;
 

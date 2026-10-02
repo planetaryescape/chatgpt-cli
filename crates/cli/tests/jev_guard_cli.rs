@@ -211,7 +211,8 @@ fn a_refused_call_is_a_failure_without_its_body() {
 fn suggest_reuses_current_judgments_and_leaves_unsure_ones_out() {
     let typesafe = FakeTypeSafe::start();
     let env = with_jev(&typesafe, Some(API_KEY));
-    let db = env.legacy_db();
+    env.cmd().arg("sync").assert().success();
+    let db = env.index_db();
     judge(&db, "a-junk", OLD, &delete_answers("other"));
     let mut unsure: Value = serde_json::from_str(&delete_answers("other")).unwrap();
     unsure["personal_record"]["noul"] = serde_json::json!(0.45);
@@ -234,7 +235,6 @@ fn suggest_reuses_current_judgments_and_leaves_unsure_ones_out() {
     )
     .unwrap();
     drop(db);
-    env.cmd().arg("sync").assert().success();
     env.wait_for_indexer();
 
     let (code, stderr) = run(&env, &["delete", "--suggest", "delete", "-n"]);
@@ -259,8 +259,9 @@ fn suggest_reuses_current_judgments_and_leaves_unsure_ones_out() {
 fn malformed_answers_are_never_saved_or_quoted_and_stored_ones_count_as_unjudged() {
     let typesafe = FakeTypeSafe::start();
     let env = with_jev(&typesafe, Some(API_KEY));
-    // An unreadable judgment already in the index (from the TS import).
-    let db = env.legacy_db();
+    // An unreadable judgment already in the index.
+    env.cmd().arg("sync").assert().success();
+    let db = env.index_db();
     judge(
         &db,
         "b-maybe",
@@ -268,7 +269,6 @@ fn malformed_answers_are_never_saved_or_quoted_and_stored_ones_count_as_unjudged
         r#"{"worth_keeping":{"score":"SENTINEL stored"}}"#,
     );
     drop(db);
-    env.cmd().arg("sync").assert().success();
     env.wait_for_indexer();
     let rows: Vec<Value> = serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
     let maybe = rows.iter().find(|row| row["id"] == "b-maybe").unwrap();

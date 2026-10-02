@@ -13,5 +13,5 @@ fail-fast = false
 # The TS parity harnesses start the daemon and hundreds of TS CLI runs each;
 # under a full parallel run they take 30-50s.
 [[profile.default.overrides]]
-filter = "binary(parity_ts) | binary(parity_export_search) | binary(parity_mutations)"
+filter = "binary(parity_ts) | binary(parity_export_search) | binary(parity_mutations) | binary(parity_classify)"
 slow-timeout = { period = "60s", terminate-after = 3 }

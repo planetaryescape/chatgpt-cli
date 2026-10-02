@@ -2,9 +2,10 @@
 //! `stats` from the SAME data, and must print the same thing.
 //!
 //! The Rust daemon syncs synthetic chats from the fake chatgpt.com and
-//! imports judgments, follow-ups, Luna reviews and local titles (built to
-//! hit every policy branch, `toFixed` ties included) from a TS index. Its
-//! chats are then copied into that TS index, and this repository's TS CLI
+//! imports local titles from a TS index; the TS index's judgments,
+//! follow-ups and Luna reviews (built to hit every policy branch, `toFixed`
+//! ties included) are copied into its index as they are. Its chats are then
+//! copied into that TS index, and this repository's TS CLI
 //! (`bun src/cli.ts`, pointed at it with `XDG_DATA_HOME`) answers the same
 //! commands. stdout is compared: JSON by value, text byte for byte.
 //!
@@ -21,7 +22,7 @@ use std::process::Command;
 use fake_chatgpt::Chat;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use support::{Env, QUESTIONS_VERSION, bun, copy_chats, repo};
+use support::{Env, QUESTIONS_VERSION, bun, copy_chats, copy_judgments, repo};
 
 const DEEP_VERSION: &str = "2026-09-27.2";
 const LUNA_VERSION: i64 = 8;
@@ -286,6 +287,7 @@ fn list_and_stats_match_the_ts_cli_on_the_same_data() {
     fill_ts_index(&ts_db, &chats, &mut rng);
     drop(ts_db);
     env.cmd().arg("sync").assert().success();
+    assert!(copy_judgments(&env.legacy, &env.data_dir().join("chatgpt.db")) > 0);
     assert_eq!(
         copy_chats(&env.data_dir().join("chatgpt.db"), &env.legacy),
         120

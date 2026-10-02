@@ -1,6 +1,6 @@
 //! What every part of the daemon shares.
 
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chatgpt_core::Paths;
 use chatgpt_core::ts_cli::{self, TsCli};
@@ -8,6 +8,7 @@ use chatgpt_protocol::{ImportReport, ImportStatus, TsSyncOutcome, TsSyncStatus};
 use chatgpt_store::Store;
 use rusqlite::Connection;
 
+use crate::classify::auto_jev::AutoJev;
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::progress::Reporter;
@@ -28,9 +29,10 @@ pub struct State {
     pub syncer: Syncer,
     pub indexer: Indexer,
     pub embedder: Embedder,
+    pub auto_jev: AutoJev,
     pub started_at: i64,
     pub version: String,
-    profile: RwLock<Arc<Profile>>,
+    profile: Arc<Profile>,
     ts_sync: Mutex<TsSyncStatus>,
     import: Mutex<ImportStatus>,
 }
@@ -52,10 +54,6 @@ impl State {
             .filter(|version| cfg!(debug_assertions) && !version.is_empty())
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
         let located = ts_cli::locate();
-        let profile = Profile::for_ts_sources(located.as_ref().ok().and_then(TsCli::source_dir));
-        if let Some(problem) = &profile.problem {
-            tracing::warn!("{problem}");
-        }
         let ts_sync = match &located {
             Ok(ts) => TsSyncStatus {
                 cli: Some(ts.entry.display().to_string()),
@@ -83,9 +81,10 @@ impl State {
             syncer: Syncer::new(synced_age),
             indexer: Indexer::default(),
             embedder: Embedder::default(),
+            auto_jev: AutoJev::default(),
             started_at: now_unix(),
             version,
-            profile: RwLock::new(Arc::new(profile)),
+            profile: Arc::new(Profile::builtin()),
             ts_sync: Mutex::new(ts_sync),
             import: Mutex::new(ImportStatus::default()),
         }
@@ -115,20 +114,10 @@ impl State {
             .map_err(Failure::store)
     }
 
+    /// The classification versions verdicts are read with: this build's
+    /// (D9), whatever the bridged TS CLI's are.
     pub fn profile(&self) -> Arc<Profile> {
-        Arc::clone(&self.profile.read().unwrap_or_else(PoisonError::into_inner))
-    }
-
-    /// Read the classification versions from the TS CLI again: it may have
-    /// been updated since the daemon started.
-    pub fn reload_profile(&self) {
-        let located = ts_cli::locate();
-        let profile = Profile::for_ts_sources(located.as_ref().ok().and_then(TsCli::source_dir));
-        let mut current = self.profile.write().unwrap_or_else(PoisonError::into_inner);
-        if **current != profile {
-            tracing::info!(source = %profile.source, questions = %profile.questions_version, "classification versions changed");
-            *current = Arc::new(profile);
-        }
+        Arc::clone(&self.profile)
     }
 
     pub fn record_ts_sync(&self, ts: Option<&TsCli>, outcome: &TsSyncOutcome) {

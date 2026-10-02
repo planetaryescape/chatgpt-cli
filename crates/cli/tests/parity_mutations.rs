@@ -4,8 +4,9 @@
 //! print the same previews, prompts, notes and summaries, send the same
 //! writes and Jev requests, and leave ChatGPT and their indexes alike.
 //!
-//! The Rust daemon syncs its fake and imports a TS index (judgments, a long
-//! chat's summary); its chats are then copied into that TS index, which the
+//! The Rust daemon syncs its fake and imports a TS index (a long chat's
+//! summary), and gets the TS index's judgments copied in; its chats are
+//! then copied into that TS index, which the
 //! TS CLI (`bun src/cli.ts`, with a `--preload` plugin pointing its HTTP
 //! client at its fake) reads and writes. Durations and rates are left out
 //! of the comparison; everything else on stderr is compared byte for byte.
@@ -25,7 +26,9 @@ use fake_chatgpt::typesafe::{API_KEY, FakeTypeSafe};
 use fake_chatgpt::{COOKIE, Chat, FakeChatGpt, Project};
 use rusqlite::params;
 use serde_json::{Value, json};
-use support::{Env, QUESTIONS_VERSION, bun, copy_chats, delete_answers, in_terminal, repo};
+use support::{
+    Env, QUESTIONS_VERSION, bun, copy_chats, copy_judgments, delete_answers, in_terminal, repo,
+};
 
 /// Points the TS CLI's HTTP client at its fake chatgpt.com, with its cookie.
 const PARITY_PLUGIN: &str = r#"
@@ -329,6 +332,7 @@ fn changes_print_and_apply_as_the_ts_clis_do() {
         0,
         "the indexer tried every chat"
     );
+    assert!(copy_judgments(&env.legacy, &env.data_dir().join("chatgpt.db")) > 0);
     assert_eq!(
         copy_chats(&env.data_dir().join("chatgpt.db"), &env.legacy),
         chats().len()

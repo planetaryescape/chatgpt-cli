@@ -128,6 +128,8 @@ struct MemoryAnswers {
 #[derive(Deserialize)]
 struct DeepAnswer {
     suggestion: String,
+    #[serde(default)]
+    reason: String,
 }
 
 /// `undefined` comparisons are false in JS; NaN compares false here too.
@@ -155,6 +157,71 @@ fn final_decision(a: &MemoryAnswers, deep: &DeepAnswer) -> String {
     } else {
         deep.suggestion.clone()
     }
+}
+
+/// `MemoryDecision`: what `memory classify` shows for a memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decision {
+    pub suggestion: String,
+    pub reason: String,
+    /// `quick` (Jev alone) or `deep` (Luna reviewed it).
+    pub stage: &'static str,
+}
+
+/// `quickDecision`, or `finalDecision` once Luna reviewed it.
+pub fn decide(system_one: &str, system_two: Option<&str>) -> Result<Decision, String> {
+    let answers: MemoryAnswers =
+        serde_json::from_str(system_one).map_err(|error| error.to_string())?;
+    let Some(deep) = system_two else {
+        return Ok(match quick_decision(&answers) {
+            "keep" => Decision {
+                suggestion: "keep".into(),
+                reason: "Enduring context with no clear expiry, replacement, or full duplicate."
+                    .into(),
+                stage: "quick",
+            },
+            _ => Decision {
+                suggestion: "review".into(),
+                reason: "Needs a closer look at currency, usefulness, or overlap.".into(),
+                stage: "quick",
+            },
+        });
+    };
+    let deep: DeepAnswer = serde_json::from_str(deep).map_err(|error| error.to_string())?;
+    let suggestion = final_decision(&answers, &deep);
+    let reason = if suggestion == deep.suggestion {
+        deep.reason
+    } else {
+        "Quick and deep reviews disagree about lasting value; check this memory manually.".into()
+    };
+    Ok(Decision {
+        suggestion,
+        reason,
+        stage: "deep",
+    })
+}
+
+/// For each memory, the indexes of its related ones (`relatedMemories`),
+/// closest first.
+pub fn related_indexes(memories: &[SavedMemory]) -> Vec<Vec<usize>> {
+    let sets: Vec<HashSet<String>> = memories
+        .iter()
+        .map(|memory| words(&memory.content))
+        .collect();
+    memories
+        .iter()
+        .zip(&sets)
+        .map(|(memory, left)| {
+            related_with(left, memory, memories, &sets)
+                .into_iter()
+                .filter_map(|related| {
+                    memories
+                        .iter()
+                        .position(|candidate| std::ptr::eq(candidate, related))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// A cached classification: Jev's quick answers, and Luna's decision if it
@@ -246,6 +313,7 @@ mod tests {
     fn conflicting_lasting_value_evidence_prevents_a_deep_delete() {
         let delete = DeepAnswer {
             suggestion: "delete".into(),
+            reason: "passed".into(),
         };
         assert_eq!(
             final_decision(&parse(&answers(2.5, 0.0, 0.0)), &delete),

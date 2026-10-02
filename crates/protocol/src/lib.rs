@@ -11,6 +11,7 @@
 //! - A change that can't follow those rules bumps [`PROTOCOL_VERSION`].
 //!   Clients check it through `Status` before anything else.
 
+mod classify;
 mod codec;
 mod events;
 mod export;
@@ -22,6 +23,7 @@ mod search;
 mod status;
 mod sync;
 
+pub use classify::{AutoJevStatus, ClassifiedMemories, ClassifyOutcome, ModelAccess};
 pub use codec::{Codec, FrameTooLarge, MAX_FRAME_BYTES};
 pub use events::{Event, Progress, ProgressKind};
 pub use export::ExportedChat;

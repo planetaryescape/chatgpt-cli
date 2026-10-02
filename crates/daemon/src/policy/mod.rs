@@ -382,7 +382,7 @@ impl<'a> Judged<'a> {
     }
 
     /// `jevVerdictOf`.
-    fn jev_verdict(&self) -> Result<Verdict, PolicyError> {
+    pub fn jev_verdict(&self) -> Result<Verdict, PolicyError> {
         let base = self.base_verdict()?;
         match self.deep_answers() {
             Some(deep) if base.unsure && self.deep_is_current() => {

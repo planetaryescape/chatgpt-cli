@@ -7,6 +7,7 @@ description = "Shared by every chatgpt crate: file locations, instances, error k
 
 [dependencies]
 dirs = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

@@ -1,4 +1,5 @@
-//! Reading the TS CLI's judgments. Ported from `ClassificationStore` and
+//! Judgments, their follow-ups and Luna reviews, summaries and saved-memory
+//! classifications. Ported from `ClassificationStore` and
 //! `MemoryClassificationStore` in the TS CLI's `src/index/` @ 1b8c950.
 
 use std::collections::HashMap;
@@ -147,6 +148,176 @@ pub fn summary(
         )?
         .query_row(params![id, update_time, prompt_version], |row| row.get(0))
         .optional()?)
+}
+
+/// `ClassificationStore.saveSummary`.
+pub fn save_summary(
+    connection: &Connection,
+    id: &str,
+    update_time: &str,
+    prompt_version: u32,
+    summary: &str,
+    model: &str,
+) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into summaries values (?, ?, ?, ?, ?)")?
+        .execute(params![id, update_time, prompt_version, summary, model])?;
+    Ok(())
+}
+
+/// `ClassificationStore.deepJudgment`, as a yes or no: whether chat `id`
+/// has a follow-up for exactly these versions.
+pub fn has_deep_judgment(
+    connection: &Connection,
+    id: &str,
+    update_time: &str,
+    questions_version: &str,
+    version: &str,
+) -> Result<bool> {
+    Ok(connection
+        .prepare_cached(
+            "select 1 from deep_judgments
+             where id = ? and update_time = ? and questions_version = ? and version = ?",
+        )?
+        .query_row(params![id, update_time, questions_version, version], |_| {
+            Ok(())
+        })
+        .optional()?
+        .is_some())
+}
+
+/// A follow-up (deep) judgment, as `saveDeepJudgment` writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewDeepJudgment {
+    pub id: String,
+    pub update_time: String,
+    pub questions_version: String,
+    pub version: String,
+    pub answers: String,
+    pub classified_at: String,
+}
+
+/// `ClassificationStore.saveDeepJudgment`: the chat's Luna review, which
+/// rested on the old follow-up, goes.
+pub fn save_deep_judgment(connection: &mut Connection, judgment: &NewDeepJudgment) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute("delete from luna_judgments where id = ?", [&judgment.id])?;
+    transaction.execute(
+        "insert or replace into deep_judgments values (?, ?, ?, ?, ?, ?)",
+        params![
+            judgment.id,
+            judgment.update_time,
+            judgment.questions_version,
+            judgment.version,
+            judgment.answers,
+            judgment.classified_at
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// `ClassificationStore.lunaJudgment`: whether chat `id` has a Luna review
+/// for exactly these versions.
+pub fn has_luna_judgment(
+    connection: &Connection,
+    id: &str,
+    update_time: &str,
+    questions_version: &str,
+    deep_version: &str,
+    version: i64,
+) -> Result<bool> {
+    Ok(connection
+        .prepare_cached(
+            "select 1 from luna_judgments where id = ? and update_time = ?
+             and questions_version = ? and deep_version = ? and version = ?",
+        )?
+        .query_row(
+            params![id, update_time, questions_version, deep_version, version],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// A Luna review, as `saveLunaJudgment` writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewLunaJudgment {
+    pub id: String,
+    pub update_time: String,
+    pub questions_version: String,
+    pub deep_version: String,
+    pub version: i64,
+    pub suggestion: String,
+    pub brainstorm: Option<String>,
+    pub reason: String,
+    pub classified_at: String,
+}
+
+pub fn save_luna_judgment(connection: &Connection, judgment: &NewLunaJudgment) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into luna_judgments values (?, ?, ?, ?, ?, ?, ?, ?, ?)")?
+        .execute(params![
+            judgment.id,
+            judgment.update_time,
+            judgment.questions_version,
+            judgment.deep_version,
+            judgment.version,
+            judgment.suggestion,
+            judgment.brainstorm,
+            judgment.reason,
+            judgment.classified_at
+        ])?;
+    Ok(())
+}
+
+/// A saved memory's classification, as `MemoryClassificationStore.save`
+/// writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewMemoryJudgment {
+    pub id: String,
+    pub input_hash: String,
+    pub version: String,
+    pub system_one: String,
+    pub system_two: Option<String>,
+    pub classified_at: String,
+}
+
+pub fn save_memory_judgment(connection: &Connection, row: &NewMemoryJudgment) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into memory_judgments values (?, ?, ?, ?, ?, ?)")?
+        .execute(params![
+            row.id,
+            row.input_hash,
+            row.version,
+            row.system_one,
+            row.system_two,
+            row.classified_at
+        ])?;
+    Ok(())
+}
+
+/// Chats the background Jev may judge: active and unpinned (what a bare
+/// `chatgpt classify` picks), updated at or after `since`, without a
+/// judgment for their `update_time` at `questions_version`. Newest first.
+pub fn unjudged_since(
+    connection: &Connection,
+    since: &str,
+    questions_version: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = connection.prepare_cached(
+        "select c.id, c.update_time from conversations c
+         where c.is_archived = 0 and c.pinned = 0 and c.update_time >= ?
+         and not exists (select 1 from judgments j
+            where j.id = c.id and j.update_time = c.update_time and j.version = ?)
+         order by c.update_time desc",
+    )?;
+    let rows = statement
+        .query_map(params![since, questions_version], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 /// A saved memory's cached classification.

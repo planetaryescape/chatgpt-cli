@@ -1,9 +1,10 @@
-//! The `chatgpt` command. `sync`, `list`, `stats`, `export`, `search` (every
-//! mode), `search-index`, `archive`, `unarchive`, `delete`, `rename`,
-//! `title`, `project`, `memory` (but `memory classify`), `daemon` and
-//! `import-legacy` are native: they ask the daemon over IPC and print its
-//! answer. Every other command is handed, unchanged, to the TS CLI (the
-//! bridge).
+//! The `chatgpt` command. `configure`, `sync`, `list`, `stats`, `export`,
+//! `search` (every mode), `search-index`, `archive`, `unarchive`,
+//! `delete`, `rename`, `title`, `titles`, `classify`, `project`, `memory`,
+//! `daemon` and `import-legacy` are native: they ask the daemon over IPC
+//! and print its answer (`configure` only writes the user config). Every
+//! other command (`review`, `tui`) is handed, unchanged, to the TS CLI
+//! (the bridge).
 //!
 //! This crate never touches the index or chatgpt.com itself: only the
 //! daemon does (tests/workspace_boundaries.rs). `main.rs` passes the
@@ -12,8 +13,12 @@
 mod args;
 mod bridge;
 mod change_cmd;
+mod classify_cmd;
+mod configure_cmd;
 mod daemon_cmd;
 mod export_cmd;
+#[cfg(debug_assertions)]
+mod fake_model;
 mod launch_agent;
 mod memory_cmd;
 mod output;
@@ -31,13 +36,22 @@ use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{ChatAction, SessionChoice};
 use clap::Parser;
 
-use args::{Cli, Command, DaemonCommand, MemoryCommand};
+use args::{Cli, Command, DaemonCommand};
 
 /// The daemon's foreground entry point, from the daemon crate.
 pub type DaemonEntry = fn(Paths) -> ExitCode;
 
 pub fn main(daemon: DaemonEntry) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
+    // Tests' stand-in `codex` and `claude` (debug builds only).
+    #[cfg(debug_assertions)]
+    if args.get(1).is_some_and(|arg| arg == "__fake-model-cli") {
+        let rest: Vec<String> = args[2..]
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        return fake_model::run(&rest);
+    }
     if !is_native(&args) {
         return bridge::exec(&args);
     }
@@ -106,8 +120,7 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
         Command::Daemon(DaemonCommand::Logs { follow, lines }) => {
             daemon_cmd::logs(&paths, lines, follow)
         }
-        // Still the TS CLI's: hand the whole command line over.
-        Command::Memory(MemoryCommand::Classify { .. }) => Ok(bridge::exec(args)),
+        Command::Configure { provider, remove } => configure_cmd::configure(provider, remove),
         command => block_on(async move {
             match command {
                 Command::Sync { full } => sync_cmd::sync(&paths, full, session).await,
@@ -128,13 +141,17 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
                 }
                 Command::Rename(rename) => change_cmd::rename(&paths, rename, session).await,
                 Command::Title(title) => change_cmd::title(&paths, title).await,
+                Command::Titles(titles) => classify_cmd::titles(&paths, titles).await,
+                Command::Classify(classify) => {
+                    classify_cmd::classify(&paths, classify, session).await
+                }
                 Command::Project(project) => project_cmd::run(&paths, project, session).await,
                 Command::Memory(memory) => memory_cmd::run(&paths, memory, session).await,
                 Command::Daemon(DaemonCommand::Status { json }) => {
                     daemon_cmd::status(&paths, json).await
                 }
                 Command::Daemon(DaemonCommand::Stop) => daemon_cmd::stop(&paths).await,
-                Command::Daemon(_) => Ok(ExitCode::SUCCESS),
+                Command::Daemon(_) | Command::Configure { .. } => Ok(ExitCode::SUCCESS),
             }
         })?,
     }
@@ -231,10 +248,12 @@ mod tests {
         assert!(native("memory list --format json"));
         assert!(native("memory classify --suggest delete"));
         assert!(native("help memory"));
-        assert!(!native("--browser chrome classify"));
-        assert!(!native("titles --all"));
-        assert!(!native("configure jev"));
-        assert!(!native("help classify"));
+        assert!(native("--browser chrome classify"));
+        assert!(native("titles --all"));
+        assert!(native("configure jev"));
+        assert!(native("help classify"));
+        assert!(!native("review --suggest delete"));
+        assert!(!native("tui"));
         assert!(!native("frobnicate"));
         assert!(!native("--frobnicate list"));
     }

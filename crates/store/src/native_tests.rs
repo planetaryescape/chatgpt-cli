@@ -83,36 +83,72 @@ fn a_manual_title_survives_the_import_until_the_ts_cli_writes_a_newer_manual_one
 }
 
 #[test]
-fn a_guard_judgment_replaces_the_reviews_and_the_import_keeps_it_that_way() {
+fn a_new_judgment_replaces_its_reviews_and_the_import_never_touches_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(dir.path());
     let (path, legacy) = legacy_db(dir.path());
     store
         .write(|db| replace_all(db, &[chat("a", "t1")], "t"))
         .unwrap();
-    legacy
-        .execute_batch(
-            "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
-                values ('a', 't1', 'v1', 'full', '{\"old\":1}', '2026-09-01T00:00:00.000Z');
-             insert into deep_judgments values ('a', 't1', 'v1', 'd1', '{}', '2026-09-01T00:00:00.000Z');
-             insert into luna_judgments values ('a', 't1', 'v1', 'd1', 8, 'keep', null, 'r', '2026-09-01T00:00:00.000Z');",
-        )
-        .unwrap();
-    store.write(|db| import_legacy(db, &path)).unwrap();
+    let first = NewJudgment {
+        id: "a".into(),
+        update_time: "t1".into(),
+        version: "v1".into(),
+        content_kind: "full".into(),
+        answers: "{\"old\":1}".into(),
+        classified_at: "2026-09-01T00:00:00.000Z".into(),
+    };
+    store.write(|db| save_judgment(db, &first)).unwrap();
+    let deep = NewDeepJudgment {
+        id: "a".into(),
+        update_time: "t1".into(),
+        questions_version: "v1".into(),
+        version: "d1".into(),
+        answers: "{}".into(),
+        classified_at: "2026-09-01T00:00:00.000Z".into(),
+    };
+    store.write(|db| save_deep_judgment(db, &deep)).unwrap();
+    let luna = NewLunaJudgment {
+        id: "a".into(),
+        update_time: "t1".into(),
+        questions_version: "v1".into(),
+        deep_version: "d1".into(),
+        version: 8,
+        suggestion: "keep".into(),
+        brainstorm: None,
+        reason: "r".into(),
+        classified_at: "2026-09-01T00:00:00.000Z".into(),
+    };
+    store.write(|db| save_luna_judgment(db, &luna)).unwrap();
     let before = store
         .read(|db| judgment(db, "a", "t1", "v1"))
         .unwrap()
         .unwrap();
     assert_eq!(before.luna_suggestion.as_deref(), Some("keep"));
     assert_eq!(before.deep_version.as_deref(), Some("d1"));
+    assert!(
+        store
+            .read(|db| has_deep_judgment(db, "a", "t1", "v1", "d1"))
+            .unwrap()
+    );
+    assert!(
+        store
+            .read(|db| has_luna_judgment(db, "a", "t1", "v1", "d1", 8))
+            .unwrap()
+    );
+
+    // A new follow-up drops the review that rested on the old one.
+    store.write(|db| save_deep_judgment(db, &deep)).unwrap();
+    assert!(
+        !store
+            .read(|db| has_luna_judgment(db, "a", "t1", "v1", "d1", 8))
+            .unwrap()
+    );
 
     let fresh = NewJudgment {
-        id: "a".into(),
-        update_time: "t1".into(),
-        version: "v1".into(),
-        content_kind: "full".into(),
         answers: "{\"new\":1}".into(),
         classified_at: "2026-10-02T10:00:00.000Z".into(),
+        ..first
     };
     store.write(|db| save_judgment(db, &fresh)).unwrap();
     let saved = store
@@ -126,29 +162,65 @@ fn a_guard_judgment_replaces_the_reviews_and_the_import_keeps_it_that_way() {
     );
     assert_eq!(saved.deep_answers, None);
 
-    let report = store.write(|db| import_legacy(db, &path)).unwrap();
-    for table in ["judgments", "deep_judgments", "luna_judgments"] {
-        assert_eq!(counts(&report, table), (0, 0, 0), "{table}");
-    }
+    // The TS CLI's judgment for the chat, however new, never comes over.
+    legacy
+        .execute(
+            "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
+             values ('a', 't1', 'v1', 'full', '{\"ts\":2}', '2030-01-01T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+    store.write(|db| import_legacy(db, &path)).unwrap();
     let kept = store
         .read(|db| judgment(db, "a", "t1", "v1"))
         .unwrap()
         .unwrap();
     assert_eq!(kept, saved);
+}
 
-    // The TS CLI classifies it again later: its judgment wins.
-    legacy
-        .execute(
-            "update judgments set answers = '{\"ts\":2}', classified_at = '2026-10-03T00:00:00.000Z'",
-            [],
-        )
+#[test]
+fn a_luna_title_is_kept_by_the_import_and_never_replaces_a_manual_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let (path, _legacy) = legacy_db(dir.path());
+    store
+        .write(|db| replace_all(db, &[chat("a", "t1"), chat("b", "t1")], "t"))
         .unwrap();
+    store
+        .write(|db| {
+            set_luna_title(
+                db,
+                &manual("a", "From Luna", "2026-10-02T10:00:00.000Z"),
+                "theme",
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        store
+            .read(|db| local_title_source(db, "a", "t1", 2))
+            .unwrap()
+            .as_deref(),
+        Some("luna")
+    );
+    assert_eq!(
+        store
+            .read(|db| local_title_source(db, "a", "t2", 2))
+            .unwrap(),
+        None
+    );
     store.write(|db| import_legacy(db, &path)).unwrap();
-    let replaced = store
-        .read(|db| judgment(db, "a", "t1", "v1"))
-        .unwrap()
+    assert_eq!(shown_title(&store, "a").as_deref(), Some("From Luna"));
+    store
+        .write(|db| set_local_title(db, &manual("b", "Mine", "2026-10-02T10:00:00.000Z")))
         .unwrap();
-    assert_eq!(replaced.answers, "{\"ts\":2}");
+    assert_eq!(
+        store
+            .read(|db| local_title_source(db, "b", "other-time", 1))
+            .unwrap()
+            .as_deref(),
+        Some("manual"),
+        "a manual title counts whatever the chat's time"
+    );
 }
 
 #[test]

@@ -36,6 +36,11 @@ pub enum ProgressKind {
     Finish,
     /// A notice such as a rate-limit wait: always printed.
     Note,
+    /// A question for the user, `line` being the prompt (`Go ahead?
+    /// [y/N] `). The client asks it and answers with `Request::Answer` on
+    /// the same request id; the daemon waits. Only requests a client sends
+    /// knowing this (`Classify`, `JevCheck`) ask.
+    Ask,
     #[serde(other)]
     Unknown,
 }

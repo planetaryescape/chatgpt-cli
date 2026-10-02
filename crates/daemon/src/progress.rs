@@ -74,6 +74,17 @@ impl Reporter {
         self.send(ProgressKind::Note, line);
     }
 
+    /// Whether the client this reports to went away (its connection
+    /// closed), so a long run can stop starting paid calls. A reporter
+    /// without a client never went away.
+    pub fn client_gone(&self) -> bool {
+        self.sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(UnboundedSender::is_closed)
+    }
+
     pub fn step(&self, label: &str, total: Option<usize>) -> Step {
         self.send(ProgressKind::Start, format!("{label}…"));
         Step {
@@ -151,4 +162,28 @@ fn bar(done: usize, total: usize) -> String {
     }
     .min(WIDTH);
     format!("{}{}", "█".repeat(filled), "░".repeat(WIDTH - filled))
+}
+
+/// Asks the waiting client a yes-or-no question mid-request (the TS CLI's
+/// `ask`): the prompt goes out as an `Ask` progress line, and the client's
+/// `Answer` comes back through `answers`.
+pub struct Asker {
+    reporter: Reporter,
+    answers: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<bool>>,
+}
+
+impl Asker {
+    pub fn new(reporter: Reporter, answers: tokio::sync::mpsc::UnboundedReceiver<bool>) -> Self {
+        Self {
+            reporter,
+            answers: tokio::sync::Mutex::new(answers),
+        }
+    }
+
+    /// The client's answer; `None` when it went away without one.
+    pub async fn ask(&self, prompt: &str) -> Option<bool> {
+        let mut answers = self.answers.lock().await;
+        self.reporter.send(ProgressKind::Ask, prompt.to_owned());
+        answers.recv().await
+    }
 }

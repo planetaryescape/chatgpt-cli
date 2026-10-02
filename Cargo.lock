@@ -515,6 +515,7 @@ name = "chatgpt-core"
 version = "0.1.3"
 dependencies = [
  "dirs",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -534,6 +535,8 @@ dependencies = [
  "fs2",
  "futures-util",
  "indexmap",
+ "model-api",
+ "nix",
  "regex",
  "rusqlite",
  "serde",
@@ -2302,6 +2305,20 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "model-api"
+version = "0.1.3"
+dependencies = [
+ "bytes",
+ "impit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

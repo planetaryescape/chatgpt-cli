@@ -1,6 +1,6 @@
-//! `memory list|summary|delete`, as the TS CLI's (`src/cli.ts` and
+//! `memory list|summary|delete|classify`, as the TS CLI's (`src/cli.ts` and
 //! `src/commands/memories.ts` @ 1b8c950) run them: ChatGPT's saved memories
-//! read live, printed in its formats. `memory classify` runs in the TS CLI.
+//! read live, printed in its formats.
 
 use std::process::ExitCode;
 
@@ -67,8 +67,14 @@ pub async fn run(
         MemoryCommand::Delete { ids, dry_run, yes } => {
             delete(paths, ids, dry_run, yes, session).await
         }
-        // Routed to the TS CLI before it gets here.
-        MemoryCommand::Classify { .. } => Err(unexpected()),
+        MemoryCommand::Classify {
+            suggest,
+            limit,
+            format,
+            redo,
+        } => {
+            crate::classify_cmd::memory_classify(paths, suggest, limit, format, redo, session).await
+        }
     }
 }
 
@@ -84,7 +90,7 @@ async fn memories(paths: &Paths, session: SessionChoice) -> Result<Vec<Value>, C
 /// A memory's field as text: strings as they are, numbers and booleans as
 /// JS prints them, nothing for null or a missing field (as `Array.join`
 /// writes them).
-fn field(memory: &Value, name: &str) -> String {
+pub(crate) fn field(memory: &Value, name: &str) -> String {
     match memory.get(name) {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(text)) => text.clone(),
@@ -96,13 +102,13 @@ fn field(memory: &Value, name: &str) -> String {
 }
 
 /// `writeData`: the text and a newline, or nothing for no text.
-fn write_data(text: &str) {
+pub(crate) fn write_data(text: &str) {
     if !text.is_empty() {
         data(&format!("{text}\n"));
     }
 }
 
-fn csv_cell(value: &str) -> String {
+pub(crate) fn csv_cell(value: &str) -> String {
     if value.contains(['"', ',', '\r', '\n']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
@@ -111,7 +117,7 @@ fn csv_cell(value: &str) -> String {
 }
 
 /// `preview`: whitespace collapsed, trimmed, at most 120 UTF-16 units.
-fn preview_content(content: &str) -> String {
+pub(crate) fn preview_content(content: &str) -> String {
     let single = collapse_spaces(content);
     let single = trim(&single);
     let units: Vec<u16> = single.encode_utf16().collect();

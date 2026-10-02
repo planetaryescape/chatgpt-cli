@@ -49,7 +49,7 @@ pub fn targets(
     let synced_at = require_synced(db)?;
     let filter = &chosen.filter;
     let Some(ids) = &chosen.ids else {
-        if !has_filter(filter) {
+        if !chosen.allow_unfiltered && !has_filter(filter) {
             return Err(invalid(
                 "Pass conversation ids, `-` to read ids from stdin, or a filter such as --older-than 1y or --title.".to_owned(),
             ));

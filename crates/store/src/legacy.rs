@@ -1,31 +1,39 @@
-//! Import from the TS CLI's index (D2). While the bridge exists the TS CLI
-//! writes judgments, titles, summaries and transcripts; the daemon copies
-//! them so `list` and `stats` show them.
+//! Import from the TS CLI's index (D2), until the bridge goes (stage 6).
+//! Since `classify`, `titles` and `memory classify` run here, the daemon
+//! writes every judgment itself, at this build's versions (D9); the TS
+//! CLI's, made at its own (the installed one's private) versions, would
+//! only ever be stale here, so they're no longer imported. What still
+//! comes over is what the bridged `review` and `tui` can write, or what
+//! costs money to make again:
+//!
+//! - local titles: the TUI sets manual ones;
+//! - summaries and transcripts: caches (a summary is a paid call), keyed
+//!   by their versions, so an older one is simply never current.
 //!
 //! The TS index is attached read-only (`mode=ro`): the import never writes
 //! to it. Each table is mirrored by its TS key (`id`): rows the TS index no
-//! longer has are deleted (a re-judgment drops its old follow-ups, a deleted
-//! chat its title), new rows are inserted, and changed rows replaced, so
+//! longer has are deleted (a deleted chat's title), new rows are inserted, and changed rows replaced, so
 //! running it twice changes nothing. One exception keeps it from undoing the
 //! daemon's own reconcile: a row that differs only in `update_time` is left
 //! alone while its `update_time` is the chat's current one here. (Comparing
 //! the times themselves doesn't work: the TS index holds some as
 //! `toISOString` milliseconds and others as the list's microseconds.)
 //!
-//! Rows the daemon wrote itself (`native_rows`: a manual `title`, a
-//! judgment from the Jev guard) aren't in the TS index, so they'd be
-//! dropped. Instead the import never deletes them, and replaces one only
-//! with a TS row stamped later (its `updated_at` or `classified_at`), which
-//! the TS CLI wrote afterwards, and for a manual title only with another
-//! manual title: a Luna title never replaces the user's own.
+//! Titles the daemon wrote itself (`native_rows`: a manual `title`, a Luna
+//! one from `titles`) aren't in the TS index, so they'd be dropped.
+//! Instead the import never deletes them, and replaces one only with a TS
+//! row stamped later (its `updated_at`), which the TS CLI wrote afterwards,
+//! and only with a manual title: a Luna title never replaces the user's
+//! own, and the TS CLI no longer writes Luna's.
 //!
-//! Transcripts are a cache both sides fill: the daemon's search indexer
-//! fetches them too. So the TS index never deletes one here, and its copy
-//! replaces the daemon's only when it is current for the chat and the
-//! daemon's isn't (or is an older render), or when neither is current and
-//! the TS copy isn't older. Two current renders can differ only in the
-//! model named in the header, which the single-chat endpoint gives and the
-//! batch doesn't, so the daemon's current one stays.
+//! Transcripts and summaries are caches both sides fill: the daemon's
+//! search indexer fetches transcripts, and its `classify` writes summaries.
+//! So the TS index never deletes one here, and its copy replaces the
+//! daemon's only when it is current for the chat and the daemon's isn't
+//! (or is an older render or prompt), or when neither is current and the
+//! TS copy isn't older. Two current renders can differ only in the model
+//! named in the header, which the single-chat endpoint gives and the batch
+//! doesn't, so the daemon's current one stays.
 
 use std::path::Path;
 
@@ -50,57 +58,6 @@ pub const LEGACY_TABLES: &[(&str, &[&str], bool)] = &[
         true,
     ),
     (
-        "judgments",
-        &[
-            "id",
-            "update_time",
-            "version",
-            "content_kind",
-            "answers",
-            "classified_at",
-        ],
-        true,
-    ),
-    (
-        "deep_judgments",
-        &[
-            "id",
-            "update_time",
-            "questions_version",
-            "version",
-            "answers",
-            "classified_at",
-        ],
-        true,
-    ),
-    (
-        "luna_judgments",
-        &[
-            "id",
-            "update_time",
-            "questions_version",
-            "deep_version",
-            "version",
-            "suggestion",
-            "brainstorm",
-            "reason",
-            "classified_at",
-        ],
-        true,
-    ),
-    (
-        "memory_judgments",
-        &[
-            "id",
-            "input_hash",
-            "version",
-            "system_one",
-            "system_two",
-            "classified_at",
-        ],
-        false,
-    ),
-    (
         "summaries",
         &["id", "update_time", "prompt_version", "summary", "model"],
         true,
@@ -118,6 +75,16 @@ pub const LEGACY_TABLES: &[(&str, &[&str], bool)] = &[
         true,
     ),
 ];
+
+/// The caches both sides fill, and the column that versions each one's
+/// content: a newer one is a better copy.
+fn cache_version(table: &str) -> Option<&'static str> {
+    match table {
+        "transcripts" => Some("render_version"),
+        "summaries" => Some("prompt_version"),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImportCounts {
@@ -164,9 +131,9 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
             &transaction,
             &format!("select count(*) from legacy.{table}"),
         )?;
-        let cache = *table == "transcripts";
+        let cache = cache_version(table);
         let native = native_guard(table);
-        if !cache {
+        if cache.is_none() {
             table_counts.deleted = transaction.execute(
                 &format!(
                     "delete from main.{table} where id not in (select id from legacy.{table})
@@ -207,7 +174,7 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
             ));
         }
         let mut condition = format!("({})", changed.join(" or "));
-        if cache {
+        if let Some(version) = cache {
             let current = |time: &str| {
                 format!(
                     "exists (select 1 from main.conversations c \
@@ -218,10 +185,10 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
                 current(&format!("{table}.update_time")),
                 current("excluded.update_time"),
             );
-            // Theirs is current, and ours isn't or is an older render; or
+            // Theirs is current, and ours isn't or is an older version; or
             // neither is current and theirs isn't older.
             condition.push_str(&format!(
-                " and (({theirs} and (not {ours} or excluded.render_version > {table}.render_version)) \
+                " and (({theirs} and (not {ours} or excluded.{version} > {table}.{version})) \
                  or (not {ours} and not {theirs} and excluded.update_time >= {table}.update_time))"
             ));
         }

@@ -109,6 +109,7 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
     if let Some(problem) = &classification.problem {
         lines.push(format!("classification problem: {problem}"));
     }
+    lines.extend(auto_jev_lines(&status.auto_jev, now));
     lines.push(search_index_line(&status.search_index));
     if let Some(error) = &status.search_index.last_error {
         lines.push(format!("search index error: {error}"));
@@ -119,6 +120,46 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
         lines.push(format!("embedding error: {error}"));
     }
     lines.join("\n") + "\n"
+}
+
+/// The background Jev: on or off, today's tally, the last run.
+fn auto_jev_lines(auto: &chatgpt_protocol::AutoJevStatus, now: i64) -> Vec<String> {
+    let mut lines = vec![if auto.enabled {
+        format!(
+            "background Jev: on, {} judged today ({}){}",
+            auto.judged_today,
+            usd(auto.cost_today_usd),
+            if auto.in_progress {
+                ", judging now"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!(
+            "background Jev: off ({})",
+            auto.off_reason.as_deref().unwrap_or("not configured")
+        )
+    }];
+    if let (Some(at), Some(summary)) = (auto.last_run_at, &auto.last_summary) {
+        lines.push(format!(
+            "background Jev last run: {} ({summary})",
+            ago(at, now)
+        ));
+    }
+    if let Some(error) = &auto.last_error {
+        lines.push(format!("background Jev error: {error}"));
+    }
+    lines
+}
+
+/// `formatUsd`: four places under a cent, else two.
+fn usd(amount: f64) -> String {
+    if amount > 0.0 && amount < 0.01 {
+        format!("${amount:.4}")
+    } else {
+        format!("${amount:.2}")
+    }
 }
 
 /// How far the background search indexer has got.
