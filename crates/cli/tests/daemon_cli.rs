@@ -190,28 +190,141 @@ fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
         .block_on(work)
 }
 
+/// The identity of a process that isn't the daemon: what a client saw
+/// before another client replaced that daemon.
+fn someone_else() -> (std::process::Child, chatgpt_launcher::DaemonIdentity) {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let identity = chatgpt_launcher::DaemonIdentity::of(child.id()).unwrap();
+    (child, identity)
+}
+
+/// A daemon run directly that stalls before binding its socket, as one
+/// stuck opening its index would. Its PID, once its PID file names it.
+#[allow(
+    clippy::zombie_processes,
+    reason = "the caller kills and waits for it; a test that fails here ends the process"
+)]
+fn stuck_daemon(env: &Env, marker: &str) -> (std::process::Child, u32) {
+    let marker = env.home.path().join(marker);
+    std::fs::write(&marker, "").unwrap();
+    let child = env
+        .std_cmd()
+        .args(["daemon", "run"])
+        .env("CHATGPT_TEST_STALL_STARTUP", &marker)
+        .spawn()
+        .unwrap();
+    let pid_file = env.data_dir().join("run/daemon.pid");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if marker.exists() {
+            // Not stalled yet.
+        } else if let Some(pid) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.lines().next()?.parse().ok())
+        {
+            return (child, pid);
+        }
+        assert!(std::time::Instant::now() < deadline, "it never stalled");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Clients A and B both find the same old daemon. A replaces it first; B's
 /// stop, of the daemon it observed, must leave A's new one running.
 #[test]
 fn a_client_stops_only_the_old_daemon_it_saw_not_one_started_since() {
     let env = Env::new();
     let mut old = daemon_reporting(&env, "0.0.1");
-    let seen = old.id();
+    let seen = chatgpt_launcher::DaemonIdentity::of(old.id()).unwrap();
     let fresh = env.status()["pid"].as_u64().unwrap();
     assert!(old.wait().unwrap().success());
 
-    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), seen)).unwrap();
+    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), &seen)).unwrap();
     assert_eq!(stopped, None, "B stopped A's new daemon");
     assert!(pid_exists(fresh));
     assert_eq!(env.status()["pid"], fresh);
 
-    let stopped = block_on(chatgpt_launcher::stop_if_still(
-        &paths(&env),
-        u32::try_from(fresh).unwrap(),
-    ))
-    .unwrap();
-    assert_eq!(stopped, Some(u32::try_from(fresh).unwrap()));
-    assert!(!pid_exists(fresh));
+    let fresh = u32::try_from(fresh).unwrap();
+    let identity = chatgpt_launcher::DaemonIdentity::of(fresh).unwrap();
+    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), &identity)).unwrap();
+    assert_eq!(stopped, Some(fresh));
+    assert!(!pid_exists(u64::from(fresh)));
+}
+
+/// The daemon a client saw was replaced by one that is itself too old (it
+/// answers, incompatibly): the client must not stop the replacement.
+#[test]
+fn a_replacement_that_answers_incompatibly_is_not_the_one_stopped() {
+    let env = Env::new();
+    let (mut other, seen) = someone_else();
+    let mut replacement = daemon_reporting(&env, "0.0.1");
+    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), &seen)).unwrap();
+    assert_eq!(stopped, None);
+    assert!(
+        pid_exists(u64::from(replacement.id())),
+        "the replacement was stopped"
+    );
+    env.cmd().args(["daemon", "stop"]).assert().success();
+    assert!(replacement.wait().unwrap().success());
+    let _ = other.kill();
+}
+
+/// The same when the replacement holds the lock but doesn't answer: one
+/// whose socket times out, and one with no socket yet.
+#[test]
+fn a_replacement_that_times_out_or_isnt_listening_is_not_the_one_stopped() {
+    let env = Env::new();
+    let (mut other, seen) = someone_else();
+    let (mut stuck, pid) = stuck_daemon(&env, "stall");
+
+    // No socket yet.
+    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), &seen)).unwrap();
+    assert_eq!(stopped, None);
+    assert!(pid_exists(u64::from(pid)), "the stuck daemon was signalled");
+
+    // A socket that takes connections but never answers: the probe times out.
+    let _silent = UnixListener::bind(env.socket()).unwrap();
+    let stopped = block_on(chatgpt_launcher::stop_if_still(&paths(&env), &seen)).unwrap();
+    assert_eq!(stopped, None);
+    assert!(pid_exists(u64::from(pid)), "the stuck daemon was signalled");
+
+    let _ = stuck.kill();
+    let _ = stuck.wait();
+    let _ = other.kill();
+}
+
+/// A client waiting for its daemon first sees a stuck one holding the
+/// lock. That one goes away and another stuck one takes its place before
+/// the timeout: the client must not stop the newcomer.
+#[test]
+fn a_timeout_stops_only_the_daemon_first_seen_stuck() {
+    let mut env = Env::new();
+    env.extra_env.push((
+        "CHATGPT_TEST_READY_TIMEOUT_MS".to_owned(),
+        "4000".to_owned(),
+    ));
+    let (mut first, _) = stuck_daemon(&env, "stall-first");
+    let client = env
+        .std_cmd()
+        .args(["daemon", "status", "--json"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    first.kill().unwrap();
+    first.wait().unwrap();
+    let (mut second, pid) = stuck_daemon(&env, "stall-second");
+    let output = client.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("wasn't ready"), "{stderr}");
+    assert!(pid_exists(u64::from(pid)), "the newcomer was signalled");
+    let _ = second.kill();
+    let _ = second.wait();
 }
 
 #[test]
