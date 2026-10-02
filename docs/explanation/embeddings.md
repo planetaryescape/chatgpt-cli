@@ -64,6 +64,8 @@ The mxr daemon once pegged four cores with a background model. Here the model ru
 
 Utility costs a third of the speed when the machine is idle, and gives way to anything the user runs.
 
+On BK's account (2026-10-02, a fresh instance and an empty model cache), the daemon downloaded the model in seconds and embedded all 47,415 chunks of 811 chats in about 31 minutes, at 25 to 28 chunks a second. The worker held one core (94 to 99%) at scheduling priority 20 (the daemon's is 31) in 92 to 139 MB; the daemon itself stayed under 6%. Semantic search then answered in 0.11 s, against the TS CLI's 0.35 s. Over 12 queries, Rust's top five matched the TS CLI's in 93% of places for `--semantic` (the same first result in 11) and 98% for `--hybrid` (10). The differences were near ties.
+
 ## The model files
 
 | File | Size | SHA-256 |
