@@ -171,12 +171,29 @@ impl fmt::Debug for Secret {
 
 type RetryObserver = Box<dyn Fn(&RetryEvent) + Send + Sync>;
 
-/// The methods the client sends. Only reads: the daemon never mutates chats,
-/// and the batch read is a POST.
+/// The methods the client sends. POST is also a read (the batch read and
+/// ChatGPT's search); PATCH, DELETE and the other POSTs change chats,
+/// projects and memories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
     Get,
     Post,
+    Patch,
+    Delete,
+}
+
+/// Whether a request may go out again after ChatGPT may have acted on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resend {
+    /// Reads and idempotent writes: challenges, 429s and gateway errors are
+    /// all retried.
+    Allowed,
+    /// Writes that mustn't happen twice (a delete, a rename, a new
+    /// project): only answers that show the request was turned away before
+    /// ChatGPT acted on it are retried, a Cloudflare challenge or a 429. A
+    /// gateway error or a dropped connection comes back as it is, since the
+    /// write may have applied.
+    OnlyIfRefused,
 }
 
 /// Whether a non-2xx response is worth retrying, and why.
@@ -274,15 +291,28 @@ impl HttpClient {
     }
 
     /// Sends `method` to `path` with an optional body, retrying challenges,
-    /// 429s and gateway errors as [`HttpClient::get`] does. A retried POST is
-    /// sent again, so only reads belong here, such as the batch read
-    /// (`POST /backend-api/conversations/batch`).
+    /// 429s and gateway errors as [`HttpClient::get`] does. A retried
+    /// request is sent again, so only reads and idempotent writes belong
+    /// here; see [`HttpClient::send_with`] for the others.
     pub async fn send(
         &self,
         method: HttpMethod,
         path: &str,
         headers: &[(&str, &str)],
         body: Option<&str>,
+    ) -> Result<String, HttpError> {
+        self.send_with(method, path, headers, body, Resend::Allowed)
+            .await
+    }
+
+    /// [`HttpClient::send`], retrying only as far as `resend` allows.
+    pub async fn send_with(
+        &self,
+        method: HttpMethod,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+        resend: Resend,
     ) -> Result<String, HttpError> {
         let url = format!("{}{path}", self.base);
         let options = RequestOptions {
@@ -308,10 +338,24 @@ impl HttpClient {
                         .post(url.clone(), request_body, Some(options.clone()))
                         .await
                 }
+                HttpMethod::Patch => {
+                    impit
+                        .patch(url.clone(), request_body, Some(options.clone()))
+                        .await
+                }
+                HttpMethod::Delete => {
+                    impit
+                        .delete(url.clone(), request_body, Some(options.clone()))
+                        .await
+                }
             };
             let response = sent.map_err(|error| transport_error(path, error))?;
             let status = response.status();
             let reason = match retry_reason(status, response.headers()) {
+                // The gateway may have passed the write on before failing.
+                Some(RetryReason::Gateway(_)) if resend == Resend::OnlyIfRefused => {
+                    return finish(response, path).await;
+                }
                 Some(reason) if attempt < self.policy.max_retries => reason,
                 Some(RetryReason::Challenge) => {
                     return Err(HttpError::Challenged {

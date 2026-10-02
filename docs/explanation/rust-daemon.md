@@ -4,7 +4,7 @@ The Rust `chatgpt` (in `crates/`) is replacing the TS CLI one group of commands 
 
 ## Native commands and the bridge
 
-`sync`, `list`, `stats`, `export` (and its alias `show`), `search` (full-text, `--semantic`, `--hybrid` and `--remote`), `search-index`, `daemon` and `import-legacy` run in Rust. Every other command, including its `--help`, runs as `bun <cli.ts> <args…>`: the Rust process replaces itself with bun, so arguments, stdin, stdout, stderr, the terminal and the exit code are the TS CLI's. The TS CLI is found by path, never as `chatgpt` on PATH (which may be the Rust binary):
+`sync`, `list`, `stats`, `export` (and its alias `show`), `search` (full-text, `--semantic`, `--hybrid` and `--remote`), `search-index`, `archive`, `unarchive`, `delete`, `rename`, `title`, `project` (`create`, `list`, `add`, `remove`), `memory` (`list`, `summary`, `delete`), `daemon` and `import-legacy` run in Rust. `configure`, `classify`, `titles`, `memory classify`, `review` and `tui`, including their `--help`, run as `bun <cli.ts> <args…>`: the Rust process replaces itself with bun, so arguments, stdin, stdout, stderr, the terminal and the exit code are the TS CLI's. The TS CLI is found by path, never as `chatgpt` on PATH (which may be the Rust binary):
 
 1. `CHATGPT_TS_CLI`, the TS CLI's `src/cli.ts`;
 2. `~/.bun/install/global/node_modules/chatgpt-cli/src/cli.ts`, where `bun link` puts it.
@@ -50,7 +50,33 @@ Semantic and hybrid `search` need no `search-index` step either. After the index
 
 The vectors are tagged with the Rust `MODEL_VERSION` and live only in the daemon's index. An index from 0.1.1 gains the vectors table on the daemon's first start, and the existing chunks are embedded in the background while `list` and `search` keep answering.
 
+## Changing chats, projects and memories
+
+`archive`, `unarchive`, `delete`, `project add` and `project remove` run in three steps, so the chats a preview shows are exactly the ones changed:
+
+1. The daemon resolves the chats from the ids, id prefixes, the ids on stdin (`-`), or the filters, with the TS CLI's checks and messages (pinned chats only with `--pinned`, archived ones only with `--archived` or `--all`; `unarchive` picks archived chats). It never touches the network for this.
+2. The CLI prints the preview (the first 25, then how many more), stops for `-n`, and otherwise asks: `[y/N]`, or the typed count for `delete` and `memory delete`. The answer comes from the terminal; when the ids came in on stdin, from `/dev/tty`. Without a terminal to ask, it fails and says to pass `-y`.
+3. The CLI sends back the ids it showed, and the daemon changes each one in ChatGPT first, then in its index, with the TS CLI's pacing (a quarter second apart; three deletes at once) and progress lines. A delete drops the chat's row, and its search chunks and vectors go with the indexer's next run; an archive change flips `is_archived`; a rename changes the title (the indexer rebuilds the chat's chunks); a project move sets `project_id`. If the CLI goes away (Ctrl-C), the chat in hand is finished, ChatGPT and the index both, and no further one is started. A change and a sync pass never run at the same time: a change waits for a running pass (and the pass for the change), so a pass that listed a chat before the change can't write its old state back. Every change, and every project and memory read, uses the session pinned to the index's account: a session for another account, or one renewed into another, is refused before anything is sent.
+
+ChatGPT's quirks are the TS CLI's: a pre-2025 chat's rename answers 500 yet applies (the error says so), a project move answering 500 is checked with a read of the chat, a delete answering 404 has done its job, and a memory delete counts only when ChatGPT answers `success: true`.
+
+Archiving is idempotent, so it's retried like a read. A delete, a rename, a project move, a new project and a memory delete mustn't happen twice: they're retried only after an answer that shows ChatGPT turned them away (a Cloudflare challenge, a 429). After a gateway error or a dropped connection the write may have applied, and the CLI says exactly that, with the path, and that `chatgpt sync` shows whether it did, rather than sending it again.
+
+`title` writes a manual local title to the daemon's index only. While the bridge exists, the TS import keeps it (see below).
+
+### The Jev guard
+
+`archive`/`delete --check`, and `--suggest delete` on `delete` (or `--suggest archive` on `archive`), ask Jev about each selected chat that has no current judgment, during the command and never in the background, as the TS CLI's `checkWithJev` does: the same steps, notes and cost lines, and only chats Jev confidently backs are kept; anything it couldn't judge is held back. The guard uses this repository's questions and policy (`crates/daemon/src/jev/questions.json`, `Profile::builtin`), whatever versions the bridged TS CLI reads with, and saves its judgments in the daemon's index.
+
+An answer of the wrong shape (a score that isn't a number in its range, a choice that isn't one of the question's) is never saved; the failure names the question, never the value. A stored judgment that can't be read counts as no judgment, in `list`, `stats` and the guard, which judges it again.
+
+It calls TypeSafe's System One API itself (`crates/typesafe`, a small client written from `@typesafe-ai/sdk` 0.6.0's source). The key is the requesting command's `TYPESAFE_API_KEY`, which the CLI passes on with the request (the daemon's own environment is whichever command started it), else `jev` in `~/.config/chatgpt-cli/config.json`, read on every check. It's never stored, logged or shown.
+
+One difference: Jev reads a long chat (over 12,000 tokens) from a summary, and summaries are still written by the TS CLI's `classify` (the import brings them over). A long chat without one is held back instead of summarised, with a note naming it and saying to run `chatgpt classify <id>`, then `chatgpt import-legacy`. Stage 5 ports the summariser.
+
 ## Matching the TS CLI
+
+`crates/cli/tests/parity_mutations.rs` runs both CLIs through the same changes, in order, against two fake chatgpt.coms and two fake TypeSafes that start alike: previews, prompts (in a pseudo-terminal), notes, summaries and errors match byte for byte (leaving out durations and rates), as do the requests each sends, the Jev request bodies, and ChatGPT's and both indexes' state afterwards.
 
 The chunks reproduce the TS CLI's exactly, down to the bytes Bun stores when a chunk boundary splits an emoji, so ranking, scores and snippets match the TS CLI's over the same transcripts (`crates/cli/tests/parity_export_search.rs`). The same harness gives both CLIs a stand-in embedder, so their vectors are identical, and requires identical semantic and hybrid output; and it points both at one fake `global/search` for `--remote`. The TS CLI's own search index, in its own database, is never read or written.
 
@@ -61,6 +87,8 @@ Debug builds and binaries under `target/` use the `dev` instance (`chatgpt-cli-d
 ## Data from the TS CLI
 
 While the bridge exists the TS CLI still writes every Jev judgment, follow-up, Luna review, local title, summary and cached transcript, into `~/.local/share/chatgpt-cli/index.db`. The daemon imports those tables into its own index at startup, after every TS sync and on `chatgpt import-legacy`. The import opens the TS index read-only, mirrors each table by its key (rows the TS index dropped are dropped), and keeps a newer `update_time` the daemon's reconcile wrote when nothing else differs. Transcripts are the exception: the search indexer caches them too, so the import never deletes one and replaces the daemon's copy only when that copy isn't current for the chat.
+
+The daemon also writes some of these rows itself: a `title`, and the Jev guard's judgments. The TS index never has them, so the import would drop them; instead it keeps a row the daemon wrote (listed in `native_rows`) until the TS CLI writes a newer one for that chat, and never lets a Luna title replace a manual one.
 
 The TS index belongs to one account: whichever the TS CLI's default browser session holds. So the TS sync and the import run only for the installed (or dev) instance on a pass that reads the default browser choice, with no `--browser`, `--profile` or `CHATGPT_BROWSER*`. A named instance, or a pass on another browser, skips both and says so in `daemon status` ("TS sync skipped: …"), because a TS full sync from another account would replace the default account's chats in the shared index.
 

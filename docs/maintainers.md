@@ -25,7 +25,8 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `crates/daemon/` | Rust: the daemon (sync, policy, `list`/`stats` reads, search indexing, embedding and search, TS sync while bridged) |
 | `crates/embed/` | Rust: the embedding model's pinned files, the tract embedder, and the worker process the daemon runs it in |
 | `crates/cli/` | Rust: the `chatgpt` binary, its native commands and the bridge to the TS CLI |
-| `crates/fake-chatgpt/` | Rust: a fake chatgpt.com for tests |
+| `crates/typesafe/` | Rust: a small client for TypeSafe's System One API (Jev), used by the daemon's Jev guard |
+| `crates/fake-chatgpt/` | Rust: a fake chatgpt.com (reads, writes and their quirks) and a fake TypeSafe, for tests |
 | `third_party/impit/` | impit with one patch: no environment writes after startup (`third_party/README.md`) |
 
 ## Verify a change
@@ -54,7 +55,7 @@ cargo clippy --all-targets -- -D warnings
 cargo nextest run        # or cargo test
 ```
 
-`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; `crates/cli/tests/parity_export_search.rs` does the same for `export` (against the TS `renderTranscript`) and every `search` mode over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`): semantic and hybrid with both CLIs on a stand-in embedder, `--remote` against one fake endpoint. Both skip without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
+`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; `crates/cli/tests/parity_export_search.rs` does the same for `export` (against the TS `renderTranscript`) and every `search` mode over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`): semantic and hybrid with both CLIs on a stand-in embedder, `--remote` against one fake endpoint; `crates/cli/tests/parity_mutations.rs` runs both through the same archive, delete, rename, title, project and memory commands and the Jev guard, against twin fakes. All skip without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
 
 impit is a git dependency that only impersonates Chrome when apify's forks of `h2`, `rustls`, `hyper-util` and `tower-http` are in the graph (`[patch.crates-io]` in `Cargo.toml`), built with `--cfg reqwest_unstable` (`.cargo/config.toml`, which a `RUSTFLAGS` variable overrides). Cargo drops a patch with only a warning when the graph wants a newer version, so `hyper` and `reqwest` stay pinned in `Cargo.lock` to impit's own lockfile versions, and `crates/chatgpt/tests/fingerprint_patches.rs` fails if a fork falls out. Re-check that test after any `cargo update`.
 
@@ -73,7 +74,7 @@ Search index changes that alter passage text should bump `CHUNK_VERSION` in `src
 | You changed | Then |
 |---|---|
 | A threshold in `src/classify/policy.ts` | Nothing to re-run; suggestions are recalculated on read |
-| A question, its criteria, or the set of questions | Bump `QUESTIONS_VERSION`; next `classify` re-judges everything |
+| A question, its criteria, or the set of questions | Bump `QUESTIONS_VERSION`; next `classify` re-judges everything. For the Rust guard, rewrite `crates/daemon/src/jev/questions.json` (the command is in `questions.rs`) and bump `questions_version` in `Profile::builtin` |
 | A follow-up question or its criteria | Bump `DEEP_QUESTIONS_VERSION`; next `classify` re-asks unsure chats |
 | Luna's final-review prompt or result meaning | Bump `LUNA_JUDGMENT_VERSION`; next `classify` re-reviews chats still unsure, every product label, borderline product ideas and conflicting time-expired cases |
 | Luna's local-title prompt or result meaning | Bump `LOCAL_TITLE_VERSION`; next `titles` regenerates titles and themes |

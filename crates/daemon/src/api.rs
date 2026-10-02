@@ -1,12 +1,14 @@
 //! The chatgpt.com endpoints the daemon reads, ported from the TS CLI's
-//! `src/api/conversations.ts` and `memories.ts` @ 1b8c950. Every call is a
-//! read: GETs, and the batch read, which is a POST.
+//! `src/api/conversations.ts` and `memories.ts` @ 1b8c950: GETs, and the
+//! batch read and search, which are POSTs. The writes are in `api/writes.rs`.
+
+mod writes;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use chatgpt::cookies::CookieError;
-use chatgpt::http::{HttpError, HttpMethod};
+use chatgpt::http::{HttpError, HttpMethod, Resend};
 use chatgpt::session::SessionError;
 use chatgpt_core::ErrorKind;
 use chatgpt_protocol::SessionChoice;
@@ -255,9 +257,22 @@ impl Api {
         path: &str,
         body: Option<&str>,
     ) -> Result<String, ApiError> {
+        Ok(self.send_raw(method, path, body, Resend::Allowed).await?)
+    }
+
+    /// The call, with the session renewed once if ChatGPT rejected it. A
+    /// rejected token means the request was refused, so sending it again is
+    /// safe even for a write that mustn't happen twice.
+    async fn send_raw(
+        &self,
+        method: HttpMethod,
+        path: &str,
+        body: Option<&str>,
+        resend: Resend,
+    ) -> Result<String, SendError> {
         let session = self.sessions.current(&self.choice).await?;
         self.same_account(&session)?;
-        match call(&session, method, path, body).await {
+        match call(&session, method, path, body, resend).await {
             // 401, or a 403 that isn't a Cloudflare challenge (that's a
             // separate error): the token or the cookies went stale. Read
             // them again once.
@@ -266,7 +281,7 @@ impl Api {
             {
                 let renewed = self.sessions.renew(&self.choice, &session).await?;
                 self.same_account(&renewed)?;
-                Ok(call(&renewed, method, path, body).await?)
+                Ok(call(&renewed, method, path, body, resend).await?)
             }
             other => Ok(other?),
         }
@@ -374,11 +389,41 @@ impl Api {
     }
 }
 
+/// A failed call: the HTTP client's error, which the writes inspect (a 404,
+/// a 500, a dropped connection), or a session failure.
+#[derive(Debug)]
+enum SendError {
+    Http(HttpError),
+    Api(ApiError),
+}
+
+impl From<HttpError> for SendError {
+    fn from(error: HttpError) -> Self {
+        Self::Http(error)
+    }
+}
+
+impl From<ApiError> for SendError {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+impl From<SendError> for ApiError {
+    fn from(error: SendError) -> Self {
+        match error {
+            SendError::Http(http) => http.into(),
+            SendError::Api(api) => api,
+        }
+    }
+}
+
 async fn call(
     session: &Session,
     method: HttpMethod,
     path: &str,
     body: Option<&str>,
+    resend: Resend,
 ) -> Result<String, HttpError> {
     let bearer = session.token.bearer();
     let mut headers = vec![
@@ -388,5 +433,8 @@ async fn call(
     if body.is_some() {
         headers.push(("content-type", "application/json"));
     }
-    session.http.send(method, path, &headers, body).await
+    session
+        .http
+        .send_with(method, path, &headers, body, resend)
+        .await
 }

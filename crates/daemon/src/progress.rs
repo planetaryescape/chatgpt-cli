@@ -17,6 +17,9 @@ pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(Clone, Default)]
 pub struct Reporter {
     sink: Arc<Mutex<Option<UnboundedSender<Progress>>>>,
+    /// Lines only for the client: they can name chats (a preview, a
+    /// failure, Jev's held-back list), which the log never holds.
+    quiet: bool,
 }
 
 /// Detaches the client's channel when dropped.
@@ -35,6 +38,15 @@ impl Drop for Attached {
 }
 
 impl Reporter {
+    /// A reporter of one request's own lines, sent to its client and never
+    /// logged.
+    pub fn for_client(sender: Option<UnboundedSender<Progress>>) -> Self {
+        Self {
+            sink: Arc::new(Mutex::new(sender)),
+            quiet: true,
+        }
+    }
+
     /// Send progress to `sender` until the returned guard drops.
     pub fn attach(&self, sender: UnboundedSender<Progress>) -> Attached {
         *self.sink.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
@@ -44,7 +56,7 @@ impl Reporter {
     }
 
     fn send(&self, kind: ProgressKind, line: String) {
-        if !matches!(kind, ProgressKind::Update) {
+        if !self.quiet && !matches!(kind, ProgressKind::Update) {
             tracing::info!(target: "progress", "{line}");
         }
         if let Some(sender) = self
@@ -83,6 +95,12 @@ pub struct Step {
 
 impl Step {
     pub fn update(&self, done: usize) {
+        self.update_with(done, "");
+    }
+
+    /// `step.update(done, detail)`: the count, then `· detail` when there
+    /// is one.
+    pub fn update_with(&self, done: usize, detail: &str) {
         let elapsed = self.started.elapsed().as_millis() as f64;
         let mut line = self.label.clone();
         match self.total {
@@ -109,6 +127,9 @@ impl Step {
             None => line.push_str(&format!("  {done} so far")),
         }
         line.push_str(&format!(" · {}", format_duration(elapsed)));
+        if !detail.is_empty() {
+            line.push_str(&format!(" · {detail}"));
+        }
         self.reporter.send(ProgressKind::Update, line);
     }
 

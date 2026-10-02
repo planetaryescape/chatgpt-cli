@@ -156,6 +156,12 @@ impl ProgressLines {
         }
         let print = match progress.kind {
             ProgressKind::Update => self.last_plain.is_none_or(|at| at.elapsed() > PLAIN_EVERY),
+            // Each step keeps its own clock, as each TS `Step` does: its
+            // first count prints at once.
+            ProgressKind::Start => {
+                self.last_plain = None;
+                true
+            }
             _ => true,
         };
         if print {

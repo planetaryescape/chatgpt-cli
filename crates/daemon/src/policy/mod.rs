@@ -26,6 +26,19 @@ fn in_band(p: f64) -> bool {
     p > UNSURE_BAND.0 && p < UNSURE_BAND.1
 }
 
+impl Verdict {
+    /// `approves`: whether Jev backs `delete` (a confident delete) or
+    /// `archive` (anything it wouldn't keep, confidently).
+    pub fn backs(&self, delete: bool) -> bool {
+        !self.unsure
+            && if delete {
+                self.suggestion == "delete"
+            } else {
+                self.suggestion != "keep"
+            }
+    }
+}
+
 /// A verdict as `verdictOf` returns it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {
@@ -291,6 +304,27 @@ fn refine(base: &Verdict, a: &DeepAnswers) -> Verdict {
     unresolved
 }
 
+/// The current judgments `profile` reads, without unreadable ones.
+pub fn current_judgments(
+    db: &rusqlite::Connection,
+    profile: &Profile,
+) -> chatgpt_store::Result<std::collections::HashMap<String, JudgmentRow>> {
+    let mut judgments = chatgpt_store::current_judgments(db, &profile.questions_version)?;
+    judgments.retain(|_, row| readable(row, profile));
+    Ok(judgments)
+}
+
+/// Whether a stored judgment can be read. One that can't (answers of the
+/// wrong shape) counts as no judgment, so it never fails a whole `list`;
+/// the log names its chat, never its content.
+pub fn readable(row: &JudgmentRow, profile: &Profile) -> bool {
+    let read = Judged::new(row, profile).and_then(|judged| judged.verdict());
+    if read.is_err() {
+        tracing::warn!(id = %row.id, "a stored Jev judgment is unreadable; treating the chat as unjudged");
+    }
+    read.is_ok()
+}
+
 /// A judgment with its answers read once, and the versions that decide
 /// which follow-ups count.
 pub struct Judged<'a> {
@@ -391,6 +425,30 @@ impl<'a> Judged<'a> {
             return Ok(false);
         }
         Ok(a.overtaken < 0.8 || a.personal >= 0.6 || a.unfinished >= 0.6 || a.worth >= 2.0)
+    }
+
+    /// `needsTimeRefresh`: a still-current time-bound chat is judged again
+    /// after seven UTC days, or with strong evidence of a lasting record,
+    /// in a later UTC month. `as_of` is `YYYY-MM-DD`.
+    pub fn needs_time_refresh(&self, as_of: &str) -> bool {
+        let a = &self.answers;
+        if a.time_bound < 0.7 || a.overtaken >= 0.8 {
+            return false;
+        }
+        let classified = self.row.classified_at.as_str();
+        let durable_evidence = a.personal >= 0.8 && a.worth >= 2.0;
+        if durable_evidence {
+            return classified.get(..7).unwrap_or(classified) != as_of.get(..7).unwrap_or(as_of);
+        }
+        const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+        // `Date.parse` of either one failing makes the difference NaN: false.
+        match (
+            crate::js::parse_date(as_of),
+            crate::js::parse_date(classified.get(..10).unwrap_or(classified)),
+        ) {
+            (Some(now), Some(then)) => now - then >= WEEK_MS,
+            _ => false,
+        }
     }
 
     /// `verdictOf`: Jev's verdict, settled or adjusted by a current Luna

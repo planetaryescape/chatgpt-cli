@@ -6,7 +6,7 @@ use rusqlite::{Connection, params};
 
 use super::*;
 
-fn chat(id: &str, update_time: &str) -> NewConversation {
+pub(crate) fn chat(id: &str, update_time: &str) -> NewConversation {
     NewConversation {
         id: id.into(),
         title: "Original title".into(),
@@ -18,11 +18,11 @@ fn chat(id: &str, update_time: &str) -> NewConversation {
     }
 }
 
-fn open(dir: &Path) -> Store {
+pub(crate) fn open(dir: &Path) -> Store {
     Store::open(&dir.join("chatgpt.db")).unwrap()
 }
 
-fn all(store: &Store, version: u32) -> Vec<IndexedConversation> {
+pub(crate) fn all(store: &Store, version: u32) -> Vec<IndexedConversation> {
     store
         .read(|db| {
             query(
@@ -215,7 +215,7 @@ fn follow_ups_join_only_their_current_judgment() {
     );
 }
 
-const TS_SCHEMA: &str = "
+pub(crate) const TS_SCHEMA: &str = "
 create table conversations (id text primary key, title text not null, create_time text not null,
     update_time text not null, is_archived integer not null, pinned integer not null, project_id text);
 create table meta (key text primary key, value text not null);
@@ -236,14 +236,14 @@ create table luna_judgments (id text primary key, update_time text not null, que
     brainstorm text, reason text not null, classified_at text not null);
 ";
 
-fn legacy_db(dir: &Path) -> (std::path::PathBuf, Connection) {
+pub(crate) fn legacy_db(dir: &Path) -> (std::path::PathBuf, Connection) {
     let path = dir.join("ts index.db");
     let db = Connection::open(&path).unwrap();
     db.execute_batch(TS_SCHEMA).unwrap();
     (path, db)
 }
 
-fn counts(report: &ImportCounts, table: &str) -> (u64, u64, u64) {
+pub(crate) fn counts(report: &ImportCounts, table: &str) -> (u64, u64, u64) {
     let table = report.tables.iter().find(|t| t.table == table).unwrap();
     (table.inserted, table.updated, table.deleted)
 }

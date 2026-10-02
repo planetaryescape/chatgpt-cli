@@ -1,7 +1,9 @@
 //! The `chatgpt` command. `sync`, `list`, `stats`, `export`, `search` (every
-//! mode), `search-index`, `daemon` and `import-legacy` are native: they ask
-//! the daemon over IPC and print its answer. Every other command is handed,
-//! unchanged, to the TS CLI (the bridge).
+//! mode), `search-index`, `archive`, `unarchive`, `delete`, `rename`,
+//! `title`, `project`, `memory` (but `memory classify`), `daemon` and
+//! `import-legacy` are native: they ask the daemon over IPC and print its
+//! answer. Every other command is handed, unchanged, to the TS CLI (the
+//! bridge).
 //!
 //! This crate never touches the index or chatgpt.com itself: only the
 //! daemon does (tests/workspace_boundaries.rs). `main.rs` passes the
@@ -9,10 +11,14 @@
 
 mod args;
 mod bridge;
+mod change_cmd;
 mod daemon_cmd;
 mod export_cmd;
 mod launch_agent;
+mod memory_cmd;
 mod output;
+mod project_cmd;
+mod prompt;
 mod reads;
 mod search_cmd;
 mod sync_cmd;
@@ -22,10 +28,10 @@ use std::process::ExitCode;
 
 use chatgpt_core::{ErrorKind, Instance, Paths};
 use chatgpt_launcher::ClientError;
-use chatgpt_protocol::SessionChoice;
+use chatgpt_protocol::{ChatAction, SessionChoice};
 use clap::Parser;
 
-use args::{Cli, Command, DaemonCommand};
+use args::{Cli, Command, DaemonCommand, MemoryCommand};
 
 /// The daemon's foreground entry point, from the daemon crate.
 pub type DaemonEntry = fn(Paths) -> ExitCode;
@@ -100,6 +106,8 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
         Command::Daemon(DaemonCommand::Logs { follow, lines }) => {
             daemon_cmd::logs(&paths, lines, follow)
         }
+        // Still the TS CLI's: hand the whole command line over.
+        Command::Memory(MemoryCommand::Classify { .. }) => Ok(bridge::exec(args)),
         command => block_on(async move {
             match command {
                 Command::Sync { full } => sync_cmd::sync(&paths, full, session).await,
@@ -109,6 +117,19 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
                 Command::Search(search) => search_cmd::search(&paths, search, session).await,
                 Command::SearchIndex(scope) => search_cmd::search_index(&paths, scope).await,
                 Command::ImportLegacy => sync_cmd::import_legacy(&paths).await,
+                Command::Archive(change) => {
+                    change_cmd::change(&paths, ChatAction::Archive, change, session).await
+                }
+                Command::Unarchive(change) => {
+                    change_cmd::change(&paths, ChatAction::Unarchive, change, session).await
+                }
+                Command::Delete(change) => {
+                    change_cmd::change(&paths, ChatAction::Delete, change, session).await
+                }
+                Command::Rename(rename) => change_cmd::rename(&paths, rename, session).await,
+                Command::Title(title) => change_cmd::title(&paths, title).await,
+                Command::Project(project) => project_cmd::run(&paths, project, session).await,
+                Command::Memory(memory) => memory_cmd::run(&paths, memory, session).await,
                 Command::Daemon(DaemonCommand::Status { json }) => {
                     daemon_cmd::status(&paths, json).await
                 }
@@ -201,7 +222,18 @@ mod tests {
         assert!(native("--browser chrome search rust --remote --limit 5"));
         assert!(native("search-index --all"));
         assert!(native("help search-index"));
+        assert!(native("archive --suggest delete -n"));
+        assert!(native("delete abc def -y"));
+        assert!(native("unarchive -"));
+        assert!(native("rename abc New"));
+        assert!(native("title abc New"));
+        assert!(native("project add P abc"));
+        assert!(native("memory list --format json"));
+        assert!(native("memory classify --suggest delete"));
+        assert!(native("help memory"));
         assert!(!native("--browser chrome classify"));
+        assert!(!native("titles --all"));
+        assert!(!native("configure jev"));
         assert!(!native("help classify"));
         assert!(!native("frobnicate"));
         assert!(!native("--frobnicate list"));

@@ -35,14 +35,6 @@ fn invalid(message: String) -> Failure {
     Failure::new(ErrorKind::InvalidInput, message)
 }
 
-fn wrong_scope(archived: bool) -> &'static str {
-    if archived {
-        "archived; pass --archived or --all to include it"
-    } else {
-        "active; omit --archived or pass --all to include it"
-    }
-}
-
 pub async fn export(
     state: &State,
     reference: String,
@@ -63,7 +55,7 @@ pub async fn export(
     if !all && is_archived != archived {
         return Err(invalid(format!(
             "Conversation is {}.",
-            wrong_scope(is_archived)
+            crate::select::wrong_scope(is_archived)
         )));
     }
     let (markdown, title) = render(&value)?;
@@ -140,28 +132,7 @@ fn select_target(
     all: bool,
     local_title_version: u32,
 ) -> Result<String, Failure> {
-    let matches = chatgpt_store::get(db, prefix, local_title_version).map_err(Failure::store)?;
-    let target = match matches.as_slice() {
-        [] => {
-            return Err(invalid(format!(
-                "No conversation matching \"{prefix}\" in the index. Run `chatgpt sync`?"
-            )));
-        }
-        [one] => one,
-        many => {
-            return Err(invalid(format!(
-                "\"{prefix}\" matches {} conversations; use a longer prefix.",
-                many.len()
-            )));
-        }
-    };
-    if !all && target.is_archived != archived {
-        return Err(invalid(format!(
-            "Conversation \"{prefix}\" is {}.",
-            wrong_scope(target.is_archived)
-        )));
-    }
-    Ok(target.id.clone())
+    crate::select::target(db, prefix, archived, all, local_title_version).map(|chat| chat.id)
 }
 
 /// `renderTranscript` for the single-chat endpoint's answer, and the title

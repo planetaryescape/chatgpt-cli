@@ -148,6 +148,14 @@ impl Syncer {
         self.schedule().last_ts_sync = Some(Instant::now());
     }
 
+    /// Hold off sync passes while a change writes ChatGPT and the index,
+    /// after waiting out a running one: a pass whose listing predates the
+    /// change would otherwise write the chat's old state back (a deleted
+    /// chat re-added, an archive undone).
+    pub async fn exclusive(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.running.lock().await
+    }
+
     /// Whether a pass is running now.
     pub fn is_running(&self) -> bool {
         self.running.try_lock().is_err()
@@ -346,22 +354,28 @@ pub(crate) async fn pinned_api(state: &State, choice: SessionChoice) -> Result<A
             None => Ok(api),
         };
     };
-    match stored {
-        Some(stored) if stored != account => Err(ApiError::new(
+    let bound = match stored {
+        Some(stored) => stored,
+        // The first request to get here binds the index; one that raced it
+        // and lost sees the winner's account.
+        None => {
+            let ours = account.clone();
+            state
+                .db_write(move |db| chatgpt_store::bind_account(db, &ours))
+                .await?
+        }
+    };
+    if bound == account {
+        Ok(api)
+    } else {
+        Err(ApiError::new(
             ErrorKind::InvalidInput,
             format!(
                 "this index holds another ChatGPT account's chats than the session in {}. \
                  Keep each account in its own instance: CHATGPT_INSTANCE=<name> chatgpt sync",
                 source()
             ),
-        )),
-        Some(_) => Ok(api),
-        None => {
-            state
-                .db_write(move |db| chatgpt_store::set_account(db, &account))
-                .await?;
-            Ok(api)
-        }
+        ))
     }
 }
 

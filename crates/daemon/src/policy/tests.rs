@@ -368,3 +368,31 @@ fn deep_follow_ups_settle_unsure_verdicts_as_the_ts_policy_does() {
     );
     assert_eq!(refined(&writing, &[("idea", 0.5)]), ("keep".into(), true));
 }
+
+// Ported from luna-policy.test.ts "a time-bound chat is rechecked weekly
+// until its purpose expires".
+#[test]
+fn a_current_time_bound_chat_is_rechecked_after_a_week_or_a_month_when_durable() {
+    let mut answers = base_answers(0.9);
+    answers["time_bound"] = json!({ "noul": 0.9 });
+    answers["overtaken_by_time"] = json!({ "noul": 0.1 });
+    let j = row(&answers);
+    let profile = profile();
+    let refresh = |row: &JudgmentRow, as_of: &str| {
+        Judged::new(row, &profile)
+            .unwrap()
+            .needs_time_refresh(as_of)
+    };
+    assert!(!refresh(&j, "2024-01-01"));
+    assert!(!refresh(&j, "2024-01-02"));
+    assert!(refresh(&j, "2024-01-08"));
+    answers["personal_record"]["noul"] = json!(0.9);
+    answers["worth_keeping"]["score"] = json!(2.5);
+    let durable = row(&answers);
+    assert!(!refresh(&durable, "2024-01-02"));
+    assert!(refresh(&durable, "2024-02-01"));
+    let mut expired = base_answers(0.9);
+    expired["time_bound"] = json!({ "noul": 0.9 });
+    expired["overtaken_by_time"] = json!({ "noul": 0.9 });
+    assert!(!refresh(&row(&expired), "2030-01-01"));
+}

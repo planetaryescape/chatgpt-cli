@@ -48,8 +48,7 @@ fn selected(
             .filter(|chat| title_matches(chosen.title.as_ref(), chat))
             .collect();
     let jev = jev_filter(filter, profile).map_err(Failure::invalid)?;
-    let judgments =
-        chatgpt_store::current_judgments(db, &profile.questions_version).map_err(Failure::store)?;
+    let judgments = crate::policy::current_judgments(db, profile).map_err(Failure::store)?;
     let chats = jev
         .apply(rows, |chat| judgments.get(&chat.id), profile)
         .map_err(Failure::policy)?;

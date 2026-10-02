@@ -349,3 +349,73 @@ fn the_client_can_be_shared_across_tasks() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<HttpClient>();
 }
+
+/// Answers `first` `times` times to `method /w`, then 200 "done".
+async fn mount_write_then_ok(server: &MockServer, verb: &str, first: ResponseTemplate, times: u64) {
+    Mock::given(method(verb))
+        .and(path("/w"))
+        .respond_with(first)
+        .up_to_n_times(times)
+        .with_priority(1)
+        .mount(server)
+        .await;
+    Mock::given(method(verb))
+        .and(path("/w"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("done"))
+        .with_priority(2)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_write_that_must_not_repeat_is_sent_once_past_a_gateway_error() {
+    for (verb, method_) in [("DELETE", HttpMethod::Delete), ("POST", HttpMethod::Post)] {
+        let server = MockServer::start().await;
+        mount_write_then_ok(&server, verb, ResponseTemplate::new(502), 1).await;
+        let (http, events) = client(&server, fast_policy());
+        let error = http
+            .send_with(method_, "/w", &[], Some("{}"), Resend::OnlyIfRefused)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, HttpError::Status { status, .. } if status.as_u16() == 502),
+            "{error:?}"
+        );
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_write_that_must_not_repeat_still_retries_a_refusal() {
+    for refusal in [challenge(), ResponseTemplate::new(429)] {
+        let server = MockServer::start().await;
+        mount_write_then_ok(&server, "PATCH", refusal, 1).await;
+        let (http, events) = client(&server, fast_policy());
+        let body = http
+            .send_with(
+                HttpMethod::Patch,
+                "/w",
+                &[],
+                Some("{}"),
+                Resend::OnlyIfRefused,
+            )
+            .await
+            .unwrap();
+        assert_eq!(body, "done");
+        assert_eq!(events.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn an_idempotent_write_retries_gateway_errors() {
+    let server = MockServer::start().await;
+    mount_write_then_ok(&server, "PATCH", ResponseTemplate::new(503), 1).await;
+    let (http, _) = client(&server, fast_policy());
+    let body = http
+        .send(HttpMethod::Patch, "/w", &[], Some("{}"))
+        .await
+        .unwrap();
+    assert_eq!(body, "done");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}

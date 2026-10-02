@@ -259,9 +259,45 @@ fn parse_clock(text: &str) -> Option<NaiveTime> {
         .find_map(|format| NaiveTime::parse_from_str(text, format).ok())
 }
 
+/// `JSON.stringify(value)`: compact, numbers as JS prints them (`1e-7`,
+/// `0.000001`, `1e+21`) where serde_json would write others, strings
+/// escaped alike.
+pub fn stringify(value: &serde_json::Value) -> String {
+    use serde::Serialize;
+    let mut out = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, JsNumbers);
+    // Writing a `Value` to memory can't fail.
+    let _ = value.serialize(&mut serializer);
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// serde_json's compact layout with JS's number formatting.
+struct JsNumbers;
+
+impl serde_json::ser::Formatter for JsNumbers {
+    fn write_f64<W: ?Sized + std::io::Write>(
+        &mut self,
+        writer: &mut W,
+        value: f64,
+    ) -> std::io::Result<()> {
+        writer.write_all(chatgpt_core::js_number_string(value).as_bytes())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stringify_writes_numbers_as_json_stringify_does() {
+        let value: serde_json::Value =
+            serde_json::from_str(r#"{"b":{"x":1e-7,"y":0.000001,"z":1e21,"w":0.9400000000000001},"a":[1,2.5,"q\"\u0001"]}"#)
+                .expect("json");
+        assert_eq!(
+            stringify(&value),
+            r#"{"b":{"x":1e-7,"y":0.000001,"z":1e+21,"w":0.9400000000000001},"a":[1,2.5,"q\"\u0001"]}"#
+        );
+    }
 
     #[test]
     fn to_fixed_rounds_ties_up_as_js_does() {

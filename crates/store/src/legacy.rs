@@ -12,6 +12,13 @@
 //! the times themselves doesn't work: the TS index holds some as
 //! `toISOString` milliseconds and others as the list's microseconds.)
 //!
+//! Rows the daemon wrote itself (`native_rows`: a manual `title`, a
+//! judgment from the Jev guard) aren't in the TS index, so they'd be
+//! dropped. Instead the import never deletes them, and replaces one only
+//! with a TS row stamped later (its `updated_at` or `classified_at`), which
+//! the TS CLI wrote afterwards, and for a manual title only with another
+//! manual title: a Luna title never replaces the user's own.
+//!
 //! Transcripts are a cache both sides fill: the daemon's search indexer
 //! fetches them too. So the TS index never deletes one here, and its copy
 //! replaces the daemon's only when it is current for the chat and the
@@ -158,10 +165,13 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
             &format!("select count(*) from legacy.{table}"),
         )?;
         let cache = *table == "transcripts";
+        let native = native_guard(table);
         if !cache {
             table_counts.deleted = transaction.execute(
                 &format!(
-                    "delete from main.{table} where id not in (select id from legacy.{table})"
+                    "delete from main.{table} where id not in (select id from legacy.{table})
+                     and not exists (select 1 from main.native_rows n
+                        where n.tbl = '{table}' and n.id = main.{table}.id)"
                 ),
                 [],
             )? as u64;
@@ -169,7 +179,8 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
         table_counts.inserted = count(
             &transaction,
             &format!(
-                "select count(*) from legacy.{table} where id not in (select id from main.{table})"
+                "select count(*) from legacy.{table} where id not in (select id from main.{table})
+                 and {native}"
             ),
         )?;
         let list = columns.join(", ");
@@ -214,19 +225,48 @@ fn import_attached(connection: &mut Connection) -> Result<ImportCounts> {
                  or (not {ours} and not {theirs} and excluded.update_time >= {table}.update_time))"
             ));
         }
-        // `where true` lets SQLite tell the upsert's ON from a join's.
+        // The `where` also lets SQLite tell the upsert's ON from a join's.
         let upserted = transaction.execute(
             &format!(
-                "insert into main.{table} ({list}) select {list} from legacy.{table} where true
+                "insert into main.{table} ({list}) select {list} from legacy.{table} where {native}
                  on conflict (id) do update set {assignments} where {condition}"
             ),
             [],
         )? as u64;
         table_counts.updated = upserted.saturating_sub(table_counts.inserted);
+        if let Some(stamp) = crate::native::stamp(table) {
+            // A TS row that replaced the daemon's: the TS CLI owns it again.
+            transaction.execute(
+                &format!(
+                    "delete from main.native_rows where tbl = '{table}' and exists
+                     (select 1 from main.{table} t where t.id = native_rows.id
+                        and t.{stamp} > native_rows.written_at)"
+                ),
+                [],
+            )?;
+        }
         counts.tables.push(table_counts);
     }
     transaction.commit()?;
     Ok(counts)
+}
+
+/// A condition on `legacy.{table}`'s row: true unless it would replace a
+/// row the daemon wrote (see the module docs).
+fn native_guard(table: &str) -> String {
+    let Some(stamp) = crate::native::stamp(table) else {
+        return "true".to_owned();
+    };
+    let newer = format!("legacy.{table}.{stamp} > n.written_at");
+    let replaces = if table == "local_titles" {
+        format!("{newer} and legacy.{table}.source = 'manual'")
+    } else {
+        newer
+    };
+    format!(
+        "not exists (select 1 from main.native_rows n
+            where n.tbl = '{table}' and n.id = legacy.{table}.id and not ({replaces}))"
+    )
 }
 
 fn count(connection: &Connection, sql: &str) -> Result<u64> {

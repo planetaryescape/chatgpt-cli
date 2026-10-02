@@ -16,8 +16,8 @@ use crate::filters::InvalidFilter;
 use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
-use crate::sync::{PassOptions, run_pass};
-use crate::{export, reads, search, ts_sync};
+use crate::sync::{PassOptions, pinned_api, run_pass};
+use crate::{export, jev, memories, mutate, projects, reads, search, select, ts_sync};
 
 /// A failed request, worded for people: no response body, cookie or token.
 #[derive(Debug, Clone)]
@@ -154,6 +154,84 @@ pub async fn handle(
                 .await
                 .map(ResponseData::SearchIndexed)
         }
+        Request::Select { selection } => read(state, move |db, profile, now| {
+            select::rows(db, &selection, profile, now)
+        })
+        .await
+        .map(ResponseData::Rows),
+        Request::JevCheck {
+            action,
+            ids,
+            api_key,
+            session,
+        } => jev::check(state, action, ids, api_key, session, progress)
+            .await
+            .map(|ids| ResponseData::Approved { ids }),
+        Request::Mutate {
+            action,
+            targets,
+            session,
+        } => mutate::apply(state, action, targets, session, progress)
+            .await
+            .map(ResponseData::Outcome),
+        Request::Rename {
+            reference,
+            title,
+            archived,
+            all,
+            session,
+        } => mutate::rename(state, reference, title, archived, all, session)
+            .await
+            .map(|(id, old_title, synced_at)| ResponseData::Renamed {
+                id,
+                old_title,
+                synced_at,
+            }),
+        Request::SetTitle {
+            reference,
+            title,
+            archived,
+            all,
+        } => mutate::set_title(state, reference, title, archived, all)
+            .await
+            .map(|(id, synced_at)| ResponseData::TitleSaved { id, synced_at }),
+        // Projects and memories belong to the index's account too: every
+        // read and write of them uses its pinned session, so a session
+        // renewed into another account is refused before anything is sent.
+        Request::Projects { session } => {
+            async { Ok(pinned_api(state, session).await?.projects().await?) }
+                .await
+                .map(|projects| ResponseData::Projects { projects })
+        }
+        Request::CreateProject { name, session } => async {
+            Ok(pinned_api(state, session)
+                .await?
+                .create_project(&name)
+                .await?)
+        }
+        .await
+        .map(ResponseData::ProjectCreated),
+        Request::MoveToProject {
+            project,
+            targets,
+            remove,
+            session,
+        } => projects::move_chats(state, project, targets, remove, session, progress)
+            .await
+            .map(ResponseData::Outcome),
+        Request::Memories { session } => {
+            async { Ok(pinned_api(state, session).await?.memory_objects().await?) }
+                .await
+                .map(|memories| ResponseData::Memories { memories })
+        }
+        Request::MemorySummary { session } => {
+            async { Ok(pinned_api(state, session).await?.memory_summary().await?) }
+                .await
+                .map(|summary| ResponseData::MemorySummary { summary })
+        }
+        Request::DeleteMemories { ids, session } => memories::delete(state, ids, session)
+            .await
+            .map(ResponseData::Outcome),
         Request::Unknown => Err(unknown_request()),
     };
     answered.map_err(Failure::payload).into()

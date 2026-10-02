@@ -73,7 +73,14 @@ fn the_protocol_stands_alone() {
 #[test]
 fn the_cli_never_touches_the_index_or_chatgpt_com() {
     let cli = dependencies("crates/cli/Cargo.toml");
-    for forbidden in ["chatgpt", "chatgpt-store", "rusqlite", "impit", "reqwest"] {
+    for forbidden in [
+        "chatgpt",
+        "chatgpt-store",
+        "rusqlite",
+        "impit",
+        "reqwest",
+        "typesafe-client",
+    ] {
         assert!(
             !cli.iter().any(|dependency| dependency == forbidden),
             "crates/cli must reach {forbidden} through the daemon, not depend on it"
@@ -95,7 +102,13 @@ fn the_cli_never_touches_the_index_or_chatgpt_com() {
             continue;
         }
         let source = std::fs::read_to_string(&file).unwrap();
-        for name in ["chatgpt_daemon", "chatgpt_store", "chatgpt::", "rusqlite"] {
+        for name in [
+            "chatgpt_daemon",
+            "chatgpt_store",
+            "chatgpt::",
+            "rusqlite",
+            "typesafe_client",
+        ] {
             if source.contains(name) {
                 offenders.push(format!("{}: {name}", file.display()));
             }
@@ -117,9 +130,9 @@ fn only_the_daemon_uses_the_store_and_the_http_client() {
     ] {
         let found = dependencies(manifest);
         assert!(
-            !found
-                .iter()
-                .any(|name| name == "chatgpt-store" || name == "chatgpt"),
+            !found.iter().any(
+                |name| ["chatgpt-store", "chatgpt", "typesafe-client"].contains(&name.as_str())
+            ),
             "{manifest} must not depend on the store or the HTTP client: {found:?}"
         );
     }
@@ -143,6 +156,7 @@ fn every_crate_stays_unpublished() {
         "crates/daemon/Cargo.toml",
         "crates/cli/Cargo.toml",
         "crates/fake-chatgpt/Cargo.toml",
+        "crates/typesafe/Cargo.toml",
     ] {
         let raw = std::fs::read_to_string(root().join(manifest)).unwrap();
         let manifest_table: toml::Table = toml::from_str(&raw).unwrap();

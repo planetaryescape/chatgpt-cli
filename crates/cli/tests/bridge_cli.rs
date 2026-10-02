@@ -23,14 +23,14 @@ fn an_unported_command_runs_in_the_ts_cli_unchanged() {
     env.fake_ts_cli(ECHO_CLI);
     let output = env
         .cmd()
-        .args(["--browser", "dia", "rename", "abc def", "-o", "--copy"])
+        .args(["--browser", "dia", "titles", "abc def", "-o", "--copy"])
         .write_stdin("piped ids")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3), "the TS CLI's exit code");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "argv: [--browser] [dia] [rename] [abc def] [-o] [--copy]\nstdin:piped ids\nbridged:1\n"
+        "argv: [--browser] [dia] [titles] [abc def] [-o] [--copy]\nstdin:piped ids\nbridged:1\n"
     );
     assert_eq!(String::from_utf8_lossy(&output.stderr), "to stderr\n");
 }
@@ -78,7 +78,17 @@ fn top_level_help_lists_native_and_bridged_commands() {
     let env = Env::new();
     let help = env.stdout(&["--help"]);
     for command in [
-        "sync", "list", "stats", "daemon", "export", "classify", "tui",
+        "sync",
+        "list",
+        "stats",
+        "daemon",
+        "export",
+        "archive",
+        "project",
+        "memory",
+        "classify",
+        "memory classify",
+        "tui",
     ] {
         assert!(help.contains(command), "{command} missing from:\n{help}");
     }
@@ -89,9 +99,32 @@ fn top_level_help_lists_native_and_bridged_commands() {
 }
 
 #[test]
+fn memory_classify_still_runs_in_the_ts_cli() {
+    let mut env = Env::new();
+    env.fake_ts_cli(ECHO_CLI);
+    for (args, argv) in [
+        (
+            &["memory", "classify", "--suggest", "delete"][..],
+            "argv: [memory] [classify] [--suggest] [delete]",
+        ),
+        (
+            &["--instance", "x", "memory", "classify", "--help"][..],
+            "argv: [memory] [classify] [--help]",
+        ),
+    ] {
+        let output = env.cmd().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(3), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).lines().next(),
+            Some(argv)
+        );
+    }
+}
+
+#[test]
 fn the_bridge_refuses_to_loop_and_says_when_the_ts_cli_is_missing() {
     let mut env = Env::new();
-    let missing = env.cmd().arg("rename").output().unwrap();
+    let missing = env.cmd().arg("titles").output().unwrap();
     assert_eq!(missing.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&missing.stderr).contains("TS chatgpt CLI, which isn't installed"),
@@ -102,7 +135,7 @@ fn the_bridge_refuses_to_loop_and_says_when_the_ts_cli_is_missing() {
     env.fake_ts_cli(ECHO_CLI);
     let looped = env
         .cmd()
-        .arg("rename")
+        .arg("titles")
         .env("CHATGPT_BRIDGED", "1")
         .output()
         .unwrap();

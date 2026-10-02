@@ -1,6 +1,7 @@
 //! The native commands' arguments, matching the TS CLI's flags
 //! (`src/cli.ts` @ 1b8c950) for `sync`, `list`, `stats`, `export`,
-//! `search` and `search-index`.
+//! `search`, `search-index`, `archive`, `unarchive`, `delete`, `rename`,
+//! `title`, `project` and `memory`.
 
 use clap::{Args, Parser, Subcommand};
 
@@ -12,29 +13,8 @@ pub const BRIDGED: &[(&str, &str)] = &[
         "Store Jev, OpenAI, or Anthropic API keys in the user config; omit provider to show status",
     ),
     (
-        "memory",
-        "List and delete saved memories, or read the memory summary",
-    ),
-    ("project", "Create, list and manage chat projects"),
-    (
-        "archive",
-        "Archive conversations by id/prefix, `-` for ids on stdin, or by filter",
-    ),
-    (
-        "unarchive",
-        "Unarchive conversations by id/prefix, `-` for ids on stdin, or by filter",
-    ),
-    (
-        "delete",
-        "Delete conversations by id/prefix, `-` for ids on stdin, or by filter",
-    ),
-    (
-        "rename",
-        "Rename a conversation in ChatGPT (changes its order in the app)",
-    ),
-    (
-        "title",
-        "Set a local display title without changing ChatGPT",
+        "memory classify",
+        "Classify saved memories for keep, delete, or review with Jev and Luna; never deletes",
     ),
     (
         "titles",
@@ -64,6 +44,13 @@ pub const NATIVE: &[&str] = &[
     "search-index",
     "daemon",
     "import-legacy",
+    "archive",
+    "unarchive",
+    "delete",
+    "rename",
+    "title",
+    "project",
+    "memory",
 ];
 
 fn bridged_help() -> String {
@@ -127,6 +114,149 @@ pub enum Command {
     Daemon(DaemonCommand),
     /// Import Jev judgments, Luna reviews and local titles from the TS CLI's index now
     ImportLegacy,
+    /// Archive conversations by id/prefix, `-` for ids on stdin, or by filter
+    Archive(ChangeArgs),
+    /// Unarchive conversations by id/prefix, `-` for ids on stdin, or by filter
+    Unarchive(ChangeArgs),
+    /// Delete conversations by id/prefix, `-` for ids on stdin, or by filter
+    Delete(ChangeArgs),
+    /// Rename a conversation in ChatGPT (changes its order in the app)
+    Rename(RenameArgs),
+    /// Set a local display title without changing ChatGPT
+    Title(RenameArgs),
+    /// Create, list and manage chat projects
+    #[command(subcommand)]
+    Project(ProjectCommand),
+    /// List and delete saved memories, or read the memory summary
+    #[command(subcommand)]
+    Memory(MemoryCommand),
+}
+
+/// `archive`, `unarchive` and `delete`: `withFilters` with `--pinned`.
+#[derive(Args)]
+pub struct ChangeArgs {
+    /// Conversation ids or id prefixes, or `-` to read them from stdin
+    #[arg(value_name = "ids")]
+    pub ids: Vec<String>,
+    #[command(flatten)]
+    pub filters: FilterArgs,
+    /// Include pinned conversations (skipped by default)
+    #[arg(long)]
+    pub pinned: bool,
+    /// Show what would change
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Skip the confirmation prompt
+    #[arg(short, long)]
+    pub yes: bool,
+    /// Ask Jev to read each chat and only act on those it agrees with (archive/delete)
+    #[arg(long)]
+    pub check: bool,
+}
+
+/// `rename` and `title`.
+#[derive(Args)]
+pub struct RenameArgs {
+    /// Conversation id or id prefix
+    #[arg(value_name = "id")]
+    pub id: String,
+    /// The new title
+    #[arg(value_name = "title")]
+    pub title: String,
+    /// Allow an archived conversation
+    #[arg(long)]
+    pub archived: bool,
+    /// Allow either active or archived
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Subcommand)]
+pub enum ProjectCommand {
+    /// Create a project with ChatGPT's default settings
+    Create {
+        #[arg(value_name = "name")]
+        name: String,
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List projects available to your account
+    List {
+        /// Output JSON
+        #[arg(long)]
+        json: bool,
+        /// At most n projects
+        #[arg(long, value_name = "n")]
+        limit: Option<String>,
+    },
+    /// Move chats into an existing project by name or id; use `-` for ids on stdin
+    Add(ProjectMoveArgs),
+    /// Remove chats from an existing project; use `-` for ids on stdin
+    Remove(ProjectMoveArgs),
+}
+
+#[derive(Args)]
+pub struct ProjectMoveArgs {
+    /// Project name, id or id prefix
+    #[arg(value_name = "project")]
+    pub project: String,
+    /// Conversation ids or id prefixes, or `-` to read them from stdin
+    #[arg(value_name = "ids", required = true)]
+    pub ids: Vec<String>,
+    /// Preview without changing anything
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Skip the confirmation prompt
+    #[arg(short, long)]
+    pub yes: bool,
+    /// Select archived conversations instead of active ones
+    #[arg(long)]
+    pub archived: bool,
+    /// Select both active and archived conversations
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Subcommand)]
+pub enum MemoryCommand {
+    /// List saved memories from ChatGPT
+    List {
+        /// Only memories whose content contains text
+        #[arg(long, value_name = "text")]
+        search: Option<String>,
+        /// At most n saved memories
+        #[arg(long, value_name = "n")]
+        limit: Option<String>,
+        /// Output format: json, csv, table, or ids
+        #[arg(long, value_name = "format", default_value = "table")]
+        format: String,
+    },
+    /// Classify saved memories for keep, delete, or review with Jev and Luna; never deletes (runs in the TS CLI)
+    #[command(disable_help_flag = true)]
+    Classify {
+        /// The TS CLI's options for it (`chatgpt memory classify --help`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Read ChatGPT's generated memory summary
+    Summary {
+        /// Output format: json or table
+        #[arg(long, value_name = "format", default_value = "table")]
+        format: String,
+    },
+    /// Delete saved memories by id/prefix or `-` for ids on stdin; does not delete source chats
+    Delete {
+        /// Saved memory ids or id prefixes, or `-` to read them from stdin
+        #[arg(value_name = "ids", required = true)]
+        ids: Vec<String>,
+        /// Preview without deleting memories
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 /// `withFilters` without `--pinned`: `list` and `stats` include pinned chats.
