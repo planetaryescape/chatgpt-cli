@@ -4,7 +4,11 @@
 //!
 //! A title containing `junk` gets answers that make a confident delete,
 //! `maybe` an unsure one, `stale` a time-bound chat whose moment is still
-//! current; anything else is a kept brainstorm.
+//! current; `product` a product brainstorm (which Luna reviews); anything
+//! else is a kept writing brainstorm. The follow-up questions
+//! (`personal_record_lost`, …) settle an unsure chat as archive; the
+//! saved-memory questions keep a memory mentioning `tea` and send the
+//! rest to Luna.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -25,6 +29,8 @@ pub struct TypeSafeState {
     pub fail: Option<(u32, u16)>,
     /// Answer with a score that isn't a number (it echoes text instead).
     pub malformed: bool,
+    /// Hold every answer this long.
+    pub delay_ms: u64,
 }
 
 pub struct FakeTypeSafe {
@@ -41,6 +47,8 @@ fn noul(value: f64) -> Value {
 /// Jev's answers for a chat titled `title`.
 pub fn answers_for(title: &str) -> Value {
     let lower = title.to_lowercase();
+    // A product brainstorm, which Luna reviews.
+    let product = lower.contains("product");
     let (worth, nothing, re_askable, brainstorming, personal, time_bound, overtaken) =
         if lower.contains("junk") {
             (0.2, 0.95, 0.9, 0.05, 0.05, 0.1, 0.1)
@@ -61,9 +69,33 @@ pub fn answers_for(title: &str) -> Value {
         "time_bound": noul(time_bound),
         "overtaken_by_time": noul(overtaken),
         "brainstorming": noul(brainstorming),
-        "product_idea": noul(1e-7),
-        "brainstorm_for": { "type": "choice", "choice": if brainstorming > 0.5 { "writing" } else { "none" }, "confidence": 0.8 },
-        "topic": { "type": "choice", "choice": "other", "confidence": 0.7 },
+        "product_idea": noul(if product { 0.8 } else { 1e-7 }),
+        "brainstorm_for": { "type": "choice", "choice": if product { "product" } else if brainstorming > 0.5 { "writing" } else { "none" }, "confidence": 0.8 },
+        "topic": { "type": "choice", "choice": if product { "side_projects" } else { "other" }, "confidence": 0.7 },
+    })
+}
+
+/// The follow-up's answers: nothing would be lost, so an unsure chat
+/// settles as archive.
+pub fn deep_answers() -> Value {
+    json!({
+        "personal_record_lost": noul(0.1), "reusable_artifact_lost": noul(0.1),
+        "original_thinking_lost": noul(0.05), "work_to_resume": noul(0.05),
+        "creative_idea_lost": noul(0.05), "reaskable_without_loss": noul(0.6),
+        "worth_finding_again": { "type": "score", "score": 1.0, "confidence": 0.8 },
+    })
+}
+
+/// A saved memory's quick answers, from its content.
+pub fn memory_answers(content: &str) -> Value {
+    let lasting = if content.to_lowercase().contains("tea") {
+        3.0
+    } else {
+        1.0
+    };
+    json!({
+        "lasting_value": { "type": "score", "score": lasting, "confidence": 0.9 },
+        "expired": noul(0.1), "superseded": noul(0.05), "redundant": noul(0.05),
     })
 }
 
@@ -99,15 +131,27 @@ impl Respond for Handler {
             .pointer("/state/conversation/title")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let mut answers = answers_for(title);
+        let mut answers = if body.pointer("/questions/personal_record_lost").is_some() {
+            deep_answers()
+        } else if body.pointer("/questions/lasting_value").is_some() {
+            memory_answers(
+                body.pointer("/state/memory/content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+        } else {
+            answers_for(title)
+        };
         if state.malformed {
             answers["worth_keeping"]["score"] = json!("SENTINEL private transcript fragment");
         }
-        ResponseTemplate::new(200).set_body_json(json!({
-            "answers": answers,
-            "usage": { "input_tokens": INPUT_TOKENS },
-            "model": "jev-test",
-        }))
+        ResponseTemplate::new(200)
+            .set_delay(std::time::Duration::from_millis(state.delay_ms))
+            .set_body_json(json!({
+                "answers": answers,
+                "usage": { "input_tokens": INPUT_TOKENS },
+                "model": "jev-test",
+            }))
     }
 }
 

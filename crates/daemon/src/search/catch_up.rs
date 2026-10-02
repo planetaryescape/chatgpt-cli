@@ -22,7 +22,7 @@ use crate::state::State;
 const POLL: Duration = Duration::from_secs(1);
 
 async fn counts(state: &State, archived: Option<bool>) -> Result<Coverage, Failure> {
-    let versions = super::versions(&state.profile());
+    let versions = super::versions(state.profile());
     state
         .db(move |db| super::coverage(db, archived, versions))
         .await

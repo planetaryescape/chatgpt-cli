@@ -249,34 +249,30 @@ pub(crate) fn counts(report: &ImportCounts, table: &str) -> (u64, u64, u64) {
 }
 
 #[test]
-fn the_import_mirrors_the_ts_index_and_running_it_again_changes_nothing() {
+fn the_import_mirrors_the_ts_titles_and_running_it_again_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(dir.path());
     let (path, legacy) = legacy_db(dir.path());
     legacy
         .execute_batch(
             "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
-                values ('a', 't1', 'v1', 'full', '{\"topic\":{\"choice\":\"faith\"}}', 'c1'),
-                       ('b', 't1', 'v1', 'full', '{}', 'c1');
+                values ('a', 't1', 'v1', 'full', '{\"topic\":{\"choice\":\"faith\"}}', 'c1');
              insert into luna_judgments values ('a', 't1', 'v1', '', 8, 'keep', null, 'r', 'c1');
-             insert into local_titles values ('a', 't1', 2, 'luna', 'Title', '', 'u');",
+             insert into local_titles values ('a', 't1', 2, 'luna', 'Title', '', 'u'),
+                                             ('b', 't1', 2, 'manual', 'Mine', '', 'u');",
         )
         .unwrap();
     let before = std::fs::read(&path).unwrap();
 
     let first = store.write(|db| import_legacy(db, &path)).unwrap();
-    assert_eq!(counts(&first, "judgments"), (2, 0, 0));
-    assert_eq!(counts(&first, "luna_judgments"), (1, 0, 0));
-    assert_eq!(
-        first
-            .tables
-            .iter()
-            .find(|t| t.table == "memory_judgments")
-            .unwrap()
-            .skipped
-            .as_deref(),
-        Some("not in the TS index")
-    );
+    assert_eq!(counts(&first, "local_titles"), (2, 0, 0));
+    // Judgments are this build's own now (D9): the TS CLI's never come over.
+    let tables: Vec<&str> = first.tables.iter().map(|t| t.table.as_str()).collect();
+    assert_eq!(tables, ["local_titles", "summaries", "transcripts"]);
+    let judgments: i64 = store
+        .read(|db| Ok(db.query_row("select count(*) from judgments", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(judgments, 0);
     let again = store.write(|db| import_legacy(db, &path)).unwrap();
     for table in &again.tables {
         assert_eq!(
@@ -292,27 +288,15 @@ fn the_import_mirrors_the_ts_index_and_running_it_again_changes_nothing() {
         "the TS index is never written"
     );
 
-    // A re-judgment in the TS CLI drops the old Luna review and rewrites the judgment.
+    // A title the TS index dropped goes; a changed one is replaced.
     legacy
         .execute_batch(
-            "delete from luna_judgments where id = 'a';
-             update judgments set answers = '{\"topic\":{\"choice\":\"health\"}}', classified_at = 'c2' where id = 'a';
-             delete from judgments where id = 'b';",
+            "delete from local_titles where id = 'a';
+             update local_titles set title = 'Mine again', updated_at = 'v' where id = 'b';",
         )
         .unwrap();
     let third = store.write(|db| import_legacy(db, &path)).unwrap();
-    assert_eq!(counts(&third, "judgments"), (0, 1, 1));
-    assert_eq!(counts(&third, "luna_judgments"), (0, 0, 1));
-    let topic: String = store
-        .read(|db| {
-            Ok(
-                db.query_row("select topic from judgments where id = 'a'", [], |r| {
-                    r.get(0)
-                })?,
-            )
-        })
-        .unwrap();
-    assert_eq!(topic, "health");
+    assert_eq!(counts(&third, "local_titles"), (0, 1, 1));
 }
 
 #[test]
@@ -326,8 +310,7 @@ fn the_import_keeps_a_reconciled_update_time_while_it_is_current() {
     let list_time = "2026-09-28T00:04:08.278467Z";
     legacy
         .execute(
-            "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
-             values ('a', ?, 'v1', 'full', '{}', 'c1')",
+            "insert into local_titles values ('a', ?, 2, 'luna', 'Title', '', 'u1')",
             [ts_time],
         )
         .unwrap();
@@ -335,34 +318,75 @@ fn the_import_keeps_a_reconciled_update_time_while_it_is_current() {
         .write(|db| replace_all(db, &[chat("a", list_time)], "t"))
         .unwrap();
     store.write(|db| import_legacy(db, &path)).unwrap();
-    assert!(
-        store
-            .read(|db| current_judgments(db, "v1"))
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(all(&store, 2)[0].local_title, None, "not current");
     // The daemon's reconcile confirmed the content and moved it forward.
     store
         .write(|db| {
             db.execute(
-                "update judgments set update_time = ? where id = 'a'",
+                "update local_titles set update_time = ? where id = 'a'",
                 [list_time],
             )?;
             Ok(())
         })
         .unwrap();
     let report = store.write(|db| import_legacy(db, &path)).unwrap();
-    assert_eq!(counts(&report, "judgments"), (0, 0, 0));
-    assert_eq!(
-        store.read(|db| current_judgments(db, "v1")).unwrap().len(),
-        1
-    );
-    // A re-judgment in the TS CLI still replaces it.
+    assert_eq!(counts(&report, "local_titles"), (0, 0, 0));
+    assert_eq!(all(&store, 2)[0].local_title.as_deref(), Some("Title"));
+    // A new title in the TS CLI still replaces it.
     legacy
-        .execute("update judgments set classified_at = 'c2'", [])
+        .execute("update local_titles set updated_at = 'u2'", [])
         .unwrap();
     let report = store.write(|db| import_legacy(db, &path)).unwrap();
-    assert_eq!(counts(&report, "judgments"), (0, 1, 0));
+    assert_eq!(counts(&report, "local_titles"), (0, 1, 0));
+}
+
+#[test]
+fn summaries_are_a_cache_the_import_only_adds_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let (path, legacy) = legacy_db(dir.path());
+    store
+        .write(|db| replace_all(db, &[chat("a", "t2"), chat("b", "t1")], "t"))
+        .unwrap();
+    // Ours is current; theirs is for an older update. Theirs for `b` is
+    // all there is.
+    store
+        .write(|db| {
+            save_summary(db, "a", "t2", 9, "ours", "gpt-6-luna")?;
+            Ok(())
+        })
+        .unwrap();
+    legacy
+        .execute_batch(
+            "insert into summaries values ('a', 't1', 9, 'theirs', 'm'), ('b', 't1', 9, 'only', 'm');",
+        )
+        .unwrap();
+    let report = store.write(|db| import_legacy(db, &path)).unwrap();
+    assert_eq!(counts(&report, "summaries"), (1, 0, 0));
+    assert_eq!(
+        store
+            .read(|db| summary(db, "a", "t2", 9))
+            .unwrap()
+            .as_deref(),
+        Some("ours")
+    );
+    assert_eq!(
+        store
+            .read(|db| summary(db, "b", "t1", 9))
+            .unwrap()
+            .as_deref(),
+        Some("only")
+    );
+    // The TS index dropping one never deletes it here.
+    legacy.execute("delete from summaries", []).unwrap();
+    let report = store.write(|db| import_legacy(db, &path)).unwrap();
+    assert_eq!(counts(&report, "summaries"), (0, 0, 0));
+    assert!(
+        store
+            .read(|db| summary(db, "b", "t1", 9))
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

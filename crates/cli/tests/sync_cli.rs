@@ -1,5 +1,5 @@
 //! `sync`, `list` and `stats` through the real binary and a daemon synced
-//! from the fake chatgpt.com, with judgments imported from a TS index.
+//! from the fake chatgpt.com, with judgments in its index.
 
 #![allow(clippy::unwrap_used)]
 
@@ -31,10 +31,11 @@ fn chats() -> Vec<Chat> {
     ]
 }
 
-/// A daemon synced from the fake, with the TS index's judgments imported.
+/// A daemon synced from the fake, with judgments in its index.
 fn synced() -> Env {
     let env = Env::with_fake(chats());
-    let db = env.legacy_db();
+    env.cmd().arg("sync").assert().success();
+    let db = env.index_db();
     judge(
         &db,
         "a-outline",
@@ -52,7 +53,6 @@ fn synced() -> Env {
         [],
     )
     .unwrap();
-    env.cmd().arg("sync").assert().success();
     env
 }
 
@@ -75,7 +75,7 @@ fn list_before_any_sync_says_no_local_index_yet() {
 }
 
 #[test]
-fn list_json_has_the_ts_fields_and_imported_judgments() {
+fn list_json_has_the_ts_fields_and_the_judgments() {
     let env = synced();
     let rows: Vec<Value> = serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
     let ids: Vec<&str> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
@@ -327,12 +327,6 @@ fn a_metadata_only_move_keeps_the_judgment_current() {
     let env = Env::with_fake(chats());
     let db = env.legacy_db();
     let old = "2026-09-27T10:00:00.000000Z";
-    judge(
-        &db,
-        "a-outline",
-        old,
-        &brainstorm_answers("writing_creativity"),
-    );
     // The TS CLI cached the transcript from the single-chat endpoint.
     db.execute(
         "insert into transcripts values ('a-outline', ?, 2, ?, 1, 20)",
@@ -343,6 +337,12 @@ fn a_metadata_only_move_keeps_the_judgment_current() {
     )
     .unwrap();
     env.cmd().arg("sync").assert().success();
+    judge(
+        &env.index_db(),
+        "a-outline",
+        old,
+        &brainstorm_answers("writing_creativity"),
+    );
     {
         let mut state = env.fake().state();
         let outline = state
@@ -435,18 +435,20 @@ fn chrono_now() -> i64 {
 }
 
 #[test]
-fn the_ts_sync_runs_after_an_explicit_sync_and_its_judgments_show_up() {
+fn the_ts_sync_runs_after_an_explicit_sync_and_its_titles_show_up() {
     let mut env = Env::with_fake(chats());
     let db = env.legacy_db();
     drop(db);
     let calls = env.home.path().join("ts-calls");
-    // What the TS CLI's classify would have written, applied by its sync.
+    // A manual title the TS TUI would have written, applied by its sync,
+    // and a judgment, which the import no longer brings (D9).
     let sql = env.home.path().join("judge.sql");
     std::fs::write(
         &sql,
         format!(
             "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at) \
-             values ('d-project', '2026-09-25T10:00:00.000000Z', '{}', 'full', '{}', 'now');",
+             values ('d-project', '2026-09-25T10:00:00.000000Z', '{}', 'full', '{}', 'now'); \
+             insert or replace into local_titles values ('d-project', '2026-09-25T10:00:00.000000Z', 2, 'manual', 'Titled in the TUI', '', '2026-09-30T00:00:00.000Z');",
             support::QUESTIONS_VERSION,
             delete_answers("other")
         ),
@@ -481,7 +483,11 @@ esac
             .lines()
             .any(|line| line == "sync")
     );
-    assert_eq!(ids(&env, &["list", "--suggest", "delete"]), ["d-project"]);
+    assert!(ids(&env, &["list", "--suggest", "delete"]).is_empty());
+    assert!(
+        env.stdout(&["list", "--title", "TUI"])
+            .contains("Titled in the TUI")
+    );
     let status = env.status();
     assert_eq!(status["ts_sync"]["last_ok"], true);
 }

@@ -351,7 +351,8 @@ fn without_a_terminal_a_prompt_fails_instead_of_hanging() {
 #[test]
 fn suggest_applies_jev_suggestions_but_leaves_unsure_chats_out() {
     let env = Env::with_fake(chats());
-    let db = env.legacy_db();
+    env.cmd().arg("sync").assert().success();
+    let db = env.index_db();
     judge(&db, "b-old", OLD, &delete_answers("other"));
     let mut unsure: serde_json::Value = serde_json::from_str(&delete_answers("other")).unwrap();
     unsure["personal_record"]["noul"] = serde_json::json!(0.45);
@@ -365,7 +366,6 @@ fn suggest_applies_jev_suggestions_but_leaves_unsure_chats_out() {
         &unsure.to_string(),
     );
     drop(db);
-    env.cmd().arg("sync").assert().success();
     assert_eq!(
         ids(&env, &["list", "--suggest", "delete"]),
         ["b-old", "c-old"]

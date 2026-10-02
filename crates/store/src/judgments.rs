@@ -1,4 +1,5 @@
-//! Reading the TS CLI's judgments. Ported from `ClassificationStore` and
+//! Judgments, their follow-ups and Luna reviews, summaries and saved-memory
+//! classifications. Ported from `ClassificationStore` and
 //! `MemoryClassificationStore` in the TS CLI's `src/index/` @ 1b8c950.
 
 use std::collections::HashMap;
@@ -107,13 +108,21 @@ pub struct NewJudgment {
 }
 
 /// `ClassificationStore.saveJudgment`: the judgment replaces the chat's
-/// earlier one, and its follow-up and Luna review, which no longer apply.
-/// All three are marked as the daemon's, so the TS import neither drops the
-/// judgment nor brings the old reviews back.
+/// earlier one. Follow-ups and Luna reviews of another judgment (an older
+/// `update_time` or question version) go with it; ones for this very
+/// judgment's key stay, so a second first pass for the same chat and
+/// version (the background Jev racing `classify`, a time-bound refresh)
+/// never discards a follow-up or review already paid for.
 pub fn save_judgment(connection: &mut Connection, judgment: &NewJudgment) -> Result<()> {
     let transaction = connection.transaction()?;
-    transaction.execute("delete from deep_judgments where id = ?", [&judgment.id])?;
-    transaction.execute("delete from luna_judgments where id = ?", [&judgment.id])?;
+    for table in ["deep_judgments", "luna_judgments"] {
+        transaction.execute(
+            &format!(
+                "delete from {table} where id = ? and (update_time is not ? or questions_version is not ?)"
+            ),
+            params![judgment.id, judgment.update_time, judgment.version],
+        )?;
+    }
     transaction.execute(
         "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at)
          values (?, ?, ?, ?, ?, ?)",
@@ -126,11 +135,29 @@ pub fn save_judgment(connection: &mut Connection, judgment: &NewJudgment) -> Res
             judgment.classified_at
         ],
     )?;
-    for table in ["judgments", "deep_judgments", "luna_judgments"] {
-        crate::native::mark(&transaction, table, &judgment.id, &judgment.classified_at)?;
-    }
     transaction.commit()?;
     Ok(())
+}
+
+/// The chat's current `update_time`, if its cached transcript there (at
+/// `render_version`) is still `markdown`: a result computed from that
+/// content is current at that time, even when a sync moved the chat's
+/// caches forward meanwhile. `None` when the content changed (or isn't
+/// cached any more): a result from the old content mustn't land.
+pub fn fresh_update_time(
+    connection: &Connection,
+    id: &str,
+    render_version: u32,
+    markdown: &str,
+) -> Result<Option<String>> {
+    Ok(connection
+        .prepare_cached(
+            "select c.update_time from conversations c join transcripts t
+               on t.id = c.id and t.update_time = c.update_time and t.render_version = ?
+             where c.id = ? and t.markdown = ?",
+        )?
+        .query_row(params![render_version, id, markdown], |row| row.get(0))
+        .optional()?)
 }
 
 /// `ClassificationStore.summary`: the cached summary text of a long chat,
@@ -147,6 +174,226 @@ pub fn summary(
         )?
         .query_row(params![id, update_time, prompt_version], |row| row.get(0))
         .optional()?)
+}
+
+/// `ClassificationStore.saveSummary`.
+pub fn save_summary(
+    connection: &Connection,
+    id: &str,
+    update_time: &str,
+    prompt_version: u32,
+    summary: &str,
+    model: &str,
+) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into summaries values (?, ?, ?, ?, ?)")?
+        .execute(params![id, update_time, prompt_version, summary, model])?;
+    Ok(())
+}
+
+/// `ClassificationStore.deepJudgment`, as a yes or no: whether chat `id`
+/// has a follow-up for exactly these versions.
+pub fn has_deep_judgment(
+    connection: &Connection,
+    id: &str,
+    update_time: &str,
+    questions_version: &str,
+    version: &str,
+) -> Result<bool> {
+    Ok(connection
+        .prepare_cached(
+            "select 1 from deep_judgments
+             where id = ? and update_time = ? and questions_version = ? and version = ?",
+        )?
+        .query_row(params![id, update_time, questions_version, version], |_| {
+            Ok(())
+        })
+        .optional()?
+        .is_some())
+}
+
+/// A follow-up (deep) judgment, as `saveDeepJudgment` writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewDeepJudgment {
+    pub id: String,
+    pub update_time: String,
+    pub questions_version: String,
+    pub version: String,
+    pub answers: String,
+    pub classified_at: String,
+}
+
+/// `ClassificationStore.saveDeepJudgment`: the chat's Luna review, which
+/// rested on the old follow-up, goes.
+pub fn save_deep_judgment(connection: &mut Connection, judgment: &NewDeepJudgment) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute("delete from luna_judgments where id = ?", [&judgment.id])?;
+    transaction.execute(
+        "insert or replace into deep_judgments values (?, ?, ?, ?, ?, ?)",
+        params![
+            judgment.id,
+            judgment.update_time,
+            judgment.questions_version,
+            judgment.version,
+            judgment.answers,
+            judgment.classified_at
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// `ClassificationStore.lunaJudgment`: whether chat `id` has a Luna review
+/// for exactly these versions.
+pub fn has_luna_judgment(
+    connection: &Connection,
+    id: &str,
+    update_time: &str,
+    questions_version: &str,
+    deep_version: &str,
+    version: i64,
+) -> Result<bool> {
+    Ok(connection
+        .prepare_cached(
+            "select 1 from luna_judgments where id = ? and update_time = ?
+             and questions_version = ? and deep_version = ? and version = ?",
+        )?
+        .query_row(
+            params![id, update_time, questions_version, deep_version, version],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// A Luna review, as `saveLunaJudgment` writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewLunaJudgment {
+    pub id: String,
+    pub update_time: String,
+    pub questions_version: String,
+    pub deep_version: String,
+    pub version: i64,
+    pub suggestion: String,
+    pub brainstorm: Option<String>,
+    pub reason: String,
+    pub classified_at: String,
+}
+
+pub fn save_luna_judgment(connection: &Connection, judgment: &NewLunaJudgment) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into luna_judgments values (?, ?, ?, ?, ?, ?, ?, ?, ?)")?
+        .execute(params![
+            judgment.id,
+            judgment.update_time,
+            judgment.questions_version,
+            judgment.deep_version,
+            judgment.version,
+            judgment.suggestion,
+            judgment.brainstorm,
+            judgment.reason,
+            judgment.classified_at
+        ])?;
+    Ok(())
+}
+
+/// A saved memory's classification, as `MemoryClassificationStore.save`
+/// writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewMemoryJudgment {
+    pub id: String,
+    pub input_hash: String,
+    pub version: String,
+    pub system_one: String,
+    pub system_two: Option<String>,
+    pub classified_at: String,
+}
+
+pub fn save_memory_judgment(connection: &Connection, row: &NewMemoryJudgment) -> Result<()> {
+    connection
+        .prepare_cached("insert or replace into memory_judgments values (?, ?, ?, ?, ?, ?)")?
+        .execute(params![
+            row.id,
+            row.input_hash,
+            row.version,
+            row.system_one,
+            row.system_two,
+            row.classified_at
+        ])?;
+    Ok(())
+}
+
+/// What the background Jev may judge: active, unpinned chats (what a bare
+/// `chatgpt classify` picks) updated after `after`, with no judgment for
+/// their `update_time` at `questions_version`, and not a cached transcript
+/// over `max_tokens` without a summary (those wait for `classify`).
+#[derive(Clone, Copy, Debug)]
+pub struct Unjudged<'a> {
+    pub after: &'a str,
+    pub questions_version: &'a str,
+    pub render_version: u32,
+    pub max_tokens: i64,
+    pub summary_version: u32,
+    pub limit: usize,
+}
+
+/// [`Unjudged`]'s chats, newest first: `(id, update_time)`.
+pub fn unjudged(connection: &Connection, query: Unjudged<'_>) -> Result<Vec<(String, String)>> {
+    let mut statement = connection.prepare_cached(
+        "select c.id, c.update_time from conversations c
+         where c.is_archived = 0 and c.pinned = 0 and c.update_time > ?
+         and not exists (select 1 from judgments j
+            where j.id = c.id and j.update_time = c.update_time and j.version = ?)
+         and not exists (select 1 from transcripts t
+            where t.id = c.id and t.update_time = c.update_time and t.render_version = ?
+            and t.approx_tokens > ?
+            and not exists (select 1 from summaries s
+               where s.id = c.id and s.update_time = c.update_time and s.prompt_version = ?))
+         order by c.update_time desc limit ?",
+    )?;
+    let rows = statement
+        .query_map(
+            params![
+                query.after,
+                query.questions_version,
+                query.render_version,
+                query.max_tokens,
+                query.summary_version,
+                i64::try_from(query.limit).unwrap_or(i64::MAX)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// [`save_memory_judgment`], unless another run saved this memory's row
+/// for other input since `since` (an ISO time): a late result for an older
+/// input never displaces a newer one. Whether it was written.
+pub fn save_memory_judgment_unless_newer(
+    connection: &Connection,
+    row: &NewMemoryJudgment,
+    since: &str,
+) -> Result<bool> {
+    let written = connection
+        .prepare_cached(
+            "insert into memory_judgments values (?, ?, ?, ?, ?, ?)
+             on conflict (id) do update set input_hash = excluded.input_hash,
+                version = excluded.version, system_one = excluded.system_one,
+                system_two = excluded.system_two, classified_at = excluded.classified_at
+             where memory_judgments.input_hash = excluded.input_hash
+                or memory_judgments.classified_at < ?",
+        )?
+        .execute(params![
+            row.id,
+            row.input_hash,
+            row.version,
+            row.system_one,
+            row.system_two,
+            row.classified_at,
+            since
+        ])?;
+    Ok(written > 0)
 }
 
 /// A saved memory's cached classification.

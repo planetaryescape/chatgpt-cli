@@ -24,9 +24,12 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 pub use conversations::{IndexFilter, IndexedConversation, NewConversation};
-pub use judgments::{JudgmentRow, MemoryJudgmentRow, NewJudgment};
+pub use judgments::{
+    JudgmentRow, MemoryJudgmentRow, NewDeepJudgment, NewJudgment, NewLunaJudgment,
+    NewMemoryJudgment, Unjudged,
+};
 pub use legacy::{ImportCounts, LEGACY_TABLES, TableCounts};
-pub use local_titles::{ManualTitle, set_local_title};
+pub use local_titles::{ManualTitle, local_title_source, set_local_title, set_luna_title};
 pub use reconcile::Candidate;
 pub use search::{ChunkVersions, LexicalRow, Transcript, Unindexed};
 pub use vectors::{NewVector, PendingChunk, VectorRow};
@@ -108,7 +111,11 @@ pub use conversations::{
     active_watermark, all_ids, apply_delta, archived_ids, by_ids, count_all, get, query, remove,
     rename, replace_all, set_archived, set_project, synced_at,
 };
-pub use judgments::{current_judgments, judgment, memory_judgment, save_judgment, summary};
+pub use judgments::{
+    current_judgments, fresh_update_time, has_deep_judgment, has_luna_judgment, judgment,
+    memory_judgment, save_deep_judgment, save_judgment, save_luna_judgment, save_memory_judgment,
+    save_memory_judgment_unless_newer, save_summary, summary, unjudged,
+};
 pub use legacy::import_legacy;
 pub use meta::{account, bind_account, get_meta, set_meta};
 pub use reconcile::{candidates, preserve};

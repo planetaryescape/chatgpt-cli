@@ -21,7 +21,7 @@ The CLI uses your macOS default browser. To choose another browser or profile, p
 
 ### The Rust CLI (preview)
 
-A Rust `chatgpt` is replacing the TS one. It runs `sync`, `list`, `stats`, `export`/`show`, `search` in every mode and `search-index` itself, through a background daemon that keeps the index, the search index and its embeddings fresh and holds your session (no Keychain prompt per command), and hands every other command to the TS CLI installed above. Install a release into `~/.local/bin`:
+A Rust `chatgpt` is replacing the TS one. It runs every command but `review` and `tui` itself (classification included), through a background daemon that keeps the index, the search index and its embeddings fresh, judges new chats with Jev once you configure a Jev key, and holds your session (no Keychain prompt per command), and hands `review` and `tui` to the TS CLI installed above. Install a release into `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh

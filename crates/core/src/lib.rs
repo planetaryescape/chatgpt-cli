@@ -1,7 +1,8 @@
 //! What every chatgpt crate shares: where files live
 //! ([`Paths`], [`Instance`]), the categories of failure ([`ErrorKind`]),
 //! and where the TS CLI that unported commands go to lives ([`ts_cli`]).
-//! No I/O beyond reading paths and the environment.
+//! No I/O beyond reading paths and the environment, and reading and
+//! writing the user config ([`user_config`]).
 
 mod duration;
 mod error;
@@ -11,8 +12,17 @@ pub mod legacy;
 mod paths;
 mod process;
 pub mod ts_cli;
+pub mod user_config;
 
 pub use duration::format_duration;
+
+/// A test-only setting from the environment: in debug builds, `name`'s
+/// value when set and not empty; never in a release build.
+pub fn debug_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| cfg!(debug_assertions) && !value.is_empty())
+}
 pub use error::ErrorKind;
 pub use js_number::js_number_string;
 pub use paths::{

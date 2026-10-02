@@ -1,0 +1,36 @@
+{
+  "lasting_value": {
+    "type": "score",
+    "instructions": "How valuable is this saved memory for tailoring future answers to the user as of the supplied date? Judge the memory as a reusable fact or preference, not as a record that can still be found in a chat. A stable identity, enduring preference, important life context, or active goal scores high. A past one-off task, outdated schedule, or implementation detail of an old project scores low. Age alone is not evidence of obsolescence.",
+    "criteria": [
+      "No future value: a completed one-off task or plainly obsolete detail",
+      "Limited value: narrow detail that may have mattered for one conversation",
+      "Useful context: a project, interest, or circumstance that may still matter but could change",
+      "Core context: stable identity, values, preferences, relationships, or clearly active long-term work"
+    ]
+  },
+  "expired": {
+    "type": "noul",
+    "instructions": "Does the memory explicitly describe a finite event, deadline, temporary routine, or state whose time has passed as of the supplied date? An old timestamp alone is not enough. A past event may still matter as personal history or a reusable preference; answer only whether its original time-bound state expired.",
+    "criteria": {
+      "true": "The stated temporary situation has passed",
+      "false": "No clear expired temporary state"
+    }
+  },
+  "superseded": {
+    "type": "noul",
+    "instructions": "Is this memory's operational claim clearly contradicted or replaced by supplied newer context? Do not infer a project was abandoned from age or from its source chat being archived. If replacement is unproven, answer false or uncertain.",
+    "criteria": {
+      "true": "Newer context clearly replaces the memory",
+      "false": "No demonstrated replacement"
+    }
+  },
+  "redundant": {
+    "type": "noul",
+    "instructions": "Is every useful fact in this memory already captured by one of the related saved memories supplied? Similar topic is not enough; a detail that adds nuance is not redundant.",
+    "criteria": {
+      "true": "Fully covered by another saved memory",
+      "false": "Adds distinct useful information or no matching memory exists"
+    }
+  }
+}

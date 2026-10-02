@@ -17,6 +17,8 @@ Sync done in 5.5s: 0 new, 0 updated, 0 newly archived, 0 unarchived, 0 deleted. 
 
 `sync` reads your most recent chats until it reaches ones it already has, then re-reads the archived list. `classify` judges chats that are new, have changed, were judged under older questions, or had a still-current time-bound purpose last judged at least seven UTC days ago. Chats with strong evidence of a lasting personal record are rechecked in a later UTC month. It asks Jev follow-up questions for unsure judgments, then uses `gpt-6-luna` for any still unsure, every product-brainstorm label, borderline product ideas or conflicting time-expired cases. Finally it generates missing local titles and topic themes from cached transcripts or long-chat summaries. It never renames a chat in ChatGPT. Run `chatgpt titles` separately to fill or regenerate titles without reclassifying.
 
+With a Jev key in the config, the background daemon also gives new and changed chats Jev's first-pass verdict after each sync ([configure](configure.md#jev-on-new-chats-in-the-background)); `classify` still does the follow-up, Luna's review, summaries and titles.
+
 ## When to use `sync --full`
 
 ```sh

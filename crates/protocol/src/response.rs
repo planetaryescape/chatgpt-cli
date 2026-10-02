@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DaemonStatus, ExportedChat, ImportReport, ListRows, Outcome, Project, SearchIndexReport,
-    SearchResults, StatsReport, SyncReport,
+    ClassifiedMemories, ClassifyOutcome, DaemonStatus, ExportedChat, ImportReport, ListRows,
+    Outcome, Project, SearchIndexReport, SearchResults, StatsReport, SyncReport,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -73,6 +73,10 @@ pub enum ResponseData {
     MemorySummary {
         summary: serde_json::Value,
     },
+    /// `Classify`, `Titles`.
+    Classified(ClassifyOutcome),
+    /// `MemoryClassify`.
+    ClassifiedMemories(ClassifiedMemories),
     #[serde(other)]
     Unknown,
 }

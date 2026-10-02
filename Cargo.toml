@@ -12,6 +12,7 @@ members = [
     "crates/fake-chatgpt",
     "crates/embed",
     "crates/typesafe",
+    "crates/model-api",
 ]
 
 [workspace.package]
@@ -39,6 +40,7 @@ chatgpt-daemon = { path = "crates/daemon" }
 chatgpt-embed = { path = "crates/embed" }
 fake-chatgpt = { path = "crates/fake-chatgpt" }
 typesafe-client = { path = "crates/typesafe" }
+model-api = { path = "crates/model-api" }
 
 aes = "0.8"
 bytes = "1"

@@ -21,6 +21,11 @@ pub struct Env {
     /// A TS CLI stand-in: `CHATGPT_TS_CLI`, run by `/bin/sh`.
     pub ts_cli: Option<PathBuf>,
     pub extra_env: Vec<(String, String)>,
+    /// Stand-in `codex` and `claude` (the debug binary playing them), first
+    /// on `PATH`, so no test ever reaches the real ones.
+    pub tools: PathBuf,
+    /// Where they record their calls.
+    pub model_log: PathBuf,
 }
 
 impl Env {
@@ -34,13 +39,30 @@ impl Env {
             .unwrap();
         // As the TS CLI lays it out: `$XDG_DATA_HOME/chatgpt-cli/index.db`.
         let legacy = home.path().join("ts/chatgpt-cli/index.db");
+        let tools = home.path().join("tools");
+        let model_log = home.path().join("model-calls");
+        fake_tools(&tools, &model_log, "ok", &["codex", "claude"]);
         Self {
             home,
             fake: None,
             legacy,
             ts_cli: None,
             extra_env: Vec::new(),
+            tools,
+            model_log,
         }
+    }
+
+    /// The stand-in tools: `mode` `ok` or `fail`, and only `tools` of
+    /// `codex` and `claude` on `PATH`.
+    pub fn set_tools(&self, mode: &str, tools: &[&str]) {
+        let _ = std::fs::remove_dir_all(&self.tools);
+        fake_tools(&self.tools, &self.model_log, mode, tools);
+    }
+
+    /// The calls the stand-in tools recorded, in the order they started.
+    pub fn model_calls(&self) -> Vec<Value> {
+        model_calls(&self.model_log)
     }
 
     pub fn with_fake(chats: Vec<fake_chatgpt::Chat>) -> Self {
@@ -64,6 +86,7 @@ impl Env {
         let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chatgpt"));
         command
             .env("HOME", home)
+            .env("PATH", tools_path(&self.tools))
             .env("XDG_DATA_HOME", home.join("xdg-data"))
             .env("XDG_CONFIG_HOME", home.join("xdg-config"))
             // The embedding model's cache: never the developer's.
@@ -83,7 +106,14 @@ impl Env {
             .env_remove("CHATGPT_TS_SYNC")
             // Jev: never the developer's key or TypeSafe itself.
             .env_remove("TYPESAFE_API_KEY")
-            .env("TYPESAFE_BASE_URL", "http://127.0.0.1:9");
+            .env("TYPESAFE_BASE_URL", "http://127.0.0.1:9")
+            // Nor OpenAI's or Anthropic's.
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env("CHATGPT_TEST_OPENAI_URL", "http://127.0.0.1:9")
+            .env("CHATGPT_TEST_ANTHROPIC_URL", "http://127.0.0.1:9")
+            .env_remove("CHATGPT_TEST_AUTO_JEV_LIMIT")
+            .env_remove("CHATGPT_TEST_AUTO_JEV_SINCE");
         match &self.fake {
             Some(fake) => {
                 command
@@ -140,7 +170,9 @@ impl Env {
     /// test that counts requests to the fake counts only its own. Returns
     /// the indexer's status.
     pub fn wait_for_indexer(&self) -> Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // Generous: a test's 2 MB chat through a debug build's HTTP stack
+        // on a busy machine can take most of a minute.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             let index = self.status()["search_index"].clone();
             if index["in_progress"] == false {
@@ -185,6 +217,14 @@ impl Env {
 
     pub fn socket(&self) -> PathBuf {
         self.data_dir().join("run/daemon.sock")
+    }
+
+    /// The daemon's own index, to write fixtures into (judgments: the TS
+    /// import no longer brings them). It exists once the daemon started.
+    pub fn index_db(&self) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open(self.data_dir().join("chatgpt.db")).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        db
     }
 
     /// A TS index at `self.legacy` with the TS CLI's schema.
@@ -265,7 +305,8 @@ pub fn in_terminal(
             }
         })
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Room for a 2 MB chat's download on a busy machine before the prompt.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         let text = String::from_utf8_lossy(&shown.lock().unwrap()).into_owned();
         if text.contains(prompt) {
@@ -392,4 +433,76 @@ pub fn copy_chats(rust_index: &Path, ts_index: &Path) -> usize {
     )
     .unwrap();
     copied
+}
+
+/// Copy the TS index's judgments, follow-ups, Luna reviews and memory
+/// classifications into the Rust index as they are, so both CLIs read the
+/// same verdicts: the import no longer brings them (D9). Returns how many
+/// judgments it copied.
+pub fn copy_judgments(ts_index: &Path, rust_index: &Path) -> usize {
+    let rust = Connection::open(rust_index).unwrap();
+    rust.busy_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    rust.execute("attach database ? as ts", [ts_index.display().to_string()])
+        .unwrap();
+    rust.execute_batch(
+        "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at)
+            select id, update_time, version, content_kind, answers, classified_at from ts.judgments;
+         insert or replace into deep_judgments select * from ts.deep_judgments;
+         insert or replace into luna_judgments select * from ts.luna_judgments;
+         insert or replace into memory_judgments select * from ts.memory_judgments;",
+    )
+    .unwrap();
+    let copied: i64 = rust
+        .query_row("select count(*) from ts.judgments", [], |row| row.get(0))
+        .unwrap();
+    rust.execute("detach database ts", []).unwrap();
+    usize::try_from(copied).unwrap()
+}
+
+/// Write stand-in `tools` into `dir`: scripts that run the debug binary as
+/// the fake `codex` or `claude`, recording calls in `log`.
+pub fn fake_tools(dir: &Path, log: &Path, mode: &str, tools: &[&str]) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    let binary = assert_cmd::cargo::cargo_bin!("chatgpt");
+    for tool in tools {
+        let script = dir.join(tool);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nexec '{}' __fake-model-cli '{}' '{mode}' {tool} \"$@\"\n",
+                binary.display(),
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// `dir`, then only the system's own directories: never a real `codex`
+/// or `claude` (Homebrew's, `~/.local/bin`'s) behind a stand-in a test
+/// took away.
+pub fn tools_path(dir: &Path) -> String {
+    format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", dir.display())
+}
+
+/// The calls recorded in `log`, oldest first.
+pub fn model_calls(log: &Path) -> Vec<Value> {
+    let Ok(entries) = std::fs::read_dir(log) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    files.sort_by_key(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.split('-').nth(1))
+            .and_then(|stamp| stamp.parse::<u128>().ok())
+            .unwrap_or(0)
+    });
+    files
+        .iter()
+        .map(|path| serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
+        .collect()
 }

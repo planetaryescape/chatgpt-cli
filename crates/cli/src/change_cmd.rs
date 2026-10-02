@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use chatgpt_core::Paths;
 use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{
-    ChatAction, Outcome, Request, ResponseData, Row, Secret, Selection, SessionChoice, Target,
+    ChatAction, Outcome, Request, ResponseData, Row, Selection, SessionChoice, Target,
 };
 
 use crate::args::{ChangeArgs, RenameArgs};
@@ -103,6 +103,7 @@ pub async fn change(
         filter: chosen,
         pinned: args.pinned,
         exclude_unsure: applying_suggestions,
+        allow_unfiltered: false,
     };
     let mut rows = select(paths, selection).await?;
     // Explicit ids bypass filters, so the Jev check stays a second guard.
@@ -112,14 +113,19 @@ pub async fn change(
                 "--check applies to archive and delete only.",
             ));
         }
-        let api_key = std::env::var("TYPESAFE_API_KEY").ok().map(Secret::new);
+        let access = crate::classify_cmd::model_access();
         let request = Request::JevCheck {
             action,
             ids: rows.iter().map(|row| row.id.clone()).collect(),
-            api_key,
+            api_key: access.typesafe.clone(),
             session: session.clone(),
+            access,
+            yes: args.yes,
+            can_answer: true,
         };
-        let ResponseData::Approved { ids } = ask_showing_progress(paths, request).await? else {
+        let ResponseData::Approved { ids } =
+            crate::classify_cmd::ask_showing_progress_and_asking(paths, request).await?
+        else {
             return Err(unexpected());
         };
         let approved: std::collections::HashSet<String> = ids.into_iter().collect();

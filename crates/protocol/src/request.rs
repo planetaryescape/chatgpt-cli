@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ChatAction, Filter, Project, SearchMode, Secret, Selection, Target};
+use crate::{ChatAction, Filter, ModelAccess, Project, SearchMode, Secret, Selection, Target};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
@@ -93,7 +93,59 @@ pub enum Request {
         api_key: Option<Secret>,
         #[serde(default)]
         session: SessionChoice,
+        /// Summarisers for long chats, and the client's other keys.
+        #[serde(default)]
+        access: ModelAccess,
+        /// `-y`: summarise a large batch without asking.
+        #[serde(default)]
+        yes: bool,
+        /// The client answers `Ask` progress lines. Without it (a client
+        /// from before 0.1.4), the daemon never asks: a large batch of
+        /// summaries without `yes` fails before anything is spent.
+        #[serde(default)]
+        can_answer: bool,
     },
+    /// `classify`: Jev (then its follow-up for unsure chats), Luna's
+    /// review, and missing local titles, for exactly these chats, with
+    /// progress events and the cost lines. May ask (`ProgressKind::Ask`)
+    /// before summarising a large batch, unless `yes`.
+    Classify {
+        ids: Vec<String>,
+        /// `--redo`: judge again even what's current.
+        #[serde(default)]
+        redo: bool,
+        #[serde(default)]
+        yes: bool,
+        #[serde(default)]
+        access: ModelAccess,
+        #[serde(default)]
+        session: SessionChoice,
+        /// As for `JevCheck`.
+        #[serde(default)]
+        can_answer: bool,
+    },
+    /// `titles`: Luna's local titles and themes for these chats, from
+    /// their cached transcripts or summaries.
+    Titles {
+        ids: Vec<String>,
+        #[serde(default)]
+        redo: bool,
+        #[serde(default)]
+        access: ModelAccess,
+    },
+    /// `memory classify`: Jev's quick pass over the saved memories, then
+    /// Luna's review of the ones it can't keep. Never deletes.
+    MemoryClassify {
+        #[serde(default)]
+        redo: bool,
+        #[serde(default)]
+        access: ModelAccess,
+        #[serde(default)]
+        session: SessionChoice,
+    },
+    /// The client's answer to the question its running request asked
+    /// (`ProgressKind::Ask`), sent with that request's id.
+    Answer { yes: bool },
     /// Archive, unarchive or delete exactly these chats, in ChatGPT and
     /// then the index, with progress events.
     Mutate {

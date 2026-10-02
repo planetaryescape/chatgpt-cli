@@ -208,7 +208,7 @@ pub async fn rename(
     tokio::spawn(async move {
         let profile = state.profile();
         let (chat, synced_at) = state
-            .db(move |db| Ok(select::one(db, &reference, archived, all, &profile)))
+            .db(move |db| Ok(select::one(db, &reference, archived, all, profile)))
             .await??;
         let api = crate::sync::pinned_api(&state, session).await?;
         let _no_pass = state.syncer.exclusive().await;
@@ -240,15 +240,10 @@ pub async fn set_title(
     let updated_at = crate::js::now_iso();
     state
         .db_write(move |db| {
-            let chosen = select::one(db, &reference, archived, all, &profile);
+            let chosen = select::one(db, &reference, archived, all, profile);
             Ok(chosen.and_then(|(chat, synced_at)| {
-                let clean = chatgpt_core::js::collapse_spaces(crate::js::trim(&title));
-                if clean.is_empty() || clean.encode_utf16().count() > 100 {
-                    return Err(Failure::new(
-                        ErrorKind::InvalidInput,
-                        "Local title must be 1–100 characters.",
-                    ));
-                }
+                let clean = clean_local_title(&title)
+                    .map_err(|why| Failure::new(ErrorKind::InvalidInput, why))?;
                 let manual = chatgpt_store::ManualTitle {
                     id: &chat.id,
                     update_time: &chat.update_time,
@@ -261,4 +256,14 @@ pub async fn set_title(
             }))
         })
         .await?
+}
+
+/// `setLocalTitle`'s cleaning and check: trimmed, whitespace runs as one
+/// space, 1 to 100 UTF-16 units.
+pub fn clean_local_title(title: &str) -> Result<String, &'static str> {
+    let clean = chatgpt_core::js::collapse_spaces(crate::js::trim(title));
+    if clean.is_empty() || chatgpt_core::js::utf16_len(&clean) > 100 {
+        return Err("Local title must be 1–100 characters.");
+    }
+    Ok(clean)
 }

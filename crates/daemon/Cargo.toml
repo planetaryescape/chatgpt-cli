@@ -29,11 +29,17 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
-# Jev, for the guard behind `archive`/`delete --check`.
+# Jev, for `classify`, the guard behind `archive`/`delete --check` and the
+# background Jev.
 typesafe-client = { workspace = true }
+# OpenAI and Anthropic, for summaries and Luna with a configured key.
+model-api = { workspace = true }
+# Kills a subscription CLI's whole process group (`classify::tools`).
+nix = { workspace = true }
+# Scratch directories for the subscription CLIs.
+tempfile = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

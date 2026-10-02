@@ -83,40 +83,108 @@ fn a_manual_title_survives_the_import_until_the_ts_cli_writes_a_newer_manual_one
 }
 
 #[test]
-fn a_guard_judgment_replaces_the_reviews_and_the_import_keeps_it_that_way() {
+fn a_new_judgment_replaces_its_reviews_and_the_import_never_touches_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(dir.path());
     let (path, legacy) = legacy_db(dir.path());
     store
         .write(|db| replace_all(db, &[chat("a", "t1")], "t"))
         .unwrap();
-    legacy
-        .execute_batch(
-            "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
-                values ('a', 't1', 'v1', 'full', '{\"old\":1}', '2026-09-01T00:00:00.000Z');
-             insert into deep_judgments values ('a', 't1', 'v1', 'd1', '{}', '2026-09-01T00:00:00.000Z');
-             insert into luna_judgments values ('a', 't1', 'v1', 'd1', 8, 'keep', null, 'r', '2026-09-01T00:00:00.000Z');",
-        )
-        .unwrap();
-    store.write(|db| import_legacy(db, &path)).unwrap();
+    let first = NewJudgment {
+        id: "a".into(),
+        update_time: "t1".into(),
+        version: "v1".into(),
+        content_kind: "full".into(),
+        answers: "{\"old\":1}".into(),
+        classified_at: "2026-09-01T00:00:00.000Z".into(),
+    };
+    store.write(|db| save_judgment(db, &first)).unwrap();
+    let deep = NewDeepJudgment {
+        id: "a".into(),
+        update_time: "t1".into(),
+        questions_version: "v1".into(),
+        version: "d1".into(),
+        answers: "{}".into(),
+        classified_at: "2026-09-01T00:00:00.000Z".into(),
+    };
+    store.write(|db| save_deep_judgment(db, &deep)).unwrap();
+    let luna = NewLunaJudgment {
+        id: "a".into(),
+        update_time: "t1".into(),
+        questions_version: "v1".into(),
+        deep_version: "d1".into(),
+        version: 8,
+        suggestion: "keep".into(),
+        brainstorm: None,
+        reason: "r".into(),
+        classified_at: "2026-09-01T00:00:00.000Z".into(),
+    };
+    store.write(|db| save_luna_judgment(db, &luna)).unwrap();
     let before = store
         .read(|db| judgment(db, "a", "t1", "v1"))
         .unwrap()
         .unwrap();
     assert_eq!(before.luna_suggestion.as_deref(), Some("keep"));
     assert_eq!(before.deep_version.as_deref(), Some("d1"));
+    assert!(
+        store
+            .read(|db| has_deep_judgment(db, "a", "t1", "v1", "d1"))
+            .unwrap()
+    );
+    assert!(
+        store
+            .read(|db| has_luna_judgment(db, "a", "t1", "v1", "d1", 8))
+            .unwrap()
+    );
 
+    // A second first pass for the same chat and version (the background
+    // Jev racing `classify`) keeps the follow-up and review already paid
+    // for.
+    let again = NewJudgment {
+        classified_at: "2026-09-02T00:00:00.000Z".into(),
+        ..first.clone()
+    };
+    store.write(|db| save_judgment(db, &again)).unwrap();
+    let kept = store
+        .read(|db| judgment(db, "a", "t1", "v1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.luna_suggestion.as_deref(), Some("keep"));
+    assert_eq!(kept.deep_version.as_deref(), Some("d1"));
+
+    // A new follow-up drops the review that rested on the old one.
+    store.write(|db| save_deep_judgment(db, &deep)).unwrap();
+    assert!(
+        !store
+            .read(|db| has_luna_judgment(db, "a", "t1", "v1", "d1", 8))
+            .unwrap()
+    );
+
+    // A judgment for a newer update of the chat (or newer questions) drops
+    // the old follow-up and review.
+    store.write(|db| save_luna_judgment(db, &luna)).unwrap();
+    store
+        .write(|db| replace_all(db, &[chat("a", "t2")], "t"))
+        .unwrap();
     let fresh = NewJudgment {
-        id: "a".into(),
-        update_time: "t1".into(),
-        version: "v1".into(),
-        content_kind: "full".into(),
+        update_time: "t2".into(),
         answers: "{\"new\":1}".into(),
         classified_at: "2026-10-02T10:00:00.000Z".into(),
+        ..first
     };
     store.write(|db| save_judgment(db, &fresh)).unwrap();
+    let left: i64 = store
+        .read(|db| {
+            Ok(db.query_row(
+                "select (select count(*) from deep_judgments) + (select count(*) from luna_judgments)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(left, 0, "the old follow-up and review went");
     let saved = store
-        .read(|db| judgment(db, "a", "t1", "v1"))
+        .read(|db| judgment(db, "a", "t2", "v1"))
         .unwrap()
         .unwrap();
     assert_eq!(saved.answers, "{\"new\":1}");
@@ -126,29 +194,65 @@ fn a_guard_judgment_replaces_the_reviews_and_the_import_keeps_it_that_way() {
     );
     assert_eq!(saved.deep_answers, None);
 
-    let report = store.write(|db| import_legacy(db, &path)).unwrap();
-    for table in ["judgments", "deep_judgments", "luna_judgments"] {
-        assert_eq!(counts(&report, table), (0, 0, 0), "{table}");
-    }
-    let kept = store
-        .read(|db| judgment(db, "a", "t1", "v1"))
-        .unwrap()
-        .unwrap();
-    assert_eq!(kept, saved);
-
-    // The TS CLI classifies it again later: its judgment wins.
+    // The TS CLI's judgment for the chat, however new, never comes over.
     legacy
         .execute(
-            "update judgments set answers = '{\"ts\":2}', classified_at = '2026-10-03T00:00:00.000Z'",
+            "insert into judgments (id, update_time, version, content_kind, answers, classified_at)
+             values ('a', 't2', 'v1', 'full', '{\"ts\":2}', '2030-01-01T00:00:00.000Z')",
             [],
         )
         .unwrap();
     store.write(|db| import_legacy(db, &path)).unwrap();
-    let replaced = store
-        .read(|db| judgment(db, "a", "t1", "v1"))
+    let kept = store
+        .read(|db| judgment(db, "a", "t2", "v1"))
         .unwrap()
         .unwrap();
-    assert_eq!(replaced.answers, "{\"ts\":2}");
+    assert_eq!(kept, saved);
+}
+
+#[test]
+fn a_luna_title_is_kept_by_the_import_and_never_replaces_a_manual_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let (path, _legacy) = legacy_db(dir.path());
+    store
+        .write(|db| replace_all(db, &[chat("a", "t1"), chat("b", "t1")], "t"))
+        .unwrap();
+    store
+        .write(|db| {
+            set_luna_title(
+                db,
+                &manual("a", "From Luna", "2026-10-02T10:00:00.000Z"),
+                "theme",
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        store
+            .read(|db| local_title_source(db, "a", "t1", 2))
+            .unwrap()
+            .as_deref(),
+        Some("luna")
+    );
+    assert_eq!(
+        store
+            .read(|db| local_title_source(db, "a", "t2", 2))
+            .unwrap(),
+        None
+    );
+    store.write(|db| import_legacy(db, &path)).unwrap();
+    assert_eq!(shown_title(&store, "a").as_deref(), Some("From Luna"));
+    store
+        .write(|db| set_local_title(db, &manual("b", "Mine", "2026-10-02T10:00:00.000Z")))
+        .unwrap();
+    assert_eq!(
+        store
+            .read(|db| local_title_source(db, "b", "other-time", 1))
+            .unwrap()
+            .as_deref(),
+        Some("manual"),
+        "a manual title counts whatever the chat's time"
+    );
 }
 
 #[test]
@@ -229,4 +333,98 @@ fn the_first_account_to_bind_the_index_keeps_it() {
         "a later binder sees the winner"
     );
     assert_eq!(store.read(account).unwrap().as_deref(), Some("user-a"));
+}
+
+#[test]
+fn a_late_memory_result_never_displaces_another_runs_newer_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let row = |hash: &str, at: &str| NewMemoryJudgment {
+        id: "m".into(),
+        input_hash: hash.into(),
+        version: "v".into(),
+        system_one: format!("{{\"from\":\"{hash}\"}}"),
+        system_two: None,
+        classified_at: at.into(),
+    };
+    let since = "2026-10-02T10:00:00.000Z";
+    // Another run saved the memory's newer input after this run started.
+    assert!(
+        store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("new", "2026-10-02T10:05:00.000Z"),
+                since
+            ))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("old", "2026-10-02T10:06:00.000Z"),
+                since
+            ))
+            .unwrap()
+    );
+    let kept = store
+        .read(|db| memory_judgment(db, "m", "new", "v"))
+        .unwrap();
+    assert!(kept.is_some(), "the newer input's row stays");
+    // Its own input, or a row older than the run, it replaces.
+    assert!(
+        store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("new", "2026-10-02T10:07:00.000Z"),
+                since
+            ))
+            .unwrap()
+    );
+    assert!(
+        store
+            .write(|db| save_memory_judgment_unless_newer(
+                db,
+                &row("other", "2026-10-02T10:08:00.000Z"),
+                "2026-10-02T11:00:00.000Z"
+            ))
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_result_is_current_only_while_the_chat_still_has_its_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    store
+        .write(|db| {
+            replace_all(db, &[chat("a", "t2")], "t")?;
+            db.execute(
+                "insert into transcripts values ('a', 't2', 2, '# same', 1, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    // Moved forward with its content unchanged: current at t2.
+    assert_eq!(
+        store
+            .read(|db| fresh_update_time(db, "a", 2, "# same"))
+            .unwrap()
+            .as_deref(),
+        Some("t2")
+    );
+    // Other content, or another render: not current.
+    assert_eq!(
+        store
+            .read(|db| fresh_update_time(db, "a", 2, "# old"))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .read(|db| fresh_update_time(db, "a", 3, "# same"))
+            .unwrap(),
+        None
+    );
 }

@@ -2,11 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EmbeddingStatus, ImportReport, SearchIndexStatus};
+use crate::{AutoJevStatus, EmbeddingStatus, ImportReport, SearchIndexStatus};
 
 /// What `Status` reports. Ready means this answers with a compatible
 /// `protocol_version`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub protocol_version: u32,
     /// The daemon's package version.
@@ -40,6 +40,9 @@ pub struct DaemonStatus {
     /// The background embedder.
     #[serde(default)]
     pub embeddings: EmbeddingStatus,
+    /// Jev on newly synced chats, in the background.
+    #[serde(default)]
+    pub auto_jev: AutoJevStatus,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,11 +103,10 @@ pub struct ImportStatus {
     pub last_error: Option<String>,
 }
 
-/// The classification versions verdicts are read with. While the bridge
-/// exists the TS CLI writes the judgments, so its sources decide them.
+/// The classification versions verdicts are read with: this build's (D9).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClassificationInfo {
-    /// `builtin`, or the TS sources they were read from.
+    /// `builtin` (once also the TS sources they were read from).
     pub source: String,
     pub questions_version: String,
     pub deep_questions_version: String,
@@ -112,7 +114,7 @@ pub struct ClassificationInfo {
     pub local_title_version: u32,
     pub memory_version: String,
     pub topics: Vec<String>,
-    /// Why the TS sources couldn't be used, if they couldn't.
+    /// Kept for older clients; always `None` now.
     #[serde(default)]
     pub problem: Option<String>,
 }

@@ -8,7 +8,9 @@
 //!   for a full pass. The first pass of an empty index lists everything.
 //! - After a pass, while the bridge exists: the TS CLI's own sync (at most
 //!   every 15 minutes, always for `chatgpt sync`), then an import of its
-//!   judgments and titles.
+//!   titles and caches.
+//! - After a successful pass: Jev on new and changed chats, in the
+//!   background (`crate::classify::auto_jev`).
 //! - A rate limit backs off for as long as ChatGPT asked (clamped), and
 //!   `daemon status` shows it.
 
@@ -244,8 +246,11 @@ pub async fn run_scheduled(state: std::sync::Arc<State>) {
 /// One pass, then the TS sync and import when due. A background pass that
 /// fails is retried at the next interval; one that hit a rate limit waits
 /// out the backoff first.
-pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport, Failure> {
-    let _running = state.syncer.running.lock().await;
+pub async fn run_pass(
+    state: &std::sync::Arc<State>,
+    options: PassOptions,
+) -> Result<SyncReport, Failure> {
+    let pass_lock = state.syncer.running.lock().await;
     let _attached = options
         .progress
         .clone()
@@ -321,6 +326,10 @@ pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport,
     // New and changed chats, and transcripts the import brought, get
     // indexed for search.
     state.indexer.pass_succeeded();
+    // And new and changed chats get Jev's verdict, once this pass lets go
+    // of the pass lock.
+    drop(pass_lock);
+    crate::classify::auto_jev::after_pass(state);
     Ok(report)
 }
 

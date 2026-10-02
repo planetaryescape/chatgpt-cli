@@ -1,0 +1,25 @@
+[package]
+name = "model-api"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Small clients for the OpenAI Responses and Anthropic Messages APIs, as the TS CLI's src/classify/model-api.ts calls them."
+
+[lib]
+name = "model_api"
+
+[dependencies]
+bytes = { workspace = true }
+impit = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

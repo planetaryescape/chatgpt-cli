@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use chatgpt_core::{ErrorKind, Paths};
 use chatgpt_protocol::{
-    Codec, DaemonStatus, EXIT_DATABASE_TOO_NEW, Event, Message, PROTOCOL_VERSION, Payload, Request,
-    Response, ResponseData,
+    Codec, DaemonStatus, EXIT_DATABASE_TOO_NEW, Event, Message, PROTOCOL_VERSION, Payload,
+    ProgressKind, Request, Response, ResponseData,
 };
 use fs2::FileExt;
 use futures_util::{SinkExt, StreamExt};
@@ -76,6 +76,9 @@ impl std::fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
+/// Asks the user the daemon's question; the answer, or why there's none.
+type AskUser<'a> = dyn FnMut(&str) -> Result<bool, ClientError> + 'a;
+
 pub struct DaemonClient {
     framed: Framed<UnixStream, Codec>,
     next_id: u64,
@@ -101,6 +104,22 @@ impl DaemonClient {
             .await
     }
 
+    /// [`Self::request_with_events`] for a request that may ask the user
+    /// something mid-run (a progress line of kind `Ask`): `on_ask` asks it
+    /// and its answer goes back to the daemon. An error from `on_ask` (no
+    /// terminal to ask at) ends the request, and the daemon, finding the
+    /// client gone, gets no answer.
+    pub async fn request_asking(
+        &mut self,
+        request: Request,
+        on_event: impl FnMut(Event),
+        mut on_ask: impl FnMut(&str) -> Result<bool, ClientError>,
+    ) -> Result<ResponseData, ClientError> {
+        let stall = stall_timeout();
+        let id = self.send(request, stall).await?;
+        into_data(self.reply(id, stall, on_event, Some(&mut on_ask)).await?)
+    }
+
     async fn request_within(
         &mut self,
         request: Request,
@@ -108,7 +127,7 @@ impl DaemonClient {
         on_event: impl FnMut(Event),
     ) -> Result<ResponseData, ClientError> {
         let id = self.send(request, stall).await?;
-        into_data(self.reply(id, stall, on_event).await?)
+        into_data(self.reply(id, stall, on_event, None).await?)
     }
 
     async fn send(&mut self, request: Request, stall: Duration) -> Result<u64, ClientError> {
@@ -126,11 +145,14 @@ impl DaemonClient {
 
     /// Wait for the answer to request `id`. Each frame for it (an answer
     /// or a progress event) restarts the `stall` clock; other frames don't.
+    /// A question (`Ask`) goes to `on_ask`, whose answer is sent back; the
+    /// clock restarts once it's answered, however long the user took.
     async fn reply(
         &mut self,
         id: u64,
         stall: Duration,
         mut on_event: impl FnMut(Event),
+        mut on_ask: Option<&mut AskUser<'_>>,
     ) -> Result<Response, ClientError> {
         let mut deadline = Instant::now() + stall;
         loop {
@@ -148,6 +170,27 @@ impl DaemonClient {
                 // Id 0 is the daemon rejecting a frame it couldn't read.
                 Payload::Response(response) if message.id == id || message.id == 0 => {
                     return Ok(response);
+                }
+                Payload::Event(Event::Progress(progress))
+                    if message.id == id && progress.kind == ProgressKind::Ask =>
+                {
+                    // A daemon only asks a client that sent a request
+                    // which may ask; anything else declines.
+                    let yes = match on_ask.as_mut() {
+                        Some(ask) => ask(&progress.line)?,
+                        None => false,
+                    };
+                    let answer = Message {
+                        id,
+                        payload: Payload::Request(Request::Answer { yes }),
+                    };
+                    tokio::time::timeout(stall, self.framed.send(answer))
+                        .await
+                        .map_err(|_| {
+                            unavailable("the daemon didn't take the answer in time".into())
+                        })?
+                        .map_err(ipc_error)?;
+                    deadline = Instant::now() + stall;
                 }
                 Payload::Event(event) if message.id == id => {
                     deadline = Instant::now() + stall;
@@ -200,6 +243,18 @@ pub async fn connect(paths: &Paths) -> Result<(DaemonClient, DaemonStatus), Clie
         Probe::Unreachable => {}
     }
     start(paths).await
+}
+
+/// [`ask`] for a request that may ask the user something mid-run: see
+/// [`DaemonClient::request_asking`].
+pub async fn ask_asking(
+    paths: &Paths,
+    request: Request,
+    on_event: impl FnMut(Event),
+    on_ask: impl FnMut(&str) -> Result<bool, ClientError>,
+) -> Result<ResponseData, ClientError> {
+    let (mut client, _) = connect(paths).await?;
+    client.request_asking(request, on_event, on_ask).await
 }
 
 /// Send one request, starting the daemon first if needed, and pass the
@@ -661,6 +716,7 @@ mod tests {
             classification: Default::default(),
             search_index: Default::default(),
             embeddings: Default::default(),
+            auto_jev: Default::default(),
         }
     }
 

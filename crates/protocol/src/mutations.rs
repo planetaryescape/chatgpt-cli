@@ -50,6 +50,10 @@ pub struct Selection {
     /// chats are left out before `--limit`.
     #[serde(default)]
     pub exclude_unsure: bool,
+    /// `classify`, `titles` and `review`: with neither ids nor a filter,
+    /// every chat in scope (`selectTargets`' `allowUnfiltered`).
+    #[serde(default)]
+    pub allow_unfiltered: bool,
 }
 
 /// A chat the client showed in its preview and the user confirmed.

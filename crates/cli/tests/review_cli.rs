@@ -328,7 +328,8 @@ fn a_session_that_doesnt_name_its_account_is_refused_for_an_index_that_has_one()
 #[test]
 fn a_judgment_without_a_topic_has_none_and_fails_nothing() {
     let env = Env::with_fake(chats());
-    let db = env.legacy_db();
+    env.cmd().arg("sync").assert().success();
+    let db = env.index_db();
     let mut answers: serde_json::Value = serde_json::from_str(&delete_answers("other")).unwrap();
     answers.as_object_mut().unwrap().remove("topic");
     judge(
@@ -338,7 +339,6 @@ fn a_judgment_without_a_topic_has_none_and_fails_nothing() {
         &answers.to_string(),
     );
     drop(db);
-    env.cmd().arg("sync").assert().success();
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(&env.stdout(&["list", "--json"])).unwrap();
     assert_eq!(rows[0]["topic"], serde_json::Value::Null);

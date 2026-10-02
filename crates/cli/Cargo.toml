@@ -25,6 +25,8 @@ chatgpt-launcher = { workspace = true }
 chatgpt-protocol = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
+# `configure` reads a key with the terminal's echo off.
+nix = { workspace = true, features = ["term"] }
 # Writes the LaunchAgent for `daemon install`.
 plist = { workspace = true }
 serde = { workspace = true }
@@ -35,7 +37,6 @@ unicode-width = { workspace = true }
 [dev-dependencies]
 assert_cmd = { workspace = true }
 fake-chatgpt = { workspace = true }
-nix = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

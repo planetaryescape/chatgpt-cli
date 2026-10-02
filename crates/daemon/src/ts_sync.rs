@@ -272,8 +272,6 @@ pub async fn import(state: &State) -> Result<ImportReport, Failure> {
         state.record_import(Err(message.clone()));
         return Err(Failure::new(chatgpt_core::ErrorKind::InvalidInput, message));
     }
-    // The TS CLI may have been updated, with new classification versions.
-    state.reload_profile();
     let Some(path) = legacy_index_path().filter(|path| path.is_file()) else {
         let message = "no TS index to import".to_owned();
         state.record_import(Err(message.clone()));

@@ -9,7 +9,7 @@ use chatgpt_protocol::{
     SearchMode, SessionChoice, StatsReport,
 };
 use rusqlite::Connection;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::api::{Api, ApiError};
 use crate::filters::InvalidFilter;
@@ -17,7 +17,7 @@ use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
 use crate::sync::{PassOptions, pinned_api, run_pass};
-use crate::{export, jev, memories, mutate, projects, reads, search, select, ts_sync};
+use crate::{classify, export, jev, memories, mutate, projects, reads, search, select, ts_sync};
 
 /// A failed request, worded for people: no response body, cookie or token.
 #[derive(Debug, Clone)]
@@ -75,11 +75,14 @@ pub fn error_payload(kind: ErrorKind, message: String) -> ErrorPayload {
     Failure::new(kind, message).payload()
 }
 
-/// Answer `request`. A sync sends its progress lines to `progress`.
+/// Answer `request`. A sync sends its progress lines to `progress`; a
+/// request that asks the client something mid-run reads its answers from
+/// `answers`.
 pub async fn handle(
     state: &Arc<State>,
     request: Request,
     progress: Option<UnboundedSender<Progress>>,
+    answers: UnboundedReceiver<bool>,
 ) -> Response {
     let answered = match request {
         Request::Status => Ok(ResponseData::Status(Box::new(status(state).await))),
@@ -164,9 +167,59 @@ pub async fn handle(
             ids,
             api_key,
             session,
-        } => jev::check(state, action, ids, api_key, session, progress)
+            access,
+            yes,
+            can_answer,
+        } => jev::check(
+            state,
+            action,
+            ids,
+            api_key,
+            access,
+            yes,
+            session,
+            progress,
+            can_answer.then_some(answers),
+        )
+        .await
+        .map(|ids| ResponseData::Approved { ids }),
+        Request::Classify {
+            ids,
+            redo,
+            yes,
+            access,
+            session,
+            can_answer,
+        } => classify::classify(
+            state,
+            ids,
+            redo,
+            yes,
+            access,
+            session,
+            progress,
+            can_answer.then_some(answers),
+        )
+        .await
+        .map(ResponseData::Classified),
+        Request::Titles { ids, redo, access } => {
+            classify::titles(state, ids, redo, access, progress)
+                .await
+                .map(ResponseData::Classified)
+        }
+        Request::MemoryClassify {
+            redo,
+            access,
+            session,
+        } => classify::memory_classify(state, redo, access, session, progress)
             .await
-            .map(|ids| ResponseData::Approved { ids }),
+            .map(ResponseData::ClassifiedMemories),
+        // Only meaningful while a request that asked is running; the
+        // connection hands those over before they get here.
+        Request::Answer { .. } => Err(Failure::new(
+            ErrorKind::InvalidInput,
+            "nothing is waiting for an answer",
+        )),
         Request::Mutate {
             action,
             targets,
@@ -251,7 +304,7 @@ async fn read<T: Send + 'static>(
 ) -> Result<T, Failure> {
     let profile = state.profile();
     let now_ms = chrono::Utc::now().timestamp_millis();
-    state.db(move |db| Ok(work(db, &profile, now_ms))).await?
+    state.db(move |db| Ok(work(db, profile, now_ms))).await?
 }
 
 /// `stats`: the chat counts from the index, then the saved memories, read
@@ -313,5 +366,6 @@ async fn status(state: &State) -> DaemonStatus {
         classification: state.profile().info(),
         search_index: state.indexer.status(),
         embeddings: state.embedder.status(),
+        auto_jev: state.auto_jev.status(),
     }
 }
