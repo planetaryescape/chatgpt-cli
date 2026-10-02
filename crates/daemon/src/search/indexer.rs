@@ -195,12 +195,14 @@ async fn index(state: &State) -> Result<(), String> {
             .map_err(|failure| failure.message)?;
     }
     let missing = retryable(state, missing);
-    tracing::info!(
-        pruned,
-        chunked = cached.len(),
-        to_fetch = missing.len(),
-        "search indexing"
-    );
+    if pruned + cached.len() + missing.len() > 0 {
+        tracing::info!(
+            pruned,
+            chunked = cached.len(),
+            to_fetch = missing.len(),
+            "search indexing"
+        );
+    }
     if missing.is_empty() {
         state.indexer.inner().waiting = None;
         return Ok(());
