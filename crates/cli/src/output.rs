@@ -105,13 +105,7 @@ impl Formatter for JsFormatter<'_> {
     }
 }
 
-/// The daemon answered a request with another request's kind of answer.
-pub fn unexpected() -> ClientError {
-    ClientError::new(
-        ErrorKind::DaemonUnavailable,
-        "the daemon answered with something else; run `chatgpt daemon stop` and try again",
-    )
-}
+pub use chatgpt_launcher::unexpected;
 
 pub fn io_error(path: &std::path::Path, error: &std::io::Error) -> ClientError {
     ClientError::new(ErrorKind::Internal, format!("{}: {error}", path.display()))

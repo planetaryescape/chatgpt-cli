@@ -591,49 +591,65 @@ fn a_metadata_only_change_keeps_judgments_current_after_indexing() {
     );
 }
 
-/// An export too large for one IPC frame goes to the TS CLI with the same
-/// arguments and stdin, so its output is still the TS CLI's. A lowered frame
-/// cap (debug builds only) stands in for 16 MiB.
+/// An export many times larger than one IPC frame comes through natively,
+/// streamed in slices, and byte for byte as it renders when it fits in one
+/// frame: emoji and accents across the cuts included. The TS CLI never
+/// runs. A lowered frame cap (debug builds only) stands in for 16 MiB.
 #[test]
-fn an_export_too_large_for_the_socket_falls_back_to_the_ts_cli() {
-    let mut big = Chat::new("d-big", "Huge", "2026-09-28T10:00:00.000000Z");
-    big.text = "word ".repeat(40_000);
-    let mut all = chats();
-    all.push(big);
-    let mut env = Env::with_fake(all);
+fn an_export_larger_than_a_frame_streams_byte_identical() {
+    let big = || {
+        let mut big = Chat::new("d-big", "Huge", "2026-09-28T10:00:00.000000Z");
+        big.text = "word café 😀 naïve\ttab ".repeat(20_000);
+        big
+    };
+    let with_big = || {
+        let mut all = chats();
+        all.push(big());
+        all
+    };
+    // Rendered in one frame, under the normal cap.
+    let reference = Env::with_fake(with_big());
+    reference.cmd().arg("sync").assert().success();
+    let whole = reference.stdout(&["export", "d-big"]);
+    assert!(whole.len() > 400_000, "{}", whole.len());
+
+    let mut env = Env::with_fake(with_big());
     env.extra_env
         .push(("CHATGPT_TEST_MAX_FRAME_BYTES".into(), "50000".into()));
-    env.fake_ts_cli(
-        "printf 'argv:'; for arg in \"$@\"; do printf ' [%s]' \"$arg\"; done; printf '\\nstdin:%s\\n' \"$(cat)\"; exit 4\n",
-    );
+    // The daemon runs the TS CLI's own sync while the TS CLI exists; only
+    // an export reaching it would be the bridge.
+    let calls = env.home.path().join("ts-cli-calls");
+    env.fake_ts_cli(&format!(
+        "printf '%s\\n' \"$*\" >> '{}'\nexit 4\n",
+        calls.display()
+    ));
     env.cmd().arg("sync").assert().success();
 
-    let output = env
-        .cmd()
-        .args(["--browser", "dia", "export", "d-big", "-o"])
-        .env("CHATGPT_TEST_COOKIE_DIA", fake_chatgpt::COOKIE)
-        .write_stdin("")
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(4), "the TS CLI's exit code");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "argv: [--browser] [dia] [export] [d-big] [-o]\nstdin:\n"
-    );
-
-    let output = env
+    assert_eq!(env.stdout(&["export", "d-big"]), whole, "stdout");
+    let piped = env
         .cmd()
         .args(["export", "-"])
         .write_stdin("d-big  2026-09-28  Huge\n")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(4));
+    assert!(piped.status.success());
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "argv: [export] [-]\nstdin:d-big  2026-09-28  Huge\n",
-        "the TS CLI reads the same stdin"
+        String::from_utf8(piped.stdout).unwrap(),
+        whole,
+        "ids on stdin"
     );
-
-    // Anything that fits is still exported natively.
-    assert!(env.stdout(&["export", "c-other"]).starts_with("# Taxes\n"));
+    let written = env
+        .cmd()
+        .current_dir(env.home.path())
+        .args(["export", "d-big", "-o"])
+        .output()
+        .unwrap();
+    assert!(written.status.success());
+    assert_eq!(
+        std::fs::read_to_string(env.home.path().join("huge.md")).unwrap(),
+        whole,
+        "-o"
+    );
+    let ran = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(!ran.contains("export"), "the TS CLI exported: {ran}");
 }

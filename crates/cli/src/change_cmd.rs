@@ -135,7 +135,7 @@ pub async fn change(
 }
 
 /// `applyAction`: preview, confirm, change.
-async fn apply(
+pub async fn apply(
     paths: &Paths,
     action: ChatAction,
     rows: &[Row],

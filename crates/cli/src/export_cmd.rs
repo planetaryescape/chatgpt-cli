@@ -1,9 +1,9 @@
-//! `export`/`show`: the daemon fetches and renders the chat; the markdown
-//! goes where the TS CLI's `exportConversation` (`src/commands/export.ts`
+//! `export`/`show`: the daemon fetches and renders the chat (an export too
+//! large for one frame arrives in parts, which the launcher joins); the
+//! markdown goes where the TS CLI's `exportConversation` (`src/commands/export.ts`
 //! @ 1b8c950) sends it: a file (`-o`), the clipboard (`-c`), else stdout.
 
-use std::io::Write;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use chatgpt_core::js::{is_space, trim};
 use chatgpt_core::{ErrorKind, Paths};
@@ -11,7 +11,6 @@ use chatgpt_launcher::ClientError;
 use chatgpt_protocol::{Request, ResponseData, SessionChoice};
 
 use crate::args::ExportArgs;
-use crate::bridge;
 use crate::output::{data, io_error, note, unexpected};
 use crate::reads::stale_note;
 
@@ -19,14 +18,12 @@ pub async fn export(
     paths: &Paths,
     args: ExportArgs,
     session: SessionChoice,
-    argv: &[std::ffi::OsString],
 ) -> Result<ExitCode, ClientError> {
-    let piped = if args.link == "-" {
-        Some(read_stdin()?)
+    let stdin_ids = if args.link == "-" {
+        stdin_ids(&read_stdin()?)
     } else {
-        None
+        Vec::new()
     };
-    let stdin_ids = piped.as_deref().map(stdin_ids).unwrap_or_default();
     let request = Request::Export {
         reference: args.link,
         stdin_ids,
@@ -34,17 +31,8 @@ pub async fn export(
         all: args.all,
         session,
     };
-    let chat = match chatgpt_launcher::ask(paths, request, |_| {}).await? {
-        ResponseData::Exported(chat) => chat,
-        // Too large for the daemon's socket: the TS CLI writes it instead,
-        // with the same arguments (and the same stdin).
-        ResponseData::ExportTooLarge => {
-            return Ok(match &piped {
-                Some(text) => bridge::run_with_stdin(argv, text.as_bytes()),
-                None => bridge::exec(argv),
-            });
-        }
-        _ => return Err(unexpected()),
+    let ResponseData::Exported(chat) = chatgpt_launcher::ask(paths, request, |_| {}).await? else {
+        return Err(unexpected());
     };
     if let Some(synced_at) = &chat.synced_at {
         stale_note(synced_at);
@@ -116,26 +104,10 @@ fn slugify(title: &str) -> String {
     }
 }
 
-/// `copyToClipboard`: the markdown into `pbcopy`.
+/// `copyToClipboard`.
 fn copy_to_clipboard(text: &str) -> Result<(), ClientError> {
-    if !cfg!(target_os = "macos") {
-        return Err(ClientError::new(
-            ErrorKind::Unsupported,
-            "--copy uses pbcopy and only works on macOS.",
-        ));
-    }
-    let failed = || ClientError::new(ErrorKind::Internal, "pbcopy failed.");
-    let mut child = std::process::Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|_| failed())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes()).map_err(|_| failed())?;
-    }
-    match child.wait() {
-        Ok(status) if status.success() => Ok(()),
-        _ => Err(failed()),
-    }
+    chatgpt_core::desktop::copy_to_clipboard(text)
+        .map_err(|(kind, message)| ClientError::new(kind, message))
 }
 
 #[cfg(test)]

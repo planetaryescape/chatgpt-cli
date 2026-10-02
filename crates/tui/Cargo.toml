@@ -1,0 +1,23 @@
+[package]
+name = "chatgpt-tui"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "`chatgpt tui`: a ratatui client of the daemon for browsing, filtering and triaging chats."
+
+[dependencies]
+chatgpt-core = { workspace = true }
+chatgpt-launcher = { workspace = true }
+chatgpt-protocol = { workspace = true }
+chrono = { workspace = true }
+ratatui = { workspace = true }
+textwrap = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

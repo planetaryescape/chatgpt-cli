@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use chatgpt_core::{ErrorKind, Paths};
 use chatgpt_protocol::{
-    Codec, Event, FrameTooLarge, Message, Payload, Request, Response, ResponseData,
-    SOCKET_BUFFER_BYTES,
+    Codec, Event, Message, Part, Payload, Request, Response, SOCKET_BUFFER_BYTES,
 };
 use chatgpt_store::{Store, StoreError};
 use fs2::FileExt;
@@ -295,50 +294,68 @@ fn codec() -> Codec {
     lowered.map_or_else(Codec::new, Codec::with_max_frame)
 }
 
+/// Bytes of an answer's JSON per part: JSON escapes each `"` and `\\` in
+/// it again (two bytes), and the envelope needs a little room, so a part
+/// of this size always fits in a frame.
+fn part_bytes(max_frame: usize) -> usize {
+    (max_frame.saturating_sub(256) / 2).max(1)
+}
+
+/// `text` in pieces of at most `size` bytes, each cut on a character
+/// boundary (a piece holds at least one character, however wide).
+fn split_at_chars(text: &str, size: usize) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut end = size.min(rest.len());
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            end = rest.chars().next().map_or(rest.len(), char::len_utf8);
+        }
+        let (piece, tail) = rest.split_at(end);
+        rest = tail;
+        Some(piece)
+    })
+}
+
+/// Send `response`. One too large for a frame goes as `Part` events
+/// holding its JSON, then `Parted`, which the client's launcher joins: an
+/// answer of any size (a long chat's export or transcript) gets through.
 async fn send(
     framed: &mut Framed<UnixStream, Codec>,
     id: u64,
     response: Response,
 ) -> Result<(), std::io::Error> {
-    let export = matches!(
-        &response,
-        Response::Ok {
-            data: ResponseData::Exported(_)
-        }
-    );
-    let message = Message {
-        id,
-        payload: Payload::Response(response),
-    };
-    match framed.send(message).await {
-        Err(error)
-            if error
-                .get_ref()
-                .is_some_and(|inner| inner.is::<FrameTooLarge>()) =>
-        {
-            // An export too large to send goes to the TS CLI instead; any
-            // other answer says why rather than leaving the client waiting.
-            let response = if export {
-                Response::Ok {
-                    data: ResponseData::ExportTooLarge,
-                }
-            } else {
-                Response::Error {
-                    error: error_payload(
-                        ErrorKind::Internal,
-                        format!("the response was too large to send: {error}"),
-                    ),
-                }
-            };
-            framed
-                .send(Message {
-                    id,
-                    payload: Payload::Response(response),
-                })
-                .await
-        }
-        other => other,
+    let json = serde_json::to_string(&response)?;
+    let cap = framed.codec().max_frame_bytes();
+    // The envelope (`{"id":…,"payload":…}`) adds well under 256 bytes.
+    if json.len() + 256 <= cap {
+        return framed
+            .send(Message {
+                id,
+                payload: Payload::Response(response),
+            })
+            .await;
     }
+    for text in split_at_chars(&json, part_bytes(cap)) {
+        let part = Message {
+            id,
+            payload: Payload::Event(Event::Part(Part {
+                text: text.to_owned(),
+            })),
+        };
+        framed.feed(part).await?;
+    }
+    framed
+        .send(Message {
+            id,
+            payload: Payload::Response(Response::Parted),
+        })
+        .await
 }
 
 /// `Ok(None)` when another daemon holds the lock.
@@ -384,4 +401,35 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 fn describe(path: &Path, error: &std::io::Error) -> String {
     format!("{}: {error}", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pieces_join_back_to_the_text_and_never_split_a_character() {
+        let text = "ab😀cdé\u{1}".repeat(50);
+        for size in [1, 2, 3, 5, 7, 64, 10_000] {
+            let pieces: Vec<&str> = split_at_chars(&text, size).collect();
+            assert_eq!(pieces.concat(), text, "size {size}");
+            assert!(
+                pieces.iter().all(|piece| piece.len() <= size.max(4)),
+                "size {size}"
+            );
+        }
+        assert_eq!(split_at_chars("", 8).count(), 0);
+    }
+
+    #[test]
+    fn a_part_of_quotes_and_backslashes_still_fits_in_a_frame() {
+        let cap = 4096;
+        let text = "\"\\".repeat(part_bytes(cap) / 2);
+        let message = Message {
+            id: u64::MAX,
+            payload: Payload::Event(Event::Part(Part { text })),
+        };
+        let encoded = serde_json::to_vec(&message).expect("encode");
+        assert!(encoded.len() <= cap, "{} > {cap}", encoded.len());
+    }
 }

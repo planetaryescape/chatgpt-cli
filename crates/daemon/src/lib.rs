@@ -28,6 +28,7 @@ mod server;
 mod session;
 mod state;
 mod sync;
+mod transcript;
 mod ts_sync;
 
 use std::os::unix::process::CommandExt;

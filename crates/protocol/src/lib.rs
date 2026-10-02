@@ -26,7 +26,7 @@ mod sync;
 pub use classify::{AutoJevStatus, ClassifiedMemories, ClassifyOutcome, ModelAccess};
 pub use codec::{Codec, FrameTooLarge, MAX_FRAME_BYTES};
 pub use events::{Event, Progress, ProgressKind};
-pub use export::ExportedChat;
+pub use export::{ChatTranscript, Excerpt, ExportedChat, Part, TranscriptSource};
 pub use mutations::{ChatAction, Outcome, Project, Secret, Selection, Target};
 pub use reads::{Filter, Jev, ListRows, MemoryCounts, Row, StatsReport, TopicCounts};
 pub use request::{Request, SessionChoice};
@@ -158,6 +158,44 @@ mod tests {
         )
         .expect("decode");
         assert_eq!(status.embeddings, EmbeddingStatus::default());
+    }
+
+    #[test]
+    fn answers_in_parts_and_transcripts_are_additive() {
+        let part = Message {
+            id: 3,
+            payload: Payload::Event(Event::Part(Part {
+                text: "{\"status\":".into(),
+            })),
+        };
+        assert_eq!(round_trip(&part), part);
+        let parted = Message {
+            id: 3,
+            payload: Payload::Response(Response::Parted),
+        };
+        assert_eq!(
+            serde_json::to_string(&parted).expect("encode"),
+            r#"{"id":3,"payload":{"type":"response","status":"parted"}}"#
+        );
+        let transcript: Request =
+            serde_json::from_str(r#"{"method":"transcript","id":"abc"}"#).expect("decode");
+        assert!(matches!(
+            transcript,
+            Request::Transcript {
+                source: TranscriptSource::Cache,
+                ..
+            }
+        ));
+        let newer: Request =
+            serde_json::from_str(r#"{"method":"transcript","id":"abc","source":"telepathy"}"#)
+                .expect("decode");
+        assert!(matches!(
+            newer,
+            Request::Transcript {
+                source: TranscriptSource::Unknown,
+                ..
+            }
+        ));
     }
 
     #[test]

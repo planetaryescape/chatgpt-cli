@@ -1,9 +1,11 @@
 //! What every chatgpt crate shares: where files live
 //! ([`Paths`], [`Instance`]), the categories of failure ([`ErrorKind`]),
 //! and where the TS CLI that unported commands go to lives ([`ts_cli`]).
-//! No I/O beyond reading paths and the environment, and reading and
-//! writing the user config ([`user_config`]).
+//! No I/O beyond reading paths and the environment, reading and writing
+//! the user config ([`user_config`]), and handing text or a link to
+//! macOS's `pbcopy` and `open` ([`desktop`]).
 
+pub mod desktop;
 mod duration;
 mod error;
 pub mod js;

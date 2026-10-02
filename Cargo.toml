@@ -13,6 +13,7 @@ members = [
     "crates/embed",
     "crates/typesafe",
     "crates/model-api",
+    "crates/tui",
 ]
 
 [workspace.package]
@@ -41,6 +42,7 @@ chatgpt-embed = { path = "crates/embed" }
 fake-chatgpt = { path = "crates/fake-chatgpt" }
 typesafe-client = { path = "crates/typesafe" }
 model-api = { path = "crates/model-api" }
+chatgpt-tui = { path = "crates/tui" }
 
 aes = "0.8"
 bytes = "1"
@@ -82,6 +84,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha1 = "0.10"
 sha2 = "0.10"
+# The TUI (`chatgpt tui`), on crossterm, which it re-exports.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+# Snapshot tests of the TUI's screens.
+insta = "1"
+# Word-wraps the TUI's preview once per transcript and width.
+textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
 # A bigger send buffer for the daemon socket (SOCKET_BUFFER_BYTES).
 socket2 = "0.6"
 thiserror = "2"
@@ -102,6 +110,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 unicode-width = "0.2"
 
 assert_cmd = "2"
+# Reads a pseudo-terminal's output as a screen, for the TUI's tests.
+vt100 = "0.16"
 tempfile = "3"
 toml = "1"
 wiremock = "0.6"

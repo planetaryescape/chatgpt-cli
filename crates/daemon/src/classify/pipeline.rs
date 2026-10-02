@@ -395,7 +395,6 @@ pub async fn download(
     // Pinned to the index's account, as every read that feeds it is.
     let api = crate::sync::pinned_api(state, session.clone()).await?;
     let _foreground = state.indexer.foreground();
-    let versions = crate::search::versions(state.profile());
     let step = reporter.step(label, Some(to_fetch.len()));
     let mut downloaded = 0;
     for (number, batch) in to_fetch.chunks(BATCH_MAX).enumerate() {
@@ -417,28 +416,7 @@ pub async fn download(
                         Err(why) => failures.push(failure_line(chat, &why)),
                     }
                 }
-                let rows: Vec<(Unindexed, Transcript, Vec<Vec<u8>>)> = saved
-                    .iter()
-                    .map(|(chat, transcript)| {
-                        let target = Unindexed {
-                            id: chat.id.clone(),
-                            title: chat.title.clone(),
-                            update_time: chat.update_time.clone(),
-                            cached: true,
-                        };
-                        let bodies = crate::search::indexer::chunk_bytes(&transcript.markdown);
-                        (target, transcript.clone(), bodies)
-                    })
-                    .collect();
-                let _no_pass = state.syncer.exclusive().await;
-                state
-                    .db_write(move |db| {
-                        for (target, transcript, bodies) in &rows {
-                            chatgpt_store::save_indexed(db, transcript, target, versions, bodies)?;
-                        }
-                        Ok(())
-                    })
-                    .await?;
+                save_transcripts(state, &saved).await?;
                 downloaded += saved.len();
                 for (chat, transcript) in saved {
                     transcripts.insert(chat.id, transcript);
@@ -461,6 +439,37 @@ pub async fn download(
     }
     step.finish(&summary(downloaded, to_fetch.len()));
     Ok(())
+}
+
+/// Save fetched transcripts with their search chunks, under the sync pass
+/// lock, each at the `update_time` its chat had when it was fetched.
+pub async fn save_transcripts(
+    state: &State,
+    saved: &[(IndexedConversation, Transcript)],
+) -> Result<(), Failure> {
+    let versions = crate::search::versions(state.profile());
+    let rows: Vec<(Unindexed, Transcript, Vec<Vec<u8>>)> = saved
+        .iter()
+        .map(|(chat, transcript)| {
+            let target = Unindexed {
+                id: chat.id.clone(),
+                title: chat.title.clone(),
+                update_time: chat.update_time.clone(),
+                cached: true,
+            };
+            let bodies = crate::search::indexer::chunk_bytes(&transcript.markdown);
+            (target, transcript.clone(), bodies)
+        })
+        .collect();
+    let _no_pass = state.syncer.exclusive().await;
+    state
+        .db_write(move |db| {
+            for (target, transcript, bodies) in &rows {
+                chatgpt_store::save_indexed(db, transcript, target, versions, bodies)?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 /// Why a late result wasn't saved.

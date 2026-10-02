@@ -17,7 +17,9 @@ use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
 use crate::sync::{PassOptions, pinned_api, run_pass};
-use crate::{classify, export, jev, memories, mutate, projects, reads, search, select, ts_sync};
+use crate::{
+    classify, export, jev, memories, mutate, projects, reads, search, select, transcript, ts_sync,
+};
 
 /// A failed request, worded for people: no response body, cookie or token.
 #[derive(Debug, Clone)]
@@ -121,6 +123,13 @@ pub async fn handle(
         } => export::export(state, reference, stdin_ids, archived, all, session)
             .await
             .map(|chat| ResponseData::Exported(Box::new(chat))),
+        Request::Transcript {
+            id,
+            source,
+            session,
+        } => transcript::transcript(state, id, source, session)
+            .await
+            .map(|chat| ResponseData::Transcript(Box::new(chat))),
         Request::Search {
             query,
             limit,

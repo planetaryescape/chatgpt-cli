@@ -155,6 +155,8 @@ impl DaemonClient {
         mut on_ask: Option<&mut AskUser<'_>>,
     ) -> Result<Response, ClientError> {
         let mut deadline = Instant::now() + stall;
+        // An answer too large for one frame, as it arrives in parts.
+        let mut parts = String::new();
         loop {
             let frame = tokio::time::timeout_at(deadline, self.framed.next())
                 .await
@@ -167,6 +169,18 @@ impl DaemonClient {
                 .ok_or_else(|| mismatch("the daemon closed the connection without answering"))?;
             let message = frame.map_err(ipc_error)?;
             match message.payload {
+                Payload::Response(Response::Parted) if message.id == id => {
+                    return serde_json::from_str(&parts).map_err(|error| {
+                        mismatch(&format!(
+                            "the daemon's answer in parts didn't decode ({:?} error)",
+                            error.classify()
+                        ))
+                    });
+                }
+                Payload::Event(Event::Part(part)) if message.id == id => {
+                    deadline = Instant::now() + stall;
+                    parts.push_str(&part.text);
+                }
                 // Id 0 is the daemon rejecting a frame it couldn't read.
                 Payload::Response(response) if message.id == id || message.id == 0 => {
                     return Ok(response);
@@ -211,7 +225,8 @@ fn into_data(response: Response) -> Result<ResponseData, ClientError> {
             ErrorKind::parse(&error.kind).unwrap_or(ErrorKind::Internal),
             error.message,
         )),
-        Response::Unknown => Err(mismatch(
+        // `Parted` only ever closes the parts `reply` joins.
+        Response::Parted | Response::Unknown => Err(mismatch(
             "the daemon sent an answer this version can't read",
         )),
     }
@@ -671,6 +686,14 @@ fn verify_daemon_pid(paths: &Paths, pid: u32) -> Result<(), ClientError> {
 
 fn unavailable(message: String) -> ClientError {
     ClientError::new(ErrorKind::DaemonUnavailable, message)
+}
+
+/// The daemon answered a request with another request's kind of answer.
+pub fn unexpected() -> ClientError {
+    ClientError::new(
+        ErrorKind::DaemonUnavailable,
+        "the daemon answered with something else; run `chatgpt daemon stop` and try again",
+    )
 }
 
 fn mismatch(what: &str) -> ClientError {

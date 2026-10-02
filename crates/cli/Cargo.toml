@@ -3,7 +3,7 @@ name = "chatgpt-cli"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "The chatgpt command: native commands over the daemon, everything else bridged to the TS CLI."
+description = "The chatgpt command: every command, as a client of the daemon."
 
 [lib]
 name = "chatgpt_cli"
@@ -23,6 +23,7 @@ chatgpt-daemon = { workspace = true }
 chatgpt-embed = { workspace = true }
 chatgpt-launcher = { workspace = true }
 chatgpt-protocol = { workspace = true }
+chatgpt-tui = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 # `configure` reads a key with the terminal's echo off.
@@ -41,6 +42,7 @@ rusqlite = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
+vt100 = { workspace = true }
 
 [lints]
 workspace = true

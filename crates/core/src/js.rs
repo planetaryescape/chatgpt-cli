@@ -83,8 +83,29 @@ pub fn utf16_prefix(text: &str, units: usize) -> &str {
     text
 }
 
+/// `review`'s `clip`: `text.replace(/\s+/g, " ").trim()`, cut to `max`
+/// UTF-16 units with `…` (never through a character).
+pub fn clip(text: &str, max: usize) -> String {
+    let collapsed = collapse_spaces(text);
+    let one_line = trim(&collapsed);
+    if utf16_len(one_line) > max {
+        format!("{}…", utf16_prefix(one_line, max))
+    } else {
+        one_line.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clip_collapses_whitespace_and_cuts_in_utf16_units() {
+        use super::clip;
+        assert_eq!(clip("  a\n\n b\tc  ", 10), "a b c");
+        assert_eq!(clip("abcdef", 3), "abc…");
+        assert_eq!(clip("ab😀cd", 3), "ab…", "never half an emoji");
+        assert_eq!(clip("abc", 3), "abc");
+    }
+
     use super::*;
 
     #[test]

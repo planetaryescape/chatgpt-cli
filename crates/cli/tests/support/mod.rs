@@ -246,8 +246,8 @@ impl Env {
     }
 }
 
-/// Run `args` in a pseudo-terminal (through `script`), as a person at a
-/// terminal would: once `prompt` shows, type `answer`. With `stdin_ids`,
+/// Run `args` in a pseudo-terminal, as a person at a terminal would: once
+/// `prompt` shows (or the command ends), type `answer`. With `stdin_ids`,
 /// the command reads them from a pipe and the answer from `/dev/tty`, as
 /// `… | chatgpt archive -` does. Returns the exit status and everything the
 /// terminal showed, with `\r\n` as `\n`.
@@ -258,76 +258,228 @@ pub fn in_terminal(
     prompt: &str,
     answer: &str,
 ) -> (Option<i32>, String) {
-    use std::io::{Read, Write};
-    let template = env.std_cmd();
-    let binary = template.get_program().to_owned();
-    let mut command = std::process::Command::new("script");
-    command.arg("-q").arg("/dev/null");
-    match stdin_ids {
-        Some(ids) => {
-            let quoted: Vec<String> = std::iter::once(binary.to_string_lossy().into_owned())
-                .chain(args.iter().map(|arg| (*arg).to_owned()))
-                .map(|word| format!("'{}'", word.replace('\'', "'\\''")))
-                .collect();
-            command.args([
-                "/bin/sh",
-                "-c",
-                &format!("printf '%s\\n' '{ids}' | exec {}", quoted.join(" ")),
-            ]);
-        }
-        None => {
-            command.arg(&binary).args(args);
-        }
-    }
-    for (name, value) in template.get_envs() {
-        match value {
-            Some(value) => command.env(name, value),
-            None => command.env_remove(name),
-        };
-    }
-    let mut child = command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = {
-        let shown = std::sync::Arc::clone(&shown);
-        std::thread::spawn(move || {
-            let mut buffer = [0u8; 4096];
-            while let Ok(read) = stdout.read(&mut buffer) {
-                if read == 0 {
-                    break;
-                }
-                shown.lock().unwrap().extend_from_slice(&buffer[..read]);
-            }
-        })
-    };
+    let mut pty = Pty::spawn(env, args, stdin_ids, 40, 200);
     // Room for a 2 MB chat's download on a busy machine before the prompt.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    loop {
-        let text = String::from_utf8_lossy(&shown.lock().unwrap()).into_owned();
-        if text.contains(prompt) {
-            break;
-        }
-        if let Ok(Some(_)) = child.try_wait() {
-            break;
-        }
+    while !pty.text().contains(prompt) && !pty.exited() {
         assert!(
             std::time::Instant::now() < deadline,
-            "never prompted {prompt:?}: {text}"
+            "never prompted {prompt:?}: {}",
+            pty.text()
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let mut stdin = child.stdin.take().unwrap();
-    let _ = stdin.write_all(format!("{answer}\n").as_bytes());
-    let status = child.wait().unwrap();
-    drop(stdin);
-    reader.join().unwrap();
-    let text = String::from_utf8_lossy(&shown.lock().unwrap()).replace("\r\n", "\n");
-    (status.code(), text)
+    pty.send(&format!("{answer}\n"));
+    pty.finish_keeping_text()
+}
+
+/// The binary in a pseudo-terminal (through `script`), `rows` × `cols`,
+/// driven key by key. What it shows is read both as a stream (for
+/// line-by-line output such as `review`'s) and as a screen (a vt100
+/// emulator, for the TUI, which redraws only the cells that changed).
+pub struct Pty {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    shown: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    /// How far `wait_for` has read the stream.
+    seen: usize,
+    rows: u16,
+    cols: u16,
+}
+
+impl Pty {
+    /// With `stdin_ids`, they're piped to the command's stdin, as
+    /// `… | chatgpt review -` does, and keys still come from the terminal.
+    pub fn spawn(env: &Env, args: &[&str], stdin_ids: Option<&str>, rows: u16, cols: u16) -> Self {
+        use std::io::Read;
+        let template = env.std_cmd();
+        let quote = |word: &str| format!("'{}'", word.replace('\'', "'\\''"));
+        let command_line: Vec<String> =
+            std::iter::once(template.get_program().to_string_lossy().into_owned())
+                .chain(args.iter().map(|arg| (*arg).to_owned()))
+                .map(|word| quote(&word))
+                .collect();
+        let pipe = stdin_ids.map_or_else(String::new, |ids| {
+            format!("printf '%s\\n' {} | ", quote(ids))
+        });
+        let script = format!(
+            "stty rows {rows} cols {cols}; {pipe}exec {}",
+            command_line.join(" ")
+        );
+        let mut command = std::process::Command::new("script");
+        command.args(["-q", "/dev/null", "/bin/sh", "-c", &script]);
+        for (name, value) in template.get_envs() {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
+        command.env("TERM", "xterm-256color");
+        let mut child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut stdout = child.stdout.take().unwrap();
+        let reader = {
+            let shown = std::sync::Arc::clone(&shown);
+            std::thread::spawn(move || {
+                let mut buffer = [0u8; 8192];
+                while let Ok(read) = stdout.read(&mut buffer) {
+                    if read == 0 {
+                        break;
+                    }
+                    shown.lock().unwrap().extend_from_slice(&buffer[..read]);
+                }
+            })
+        };
+        Self {
+            stdin: child.stdin.take(),
+            child,
+            shown,
+            reader: Some(reader),
+            seen: 0,
+            rows,
+            cols,
+        }
+    }
+
+    /// Type `keys`. A command that already ended reads nothing.
+    pub fn send(&mut self, keys: &str) {
+        use std::io::Write;
+        let stdin = self.stdin.as_mut().unwrap();
+        let _ = stdin
+            .write_all(keys.as_bytes())
+            .and_then(|()| stdin.flush());
+    }
+
+    pub fn exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
+    /// Everything shown so far, `\r\n` as `\n`.
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.shown.lock().unwrap()).replace("\r\n", "\n")
+    }
+
+    /// Wait until `wanted` shows in the stream after what earlier waits
+    /// matched; returns the text from there up to and including it.
+    pub fn wait_for(&mut self, wanted: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let text = self.text();
+            if let Some(at) = text.get(self.seen..).and_then(|rest| rest.find(wanted)) {
+                let end = self.seen + at + wanted.len();
+                let upto = text[self.seen..end].to_owned();
+                self.seen = end;
+                return upto;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never showed {wanted:?}; showed:\n{}",
+                text.get(self.seen..).unwrap_or_default()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The screen as a terminal of this size shows it now.
+    pub fn screen(&self) -> String {
+        let mut parser = vt100::Parser::new(self.rows, self.cols, 0);
+        parser.process(&self.shown.lock().unwrap());
+        parser.screen().contents()
+    }
+
+    /// Wait until the screen shows `wanted`; returns the screen.
+    pub fn wait_for_screen(&self, wanted: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let screen = self.screen();
+            if screen.contains(wanted) {
+                return screen;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the screen never showed {wanted:?}:\n{screen}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Wait for the command to exit; its status code.
+    pub fn finish(self) -> Option<i32> {
+        self.finish_keeping_text().0
+    }
+
+    /// Wait for the command to exit (generously: classify tests summarise
+    /// 2 MB chats after the answer); its status code and everything it
+    /// showed.
+    pub fn finish_keeping_text(mut self) -> (Option<i32>, String) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                drop(self.stdin.take());
+                if let Some(reader) = self.reader.take() {
+                    reader.join().unwrap();
+                }
+                return (status.code(), self.text());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never exited; showed:\n{}",
+                self.text()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+/// Every chat the fake chatgpt.com has, and whether it's archived.
+pub fn fake_chat_states(env: &Env) -> Vec<(String, bool)> {
+    env.fake()
+        .state()
+        .chats
+        .iter()
+        .map(|chat| (chat.id.clone(), chat.archived))
+        .collect()
+}
+
+/// `id`'s `update_time` in the daemon's index.
+pub fn indexed_update_time(env: &Env, id: &str) -> String {
+    env.index_db()
+        .query_row(
+            "select update_time from conversations where id = ?",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// A stand-in `name` on the tools `PATH` (`pbcopy`, `open`, a pager) that
+/// appends its arguments, then its stdin, to `<home>/<name>.log`.
+pub fn recording_tool(env: &Env, name: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let log = env.home.path().join(format!("{name}.log"));
+    let script = env.tools.join(name);
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'args:%s\\n' \"$*\" >> '{log}'\ncat >> '{log}'\n",
+            log = log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    log
 }
 
 impl Drop for Env {

@@ -12,6 +12,9 @@ pub enum Event {
     /// Sent every few seconds while a request runs, so a long step that
     /// has nothing to report never trips the client's stall timeout.
     Heartbeat,
+    /// A slice of an answer too large for one frame, in order; the answer
+    /// itself is [`crate::Response::Parted`].
+    Part(crate::Part),
     #[serde(other)]
     Unknown,
 }

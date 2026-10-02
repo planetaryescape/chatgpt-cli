@@ -1,16 +1,17 @@
-//! The `chatgpt` command. `configure`, `sync`, `list`, `stats`, `export`,
-//! `search` (every mode), `search-index`, `archive`, `unarchive`,
-//! `delete`, `rename`, `title`, `titles`, `classify`, `project`, `memory`,
-//! `daemon` and `import-legacy` are native: they ask the daemon over IPC
-//! and print its answer (`configure` only writes the user config). Every
-//! other command (`review`, `tui`) is handed, unchanged, to the TS CLI
-//! (the bridge).
+//! The `chatgpt` command. Every command is native: it asks the daemon over
+//! IPC and prints its answer (`configure` only writes the user config;
+//! `tui` is a daemon client of its own, in `chatgpt-tui`). Nothing goes to
+//! the TS CLI any more; the bridge to it is unreachable and goes in 6b.
 //!
 //! This crate never touches the index or chatgpt.com itself: only the
 //! daemon does (tests/workspace_boundaries.rs). `main.rs` passes the
 //! daemon's entry point in for `chatgpt daemon run`.
 
 mod args;
+#[allow(
+    dead_code,
+    reason = "unreachable since every command is native; deleted with the TS CLI"
+)]
 mod bridge;
 mod change_cmd;
 mod classify_cmd;
@@ -25,6 +26,7 @@ mod output;
 mod project_cmd;
 mod prompt;
 mod reads;
+mod review_cmd;
 mod search_cmd;
 mod sync_cmd;
 
@@ -52,11 +54,8 @@ pub fn main(daemon: DaemonEntry) -> ExitCode {
             .collect();
         return fake_model::run(&rest);
     }
-    if !is_native(&args) {
-        return bridge::exec(&args);
-    }
     let cli = Cli::parse_from(&args);
-    match run(cli, daemon, &args) {
+    match run(cli, daemon) {
         Ok(code) => code,
         Err(error) => {
             output::error_line(&error.message);
@@ -65,45 +64,7 @@ pub fn main(daemon: DaemonEntry) -> ExitCode {
     }
 }
 
-/// Global options that take a value, which come before the command.
-const VALUE_OPTIONS: &[&str] = &["--browser", "--profile", "--instance"];
-
-/// Whether this build runs the command itself: a native command, `help`
-/// for one, top-level `--help`/`--version`, or no command at all.
-/// Anything else, unknown commands and options included, goes to the TS CLI,
-/// which knows what to say about them.
-fn is_native(args: &[OsString]) -> bool {
-    let mut words = args.iter().skip(1).map(|arg| arg.to_string_lossy());
-    let mut command = None;
-    while let Some(word) = words.next() {
-        if VALUE_OPTIONS.contains(&word.as_ref()) {
-            words.next();
-            continue;
-        }
-        if VALUE_OPTIONS
-            .iter()
-            .any(|option| word.starts_with(&format!("{option}=")))
-        {
-            continue;
-        }
-        if word.starts_with('-') {
-            return matches!(word.as_ref(), "-h" | "--help" | "-V" | "--version");
-        }
-        command = Some(word.into_owned());
-        break;
-    }
-    match command.as_deref() {
-        None => true,
-        Some("help") => words
-            .next()
-            .is_none_or(|topic| args::NATIVE.contains(&topic.as_ref())),
-        Some(command) => args::NATIVE.contains(&command),
-    }
-}
-
-/// `args`: the command line as typed, for a native command that has to hand
-/// over to the TS CLI after all.
-fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, ClientError> {
+fn run(cli: Cli, daemon: DaemonEntry) -> Result<ExitCode, ClientError> {
     let instance = Instance::detect(cli.instance.as_deref())
         .map_err(|error| ClientError::new(ErrorKind::InvalidInput, error.to_string()))?;
     let paths = Paths::resolve(instance)
@@ -121,12 +82,13 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
             daemon_cmd::logs(&paths, lines, follow)
         }
         Command::Configure { provider, remove } => configure_cmd::configure(provider, remove),
+        Command::Tui => chatgpt_tui::run(&paths, session),
         command => block_on(async move {
             match command {
                 Command::Sync { full } => sync_cmd::sync(&paths, full, session).await,
                 Command::List(list) => reads::list(&paths, list).await,
                 Command::Stats(filters) => reads::stats(&paths, filters, session).await,
-                Command::Export(export) => export_cmd::export(&paths, export, session, args).await,
+                Command::Export(export) => export_cmd::export(&paths, export, session).await,
                 Command::Search(search) => search_cmd::search(&paths, search, session).await,
                 Command::SearchIndex(scope) => search_cmd::search_index(&paths, scope).await,
                 Command::ImportLegacy => sync_cmd::import_legacy(&paths).await,
@@ -151,7 +113,10 @@ fn run(cli: Cli, daemon: DaemonEntry, args: &[OsString]) -> Result<ExitCode, Cli
                     daemon_cmd::status(&paths, json).await
                 }
                 Command::Daemon(DaemonCommand::Stop) => daemon_cmd::stop(&paths).await,
-                Command::Daemon(_) | Command::Configure { .. } => Ok(ExitCode::SUCCESS),
+                Command::Review(review) => review_cmd::review(&paths, review, session).await,
+                Command::Daemon(_) | Command::Configure { .. } | Command::Tui => {
+                    Ok(ExitCode::SUCCESS)
+                }
             }
         })?,
     }
@@ -204,57 +169,4 @@ fn block_on<T>(work: impl Future<Output = T>) -> Result<T, ClientError> {
             )
         })?;
     Ok(runtime.block_on(work))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn native(line: &str) -> bool {
-        let args: Vec<OsString> = std::iter::once("chatgpt")
-            .chain(line.split_whitespace())
-            .map(OsString::from)
-            .collect();
-        is_native(&args)
-    }
-
-    #[test]
-    fn only_ported_commands_stay_native() {
-        assert!(native(""));
-        assert!(native("--help"));
-        assert!(native("--version"));
-        assert!(native("list --json"));
-        assert!(native("--browser chrome stats"));
-        assert!(native("--browser=chrome --profile Default sync --full"));
-        assert!(native("daemon status"));
-        assert!(native("help list"));
-        assert!(native("help"));
-        assert!(native("export abc -o"));
-        assert!(native("show abc"));
-        assert!(native("help export"));
-        assert!(native("search rust --format json --limit 5"));
-        assert!(native("search -- --semantic"));
-        assert!(native("search rust --semantic"));
-        assert!(native("search --hybrid rust"));
-        assert!(native("--browser chrome search rust --remote --limit 5"));
-        assert!(native("search-index --all"));
-        assert!(native("help search-index"));
-        assert!(native("archive --suggest delete -n"));
-        assert!(native("delete abc def -y"));
-        assert!(native("unarchive -"));
-        assert!(native("rename abc New"));
-        assert!(native("title abc New"));
-        assert!(native("project add P abc"));
-        assert!(native("memory list --format json"));
-        assert!(native("memory classify --suggest delete"));
-        assert!(native("help memory"));
-        assert!(native("--browser chrome classify"));
-        assert!(native("titles --all"));
-        assert!(native("configure jev"));
-        assert!(native("help classify"));
-        assert!(!native("review --suggest delete"));
-        assert!(!native("tui"));
-        assert!(!native("frobnicate"));
-        assert!(!native("--frobnicate list"));
-    }
 }
