@@ -11,7 +11,7 @@ use chatgpt_protocol::{
 use rusqlite::Connection;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::api::{Api, ApiError};
+use crate::api::ApiError;
 use crate::filters::InvalidFilter;
 use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
@@ -336,9 +336,11 @@ async fn stats(
         reads::chat_stats(db, &filter, profile, now)
     })
     .await?;
-    // Its own session for this choice: a sync running meanwhile keeps its.
-    let api = Api::new(Arc::clone(&state.sessions), session.clone());
-    match api.memories().await {
+    // Its own session for this choice (a sync running meanwhile keeps its),
+    // pinned to the index's account: another account's memories would be
+    // counted against this index's classifications.
+    let memories = async { pinned_api(state, session.clone()).await?.memories().await };
+    match memories.await {
         Ok(memories) => {
             let as_of = chrono::Utc::now().format("%Y-%m-%d").to_string();
             let counted = read(state, move |db, profile, _| {
