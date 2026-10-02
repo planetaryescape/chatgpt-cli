@@ -137,7 +137,20 @@ case ":$PATH:" in
   *":$bin_dir:"*)
     if [ -n "$first" ] && [ "$first" != "$bin_dir/chatgpt" ]; then
       echo "warning: $first comes earlier on your PATH, so \`chatgpt\` still runs it, not $bin_dir/chatgpt." >&2
-      echo "         Remove it (for the retired TS CLI's link: rm \"$first\"), or put $bin_dir earlier on PATH." >&2
+      # Only the retired TS CLI's bun link is known to be safe to delete;
+      # anything else (another install, someone else's tool) stays.
+      link_target=""
+      if [ -L "$first" ]; then
+        link_target="$(readlink "$first")"
+      fi
+      case "$link_target" in
+        *node_modules/chatgpt-cli/*)
+          echo "         It's the retired TS CLI's bun link; remove it with: rm \"$first\"" >&2
+          ;;
+        *)
+          echo "         Put $bin_dir earlier on PATH than $(dirname "$first")." >&2
+          ;;
+      esac
     fi
     ;;
   *)

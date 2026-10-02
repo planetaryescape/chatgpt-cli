@@ -4,11 +4,11 @@
 //! the clipboard, the browser), which `run.rs` runs and answers with an
 //! [`Outcome`]. Tests drive it directly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chatgpt_core::js::{trim, utf16_len};
-use chatgpt_protocol::{ChatTranscript, Row, Target};
+use chatgpt_protocol::{ChatTranscript, DaemonStatus, Row, Target};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::input::LineInput;
@@ -68,6 +68,25 @@ pub enum Transcript {
 
 /// A chat at one revision: its id and `update_time`.
 pub type ChatKey = (String, String);
+
+/// What `Status` reports that moves when the index's chats or verdicts
+/// change behind the TUI: a sync, and background Jev.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexStamp {
+    pub(crate) synced_at: Option<String>,
+    pub(crate) sync_finished_at: Option<i64>,
+    pub(crate) jev_run_at: Option<i64>,
+}
+
+impl IndexStamp {
+    pub fn of(status: &DaemonStatus) -> Self {
+        Self {
+            synced_at: status.sync.synced_at.clone(),
+            sync_finished_at: status.sync.last_finished_at,
+            jev_run_at: status.auto_jev.last_run_at,
+        }
+    }
+}
 
 /// The selected chat's transcript and summary, for the revision the list
 /// shows: a reload that brings a newer one fetches it again.
@@ -146,6 +165,8 @@ pub enum Outcome {
     },
     /// The status line to show.
     Copied(Result<String, String>),
+    /// The daemon's index, as polled while the TUI runs.
+    Index(IndexStamp),
 }
 
 pub struct App {
@@ -169,12 +190,18 @@ pub struct App {
     /// many lines its text wraps to.
     pub preview_height: usize,
     pub preview_lines: usize,
-    /// The preview's text wrapped: for which `Preview::version` and
-    /// width. Wrapping a long transcript on every keypress would lag.
-    pub wrapped: Option<(u64, usize, Vec<ratatui::text::Line<'static>>)>,
+    /// The preview's text, wrapped as far as it's been shown, for one
+    /// `Preview::version` and width: wrapping a long transcript on every
+    /// keypress, or all of it before the first frame, would lag.
+    pub wrapped: Option<crate::ui::Wrapped>,
+    /// The index the rows came from, when `Status` last said; a poll that
+    /// finds it moved reloads.
+    pub index: Option<IndexStamp>,
     /// The last ticket handed out, and the reload whose answer counts.
     tickets: u64,
     reloading: u64,
+    /// The latest reload's rows, while a box kept them from being shown.
+    held: Option<Vec<Row>>,
     /// Per chat: the title save that's out, and the latest title typed
     /// while it was.
     titles_saving: HashMap<String, u64>,
@@ -208,8 +235,10 @@ impl App {
             preview_height: 1,
             preview_lines: 0,
             wrapped: None,
+            index: None,
             tickets: 0,
             reloading: 0,
+            held: None,
             titles_saving: HashMap::new(),
             titles_waiting: HashMap::new(),
         };
@@ -301,6 +330,12 @@ impl App {
                 }
             },
             Mode::Browse => self.browse_key(key, &mut effects),
+        }
+        // A box just closed: the reload that arrived while it was open.
+        if self.mode == Mode::Browse
+            && let Some(rows) = self.held.take()
+        {
+            self.replace_rows(rows, &mut effects);
         }
         effects
     }
@@ -518,6 +553,8 @@ impl App {
     fn reload(&mut self) -> Effect {
         let ticket = self.ticket();
         self.reloading = ticket;
+        // This one's answer will be newer.
+        self.held = None;
         Effect::Reload { ticket }
     }
 
@@ -557,13 +594,23 @@ impl App {
                     return effects;
                 }
                 match result {
-                    Ok(rows) => {
-                        self.rows = rows;
-                        self.visible = visible_rows(&self.rows, &self.view, (self.clock)());
-                        self.sync_preview(&mut effects);
-                    }
+                    // Rows never change under an open box or a running
+                    // apply, where the user confirms what's on screen: the
+                    // latest reload waits until the box closes.
+                    Ok(rows) if self.mode != Mode::Browse => self.held = Some(rows),
+                    Ok(rows) => self.replace_rows(rows, &mut effects),
                     Err(why) => self.status = why,
                 }
+            }
+            Outcome::Index(stamp) => {
+                // Unchanged; or a box is open or a filter being typed, where
+                // a reload never happens: the next poll tries again.
+                if self.index.as_ref() == Some(&stamp) || self.mode != Mode::Browse {
+                    return effects;
+                }
+                self.index = Some(stamp);
+                effects.push(self.reload());
+                "The index changed in the background; reloaded.".clone_into(&mut self.status);
             }
             Outcome::ApplyProgress { ticket, done } => {
                 if let Mode::Applying {
@@ -642,6 +689,31 @@ impl App {
             Outcome::Copied(Ok(status) | Err(status)) => self.status = status,
         }
         effects
+    }
+
+    /// A reload's rows. The cursor stays on the chat it was on, wherever
+    /// that chat moved; marks on chats no longer indexed go.
+    fn replace_rows(&mut self, rows: Vec<Row>, effects: &mut Vec<Effect>) {
+        let current = self.current().map(|row| row.id.clone());
+        self.rows = rows;
+        let indexed: HashSet<&str> = self.rows.iter().map(|row| row.id.as_str()).collect();
+        self.marks.retain(|id, _| indexed.contains(id.as_str()));
+        self.visible = visible_rows(&self.rows, &self.view, (self.clock)());
+        let at = current.and_then(|id| {
+            self.visible
+                .iter()
+                .position(|&index| self.rows[index].id == id)
+        });
+        self.selected = at
+            .unwrap_or(self.selected)
+            .min(self.visible.len().saturating_sub(1));
+        self.start = window_start(
+            self.selected,
+            self.start,
+            self.list_height,
+            self.visible.len(),
+        );
+        self.sync_preview(effects);
     }
 
     /// The status line after a copy.

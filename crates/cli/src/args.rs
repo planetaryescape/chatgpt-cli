@@ -197,6 +197,18 @@ pub enum ProjectCommand {
     Add(ProjectMoveArgs),
     /// Remove chats from an existing project; use `-` for ids on stdin
     Remove(ProjectMoveArgs),
+    /// Delete a project in ChatGPT; asks you to type its name to confirm
+    Delete {
+        /// Project name, id or id prefix
+        #[arg(value_name = "project")]
+        project: String,
+        /// Preview without changing anything
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args)]

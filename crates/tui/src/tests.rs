@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use chatgpt_protocol::ChatTranscript;
 
-use crate::app::{App, Effect, Mode, Outcome, Transcript};
+use crate::app::{App, Effect, IndexStamp, Mode, Outcome, Transcript};
 use crate::model::Mark;
 use crate::model::tests::{judged, row};
 
@@ -304,6 +304,40 @@ fn help_shows_every_key_and_any_key_closes_it() {
     insta::assert_snapshot!("help", screen);
     assert!(h.key(KeyCode::Char('q')).is_empty(), "q only closes help");
     assert_eq!(h.app.mode, Mode::Browse);
+}
+
+#[test]
+fn help_wraps_on_a_narrow_terminal_and_says_when_it_cant_fit() {
+    let mut h = Harness::new();
+    h.terminal.backend_mut().resize(60, 30);
+    h.key(KeyCode::Char('?'));
+    let screen = h.screen();
+    for words in [
+        "ctrl-d/u",
+        "clear filter",
+        "unsure",
+        "archived view",
+        "3y",
+        "other",
+        "unmark",
+        "apply marks",
+        "reload data",
+        "unchanged)",
+        "close help",
+    ] {
+        assert!(screen.contains(words), "{words} is cut off:\n{screen}");
+    }
+    insta::assert_snapshot!("help_narrow", screen);
+
+    h.key(KeyCode::Char('q'));
+    h.terminal.backend_mut().resize(60, 12);
+    h.key(KeyCode::Char('?'));
+    let screen = h.screen();
+    assert!(screen.contains("j/k"), "{screen}");
+    assert!(
+        screen.contains("… (a taller terminal shows every key)"),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -720,4 +754,184 @@ fn title_saves_to_one_chat_land_in_the_order_typed() {
     h.key(KeyCode::Char('j'));
     let other = type_title(&mut h, "Other");
     assert!(matches!(other[..], [Effect::SaveTitle { .. }]));
+}
+
+/// A poll that finds the index moved reloads, but never under an open box;
+/// the reload keeps the cursor on its chat and drops marks on chats gone.
+#[test]
+fn a_changed_index_reloads_in_browse_only_and_keeps_the_cursor() {
+    let mut h = Harness::new();
+    let first = IndexStamp {
+        sync_finished_at: Some(1),
+        ..IndexStamp::default()
+    };
+    let moved = IndexStamp {
+        sync_finished_at: Some(2),
+        ..IndexStamp::default()
+    };
+    h.app.index = Some(first.clone());
+    assert!(h.answer(Outcome::Index(first)).is_empty(), "unchanged");
+
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('d'));
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('a'));
+    assert_eq!(h.app.current().unwrap().id, "c3");
+    h.key(KeyCode::Char('?'));
+    assert!(
+        h.answer(Outcome::Index(moved.clone())).is_empty(),
+        "help is open"
+    );
+    h.key(KeyCode::Char('q'));
+    h.key(KeyCode::Char('/'));
+    assert!(
+        h.answer(Outcome::Index(moved.clone())).is_empty(),
+        "a filter is being typed"
+    );
+    h.key(KeyCode::Esc);
+    h.key(KeyCode::Char('x'));
+    assert!(
+        h.answer(Outcome::Index(moved.clone())).is_empty(),
+        "the apply box is open"
+    );
+    h.key(KeyCode::Esc);
+    // Clearing the filter went back to the top.
+    h.key(KeyCode::Char('G'));
+    assert_eq!(h.app.current().unwrap().id, "c3");
+
+    let reload = ticket_of(&h.answer(Outcome::Index(moved.clone())));
+    assert!(
+        h.screen()
+            .contains("The index changed in the background; reloaded.")
+    );
+    assert_eq!(h.app.index, Some(moved));
+    // A new chat on top, and b2 (marked) deleted elsewhere.
+    let mut synced = rows();
+    synced.retain(|row| row.id != "b2");
+    synced.insert(0, row("e5", "Newest chat", false, "2024-06-01T10:00:00Z"));
+    h.answer(Outcome::Reloaded {
+        ticket: reload,
+        result: Ok(synced),
+    });
+    assert_eq!(h.app.current().unwrap().id, "c3", "the cursor followed c3");
+    assert_eq!(h.app.selected, 2);
+    assert_eq!(h.app.mark_counts(), (0, 1), "b2's mark went with it");
+}
+
+/// A long transcript's first frame wraps only what's shown (and a page
+/// more); scrolling wraps on, and the end is found as before.
+#[test]
+fn a_long_transcript_is_wrapped_only_as_far_as_its_shown() {
+    let mut h = Harness::new();
+    let long: String = (1..=50_000).map(|n| format!("line {n}\n")).collect();
+    h.cached("a1", &long, Some("short summary"));
+    let wrapped = |h: &Harness| h.app.wrapped.as_ref().unwrap().lines.len();
+    assert!(wrapped(&h) < 100, "{} lines wrapped", wrapped(&h));
+    assert!(h.screen().contains("line 1"));
+    assert_eq!(h.app.preview_lines, usize::MAX, "the end isn't known yet");
+    for _ in 0..10 {
+        h.key(KeyCode::Char(' '));
+    }
+    assert!(
+        h.screen()
+            .contains(&format!("line {}", h.app.preview.scroll - 4))
+    );
+    assert!(wrapped(&h) < 300);
+    // Scrolled far past the end at once: all of it is wrapped, and the
+    // scroll comes back to the last page.
+    h.app.preview.scroll = 1_000_000;
+    h.draw();
+    // Summary (header, text, blank, rule, blank), then 50,000 lines and the
+    // empty one after the last newline.
+    assert_eq!(h.app.preview_lines, 5 + 50_001);
+    for _ in 0..3 {
+        h.key(KeyCode::Char(' '));
+    }
+    assert_eq!(
+        h.app.preview.scroll,
+        h.app.preview_lines - h.app.preview_height,
+        "never past the end"
+    );
+    assert!(h.screen().contains("line 50000"));
+}
+
+/// A reload already out when `x` opens the apply box answers while it's
+/// open, or while the apply runs: the rows and marks the user confirmed
+/// stay as they were, and the held rows show once the box closes.
+#[test]
+fn a_reload_answering_under_the_apply_box_waits_for_it_to_close() {
+    // Rows reordered, and b2 (marked) gone.
+    let synced = || {
+        let mut synced = rows();
+        synced.retain(|row| row.id != "b2");
+        synced.reverse();
+        synced
+    };
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('d'));
+    let reload = ticket_of(&h.key(KeyCode::Char('r')));
+    h.key(KeyCode::Char('x'));
+    assert!(matches!(h.app.mode, Mode::Confirm(_)));
+    assert!(
+        h.answer(Outcome::Reloaded {
+            ticket: reload,
+            result: Ok(synced()),
+        })
+        .is_empty()
+    );
+    assert_eq!(h.app.rows, rows(), "the rows under the box didn't change");
+    assert_eq!(h.app.mark_counts(), (1, 0));
+    assert!(h.screen().contains("permanently delete 1 conversation(s)"));
+    // Esc: the held rows show, and b2's mark goes with it.
+    h.key(KeyCode::Esc);
+    assert_eq!(h.app.rows, synced());
+    assert_eq!(h.app.mark_counts(), (0, 0));
+
+    // The answer after `apply`, while it runs.
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('d'));
+    let reload = ticket_of(&h.key(KeyCode::Char('r')));
+    h.key(KeyCode::Char('x'));
+    let effects = h.keys("apply");
+    assert!(effects.is_empty());
+    let effects = h.key(KeyCode::Enter);
+    assert_eq!(
+        effects,
+        [Effect::Apply {
+            ticket: ticket_of(&effects),
+            archive: Vec::new(),
+            delete: vec![Target {
+                id: "b2".into(),
+                title: "Postgres backup plan".into(),
+            }],
+        }]
+    );
+    let apply = ticket_of(&effects);
+    h.answer(Outcome::Reloaded {
+        ticket: reload,
+        result: Ok(synced()),
+    });
+    assert_eq!(h.app.rows, rows(), "the rows under the apply didn't change");
+    assert!(matches!(h.app.mode, Mode::Applying { .. }));
+    // The apply's own reload supersedes the held one.
+    let effects = h.answer(Outcome::Applied {
+        ticket: apply,
+        result: Ok(Vec::new()),
+    });
+    let after = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Reload { ticket } => Some(*ticket),
+            _ => None,
+        })
+        .unwrap();
+    h.key(KeyCode::Char('j'));
+    assert_eq!(h.app.rows, rows(), "the stale held rows never showed");
+    h.answer(Outcome::Reloaded {
+        ticket: after,
+        result: Ok(synced()),
+    });
+    assert_eq!(h.app.rows, synced());
 }

@@ -150,6 +150,44 @@ fn ids_on_stdin_and_keys_from_the_terminal() {
     assert!(fake_chat_states(&env).contains(&("b-two".to_owned(), true)));
 }
 
+/// While a chat is on screen, the next one (only) is fetched, before any
+/// key; `u` on the first chat neither undoes nor redraws.
+#[test]
+fn the_next_chat_is_fetched_while_this_one_is_read() {
+    let env = synced();
+    env.wait_for_indexer();
+    let fetched_before = env.fake().state().batch_bodies.len();
+    let fetched = |env: &Env| -> Vec<Vec<String>> {
+        env.fake().state().batch_bodies[fetched_before..].to_vec()
+    };
+    let mut pty = Pty::spawn(&env, &["review"], None, 40, 120);
+    pty.wait_for("[1/3]  One");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !fetched(&env).contains(&vec!["b-two".to_owned()]) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "b-two wasn't prefetched: {:?}",
+            fetched(&env)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    pty.send("u");
+    pty.send("k");
+    pty.wait_for("[2/3]  Two");
+    pty.wait_for("[k]eep");
+    pty.send("q");
+    pty.wait_for("Reviewed 1");
+    let shown = pty.text();
+    assert_eq!(pty.finish(), Some(0));
+    assert_eq!(shown.matches("[1/3]").count(), 1, "u redrew the first chat");
+    let ids: Vec<String> = fetched(&env).into_iter().flatten().collect();
+    assert_eq!(
+        ids.iter().filter(|id| *id == "b-two").count(),
+        1,
+        "shown from the prefetch, not fetched again: {ids:?}"
+    );
+}
+
 #[test]
 fn view_pages_the_transcript_and_open_hands_the_link_to_the_browser() {
     let mut env = synced();

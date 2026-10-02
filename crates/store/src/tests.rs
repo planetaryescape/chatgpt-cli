@@ -363,3 +363,50 @@ fn the_background_jev_baseline_is_the_newest_chat_by_time_not_text() {
         Some("2026-10-01T14:05:59.2061Z")
     );
 }
+
+#[test]
+fn a_full_uuid_is_looked_up_exactly_and_anything_shorter_by_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(dir.path());
+    let full = "6a1b2c3d-0000-4000-8000-00000000000a";
+    let mut in_project = chat(
+        "6a1b2c3d-0000-4000-8000-00000000000b",
+        "2024-01-01T00:00:00Z",
+    );
+    in_project.project_id = Some("g-p-gone".into());
+    store
+        .write(|db| {
+            replace_all(
+                db,
+                &[
+                    chat(full, "2024-01-01T00:00:00Z"),
+                    in_project,
+                    chat("6a1b-short", "t"),
+                ],
+                "t",
+            )
+        })
+        .unwrap();
+    let ids = |reference: &str| -> Vec<String> {
+        store
+            .read(|db| get(db, reference, 2))
+            .unwrap()
+            .into_iter()
+            .map(|chat| chat.id)
+            .collect()
+    };
+    assert_eq!(ids(full), [full]);
+    assert_eq!(
+        ids(&full.to_uppercase()),
+        [full],
+        "as `like` ignores ASCII case"
+    );
+    assert_eq!(ids("6a1b").len(), 3);
+    assert_eq!(ids("6A1B2C3D").len(), 2);
+    assert!(ids("").is_empty(), "a blank prefix names no chat");
+    assert!(ids("  ").is_empty());
+
+    let cleared = store.write(|db| clear_project(db, "g-p-gone")).unwrap();
+    assert_eq!(cleared, 1);
+    assert!(all(&store, 2).iter().all(|chat| chat.project_id.is_none()));
+}

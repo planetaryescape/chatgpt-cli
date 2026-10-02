@@ -54,6 +54,10 @@ pub struct Selection {
     /// every chat in scope (`selectTargets`' `allowUnfiltered`).
     #[serde(default)]
     pub allow_unfiltered: bool,
+    /// `review`: each row with its current verdict and topic, as `List`
+    /// gives them (0.2.1 and newer; an older daemon leaves them out).
+    #[serde(default)]
+    pub verdicts: bool,
 }
 
 /// A chat the client showed in its preview and the user confirmed.

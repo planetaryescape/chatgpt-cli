@@ -14,12 +14,13 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `crates/store/` | The daemon's SQLite index: chats, cached transcripts, summaries, judgments, local titles, search chunks and vectors; migrations in `migrations/` |
 | `crates/daemon/` | The daemon: sync (`sync/`), policy (`policy/`), `list`/`stats` reads, rendering (`render.rs`), search indexing, embedding and search (`search/`), changes, and classification with the background Jev (`classify/`) |
 | `crates/embed/` | The embedding model's pinned files, the tract embedder, and the worker process the daemon runs it in |
-| `crates/tui/` | `chatgpt tui`, a ratatui client of the daemon (`model.rs` filters, `app.rs` keys and state, `ui.rs` drawing, `run.rs` terminal and requests); snapshots in `src/snapshots/` |
+| `crates/tui/` | `chatgpt tui`, a ratatui client of the daemon (`model.rs` filters, `app.rs` keys and state, `ui.rs` drawing, `run.rs` terminal and requests, `connections.rs` the daemon connections they share); snapshots in `src/snapshots/` |
 | `crates/typesafe/` | A small client for TypeSafe's System One API (Jev), used by the daemon's classification |
 | `crates/model-api/` | Small clients for OpenAI's Responses and Anthropic's Messages APIs (summaries and Luna with a configured key) |
 | `crates/fake-chatgpt/` | A fake chatgpt.com (reads, writes and their quirks), fake TypeSafe, OpenAI and Anthropic APIs, and the answers the debug binary's stand-in `codex` and `claude` give (`model_answers.rs`), for tests |
 | `third_party/impit/` | impit with one patch: no environment writes after startup (`third_party/README.md`) |
 | `install.sh` | Installs a release into `~/.local/bin`, checking its SHA-256 |
+| `packaging/homebrew/`, `scripts/render_homebrew_formula.sh` | The Homebrew formula template and its renderer; the release workflow's `homebrew` job pushes each release's formula to planetaryescape/homebrew-chatgpt-cli |
 
 ## Verify a change
 

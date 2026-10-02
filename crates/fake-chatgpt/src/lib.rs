@@ -168,6 +168,8 @@ pub struct State {
     pub projects: Vec<Project>,
     /// How many projects `POST /backend-api/projects` made.
     pub created_projects: u32,
+    /// The projects `DELETE /backend-api/gizmos/{id}` deleted, in order.
+    pub deleted_projects: Vec<String>,
     /// What the memory summary answers.
     pub memory_summary: Value,
     /// Chats whose rename answers 500 yet applies (pre-2025 chats).
@@ -473,6 +475,10 @@ impl FakeChatGpt {
                 (
                     Mock::given(method("POST")).and(path("/backend-api/projects")),
                     Route::Write(Write::CreateProject),
+                ),
+                (
+                    Mock::given(method("DELETE")).and(path_regex(r"^/backend-api/gizmos/[^/]+$")),
+                    Route::Write(Write::DeleteProject),
                 ),
                 (
                     Mock::given(method("POST"))

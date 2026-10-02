@@ -199,6 +199,13 @@ pub enum Request {
         #[serde(default)]
         session: SessionChoice,
     },
+    /// `project delete`, after the confirmation: delete `project` in
+    /// ChatGPT, then take the index's chats out of it. Sent once.
+    DeleteProject {
+        project: Project,
+        #[serde(default)]
+        session: SessionChoice,
+    },
     /// Move exactly these chats into `project`, or (`remove`) out of it,
     /// with progress events.
     MoveToProject {

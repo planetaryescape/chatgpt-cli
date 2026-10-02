@@ -1,11 +1,15 @@
 //! Running the TUI: the terminal, the keyboard, and the daemon.
 //!
 //! Three threads: this one draws and owns the [`App`]; one reads the
-//! keyboard; one runs the daemon requests (each on its own connection, so
-//! a slow fetch never holds up a cache lookup) and the clipboard, and
-//! watches for SIGTERM, SIGHUP and SIGINT. They meet in one channel, which
-//! this thread blocks on: nothing is drawn, and no CPU is used, until a key,
-//! an answer, a resize or the transcript debounce arrives.
+//! keyboard; one runs the daemon requests and the clipboard, polls the
+//! daemon's `Status` for a changed index, and watches for SIGTERM, SIGHUP
+//! and SIGINT. They meet in one channel, which this thread blocks on:
+//! nothing is drawn, and no CPU is used, until a key, an answer, a resize
+//! or the transcript debounce arrives.
+//!
+//! The requests share the connection the first load opened
+//! ([`Connections`]); a second one opens only while a slow fetch holds the
+//! first, so a cache lookup never waits on it.
 //!
 //! The terminal is restored on every way out: quitting, an error, a
 //! signal, and a panic on any thread (whose hook restores it first; the
@@ -13,38 +17,46 @@
 
 use std::io::{IsTerminal, Stdout};
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chatgpt_core::{ErrorKind, Paths};
-use chatgpt_launcher::ClientError;
+use chatgpt_launcher::{ClientError, DaemonClient};
 use chatgpt_protocol::{
-    ChatAction, Event as DaemonEvent, ProgressKind, Request, ResponseData, Row, SessionChoice,
-    Target, TranscriptSource,
+    ChatAction, DaemonStatus, Event as DaemonEvent, ProgressKind, Request, ResponseData, Row,
+    SessionChoice, Target, TranscriptSource,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind};
 use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::crossterm::{cursor, execute};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, ChatKey, DEBOUNCE, Effect, Outcome, Transcript};
+use crate::app::{App, ChatKey, DEBOUNCE, Effect, IndexStamp, Outcome, Transcript};
+use crate::connections::Connections;
+
+/// How often the index is checked for a sync or background Jev run.
+const POLL: Duration = Duration::from_secs(30);
 
 /// Set by the panic hook, so the loop stops instead of drawing on a
 /// terminal that's been restored.
 static PANICKED: AtomicBool = AtomicBool::new(false);
 
-enum Event {
+pub(crate) enum Event {
     Input(TermEvent),
     Outcome(Outcome),
     /// SIGTERM, SIGHUP or SIGINT: its number.
     Signal(u8),
     /// A request's task panicked.
     Crashed,
+    /// A new daemon connection was opened, which may have printed over the
+    /// screen (`Restarting the chatgpt daemon: …`): draw all of it again.
+    Repaint,
 }
 
 pub fn run(paths: &Paths, session: SessionChoice) -> Result<ExitCode, ClientError> {
@@ -65,10 +77,10 @@ pub fn run(paths: &Paths, session: SessionChoice) -> Result<ExitCode, ClientErro
         })?;
     // Before the screen is taken: starting the daemon, and a missing index,
     // print as any command's would.
-    let (topics, rows) = runtime.block_on(first_load(paths))?;
+    let (client, status, rows) = runtime.block_on(first_load(paths))?;
 
     let (events, inbox) = std::sync::mpsc::channel();
-    let jobs = start_worker(runtime, paths.clone(), session, events.clone());
+    let jobs = start_worker(runtime, paths.clone(), client, session, events.clone());
     std::thread::spawn({
         let events = events.clone();
         move || {
@@ -81,14 +93,16 @@ pub fn run(paths: &Paths, session: SessionChoice) -> Result<ExitCode, ClientErro
     });
     install_panic_hook();
     let mut screen = Screen::enter().map_err(|error| terminal_error(&error))?;
-    let mut app = App::new(rows, topics, now_ms);
+    let mut app = App::new(rows, status.classification.topics.clone(), now_ms);
+    app.index = Some(IndexStamp::of(&status));
     let result = event_loop(&mut screen.terminal, &mut app, &inbox, &jobs);
     drop(screen);
     result
 }
 
-/// The topics to cycle through (from the daemon's status) and every chat.
-async fn first_load(paths: &Paths) -> Result<(Vec<String>, Vec<Row>), ClientError> {
+/// The connection, the daemon's status (the topics to cycle through, and
+/// the index's stamp) and every chat.
+async fn first_load(paths: &Paths) -> Result<(DaemonClient, DaemonStatus, Vec<Row>), ClientError> {
     let (mut client, status) = chatgpt_launcher::connect(paths).await?;
     let ResponseData::Rows(answer) = client
         .request_with_events(Request::list_every_chat(), |_| {})
@@ -96,7 +110,7 @@ async fn first_load(paths: &Paths) -> Result<(Vec<String>, Vec<Row>), ClientErro
     else {
         return Err(chatgpt_launcher::unexpected());
     };
-    Ok((status.classification.topics, answer.rows))
+    Ok((client, status, answer.rows))
 }
 
 fn now_ms() -> i64 {
@@ -121,10 +135,11 @@ fn event_loop(
                 // chat now selected is looked up.
                 Effect::Transcript { key, .. } if app.preview.key.as_ref() != Some(&key) => {}
                 Effect::FetchLater { key } => pending = Some((key, Instant::now() + DEBOUNCE)),
-                // `open` returns at once; a failure to start it shows
-                // nowhere, as in the TS TUI.
+                // `open` returns at once.
                 Effect::Open { id } => {
-                    let _ = chatgpt_core::desktop::open_chat(&id);
+                    if let Err(error) = chatgpt_core::desktop::open_chat(&id) {
+                        app.status = format!("Couldn't open the browser: {error}");
+                    }
                 }
                 effect => {
                     if jobs.send(effect).is_err() {
@@ -180,6 +195,7 @@ fn event_loop(
                 // As the signal would have: 128 + its number.
                 Event::Signal(number) => return Ok(ExitCode::from(128 + number)),
                 Event::Crashed => return Err(crashed()),
+                Event::Repaint => repaint(terminal).map_err(|error| terminal_error(&error))?,
             }
         }
     }
@@ -191,11 +207,36 @@ fn panic_key_for_tests() -> Option<char> {
     chatgpt_core::debug_env("CHATGPT_TEST_TUI_PANIC").and_then(|key| key.chars().next())
 }
 
+/// Debug builds only: `CHATGPT_TEST_TUI_POLL_MS` polls that often, so a
+/// test sees a background change without waiting 30 seconds.
+fn poll_interval() -> Duration {
+    chatgpt_core::debug_env("CHATGPT_TEST_TUI_POLL_MS")
+        .and_then(|millis| millis.parse().ok())
+        .map_or(POLL, Duration::from_millis)
+}
+
+/// Every [`poll_interval`], the index's stamp, for the app to reload if it
+/// moved.
+async fn poll_index(connections: Rc<Connections>, events: Sender<Event>) {
+    let interval = poll_interval();
+    loop {
+        tokio::time::sleep(interval).await;
+        if let Some(status) = connections.status().await
+            && events
+                .send(Event::Outcome(Outcome::Index(IndexStamp::of(&status))))
+                .is_err()
+        {
+            return;
+        }
+    }
+}
+
 /// The thread that runs daemon requests and the clipboard, each in its own
-/// task, and watches for signals.
+/// task, polls the index, and watches for signals.
 fn start_worker(
     runtime: tokio::runtime::Runtime,
     paths: Paths,
+    client: DaemonClient,
     session: SessionChoice,
     events: Sender<Event>,
 ) -> UnboundedSender<Effect> {
@@ -215,10 +256,12 @@ fn start_worker(
             if let Some(signals) = signals {
                 tokio::task::spawn_local(signals.watch(events.clone()));
             }
+            let connections = Connections::new(paths, client, events.clone());
+            tokio::task::spawn_local(poll_index(Rc::clone(&connections), events.clone()));
             while let Some(effect) = queue.recv().await {
                 let task = tokio::task::spawn_local(perform(
                     effect,
-                    paths.clone(),
+                    Rc::clone(&connections),
                     session.clone(),
                     events.clone(),
                 ));
@@ -264,7 +307,12 @@ impl Signals {
     }
 }
 
-async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: Sender<Event>) {
+async fn perform(
+    effect: Effect,
+    connections: Rc<Connections>,
+    session: SessionChoice,
+    events: Sender<Event>,
+) {
     let outcome = match effect {
         Effect::Transcript { key, fetch } => {
             let source = if fetch {
@@ -277,7 +325,7 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
                 source,
                 session,
             };
-            let answer = chatgpt_launcher::ask(&paths, request, |_| {}).await;
+            let answer = connections.ask(request, |_| {}).await;
             Outcome::Transcript {
                 key,
                 fetched: fetch,
@@ -288,7 +336,7 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
             }
         }
         Effect::Reload { ticket } => {
-            let answer = chatgpt_launcher::ask(&paths, Request::list_every_chat(), |_| {}).await;
+            let answer = connections.ask(Request::list_every_chat(), |_| {}).await;
             let result = expect(answer, |data| match data {
                 ResponseData::Rows(answer) => Some(answer.rows),
                 _ => None,
@@ -300,7 +348,7 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
             archive,
             delete,
         } => {
-            let result = apply(&paths, ticket, archive, delete, session, &events).await;
+            let result = apply(&connections, ticket, archive, delete, session, &events).await;
             Outcome::Applied { ticket, result }
         }
         Effect::SaveTitle { ticket, id, title } => {
@@ -310,7 +358,7 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
                 archived: false,
                 all: true,
             };
-            let answer = chatgpt_launcher::ask(&paths, request, |_| {}).await;
+            let answer = connections.ask(request, |_| {}).await;
             let result = expect(answer, |data| {
                 matches!(data, ResponseData::TitleSaved { .. }).then_some(())
             });
@@ -320,7 +368,7 @@ async fn perform(effect: Effect, paths: Paths, session: SessionChoice, events: S
             let copied = tokio::task::spawn_blocking(move || {
                 chatgpt_core::desktop::copy_to_clipboard(&markdown)
                     .map(|()| App::copied(&title, &markdown))
-                    .map_err(|(_, why)| format!("Copy failed: {why}"))
+                    .map_err(|error| format!("Copy failed: {error}"))
             })
             .await
             .unwrap_or_else(|error| Err(format!("Copy failed: {error}")));
@@ -345,7 +393,7 @@ fn expect<T>(
 /// The marks through `Mutate`, as `archive -y` and `delete -y` send them:
 /// the archives, then the deletes, counting each chat attempted.
 async fn apply(
-    paths: &Paths,
+    connections: &Connections,
     ticket: u64,
     archive: Vec<Target>,
     delete: Vec<Target>,
@@ -365,18 +413,19 @@ async fn apply(
             session: session.clone(),
         };
         let mut done_here = 0;
-        let answer = chatgpt_launcher::ask(paths, request, |event| {
-            if let DaemonEvent::Progress(progress) = event
-                && progress.kind == ProgressKind::Update
-            {
-                done_here += 1;
-                let _ = events.send(Event::Outcome(Outcome::ApplyProgress {
-                    ticket,
-                    done: attempted + done_here,
-                }));
-            }
-        })
-        .await;
+        let answer = connections
+            .ask(request, |event| {
+                if let DaemonEvent::Progress(progress) = event
+                    && progress.kind == ProgressKind::Update
+                {
+                    done_here += 1;
+                    let _ = events.send(Event::Outcome(Outcome::ApplyProgress {
+                        ticket,
+                        done: attempted + done_here,
+                    }));
+                }
+            })
+            .await;
         let outcome = expect(answer, |data| match data {
             ResponseData::Outcome(outcome) => Some(outcome),
             _ => None,
@@ -392,6 +441,17 @@ fn crashed() -> ClientError {
         ErrorKind::Internal,
         "the TUI stopped after an internal error (see above)",
     )
+}
+
+/// Wipe the screen and draw every cell next time. Not `Terminal::clear`,
+/// which asks the terminal where its cursor is: the keyboard thread would
+/// take that answer, and the question would time out.
+fn repaint(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> std::io::Result<()> {
+    execute!(std::io::stdout(), Clear(ClearType::All))?;
+    // After a draw the current buffer is empty; this empties the last
+    // frame's too, so the next draw differs from it in every cell.
+    terminal.swap_buffers();
+    Ok(())
 }
 
 fn terminal_error(error: &std::io::Error) -> ClientError {
