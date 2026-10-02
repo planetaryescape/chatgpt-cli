@@ -65,6 +65,7 @@ Test locations:
 | Titles typed for one chat land in the order typed (one save out at a time; the latest waits) | `tui::title_saves_to_one_chat_land_in_the_order_typed` |
 | Marks aren't kept | by construction (`App::marks` lives in memory only) |
 | (Rust only) A background sync or Jev run reloads the list, keeping the cursor, never under a box | `tui::a_changed_index_reloads_in_browse_only_and_keeps_the_cursor`, `tui_cli::a_background_sync_reloads_the_list_and_keeps_the_cursor` |
+| (Rust only) A reload that answers while a box is open or an apply runs waits until it closes, so the rows and marks the user confirmed never change under them | `tui::a_reload_answering_under_the_apply_box_waits_for_it_to_close` |
 | (Rust only) A long transcript is wrapped only as far as it's shown | `tui::a_long_transcript_is_wrapped_only_as_far_as_its_shown` |
 
 ## review

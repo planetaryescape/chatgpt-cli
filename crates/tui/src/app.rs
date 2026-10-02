@@ -200,6 +200,8 @@ pub struct App {
     /// The last ticket handed out, and the reload whose answer counts.
     tickets: u64,
     reloading: u64,
+    /// The latest reload's rows, while a box kept them from being shown.
+    held: Option<Vec<Row>>,
     /// Per chat: the title save that's out, and the latest title typed
     /// while it was.
     titles_saving: HashMap<String, u64>,
@@ -236,6 +238,7 @@ impl App {
             index: None,
             tickets: 0,
             reloading: 0,
+            held: None,
             titles_saving: HashMap::new(),
             titles_waiting: HashMap::new(),
         };
@@ -327,6 +330,12 @@ impl App {
                 }
             },
             Mode::Browse => self.browse_key(key, &mut effects),
+        }
+        // A box just closed: the reload that arrived while it was open.
+        if self.mode == Mode::Browse
+            && let Some(rows) = self.held.take()
+        {
+            self.replace_rows(rows, &mut effects);
         }
         effects
     }
@@ -544,6 +553,8 @@ impl App {
     fn reload(&mut self) -> Effect {
         let ticket = self.ticket();
         self.reloading = ticket;
+        // This one's answer will be newer.
+        self.held = None;
         Effect::Reload { ticket }
     }
 
@@ -583,6 +594,10 @@ impl App {
                     return effects;
                 }
                 match result {
+                    // Rows never change under an open box or a running
+                    // apply, where the user confirms what's on screen: the
+                    // latest reload waits until the box closes.
+                    Ok(rows) if self.mode != Mode::Browse => self.held = Some(rows),
                     Ok(rows) => self.replace_rows(rows, &mut effects),
                     Err(why) => self.status = why,
                 }

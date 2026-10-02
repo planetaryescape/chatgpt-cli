@@ -854,3 +854,84 @@ fn a_long_transcript_is_wrapped_only_as_far_as_its_shown() {
     );
     assert!(h.screen().contains("line 50000"));
 }
+
+/// A reload already out when `x` opens the apply box answers while it's
+/// open, or while the apply runs: the rows and marks the user confirmed
+/// stay as they were, and the held rows show once the box closes.
+#[test]
+fn a_reload_answering_under_the_apply_box_waits_for_it_to_close() {
+    // Rows reordered, and b2 (marked) gone.
+    let synced = || {
+        let mut synced = rows();
+        synced.retain(|row| row.id != "b2");
+        synced.reverse();
+        synced
+    };
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('d'));
+    let reload = ticket_of(&h.key(KeyCode::Char('r')));
+    h.key(KeyCode::Char('x'));
+    assert!(matches!(h.app.mode, Mode::Confirm(_)));
+    assert!(
+        h.answer(Outcome::Reloaded {
+            ticket: reload,
+            result: Ok(synced()),
+        })
+        .is_empty()
+    );
+    assert_eq!(h.app.rows, rows(), "the rows under the box didn't change");
+    assert_eq!(h.app.mark_counts(), (1, 0));
+    assert!(h.screen().contains("permanently delete 1 conversation(s)"));
+    // Esc: the held rows show, and b2's mark goes with it.
+    h.key(KeyCode::Esc);
+    assert_eq!(h.app.rows, synced());
+    assert_eq!(h.app.mark_counts(), (0, 0));
+
+    // The answer after `apply`, while it runs.
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('d'));
+    let reload = ticket_of(&h.key(KeyCode::Char('r')));
+    h.key(KeyCode::Char('x'));
+    let effects = h.keys("apply");
+    assert!(effects.is_empty());
+    let effects = h.key(KeyCode::Enter);
+    assert_eq!(
+        effects,
+        [Effect::Apply {
+            ticket: ticket_of(&effects),
+            archive: Vec::new(),
+            delete: vec![Target {
+                id: "b2".into(),
+                title: "Postgres backup plan".into(),
+            }],
+        }]
+    );
+    let apply = ticket_of(&effects);
+    h.answer(Outcome::Reloaded {
+        ticket: reload,
+        result: Ok(synced()),
+    });
+    assert_eq!(h.app.rows, rows(), "the rows under the apply didn't change");
+    assert!(matches!(h.app.mode, Mode::Applying { .. }));
+    // The apply's own reload supersedes the held one.
+    let effects = h.answer(Outcome::Applied {
+        ticket: apply,
+        result: Ok(Vec::new()),
+    });
+    let after = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Reload { ticket } => Some(*ticket),
+            _ => None,
+        })
+        .unwrap();
+    h.key(KeyCode::Char('j'));
+    assert_eq!(h.app.rows, rows(), "the stale held rows never showed");
+    h.answer(Outcome::Reloaded {
+        ticket: after,
+        result: Ok(synced()),
+    });
+    assert_eq!(h.app.rows, synced());
+}
