@@ -1,0 +1,40 @@
+# Follow-ups from the native export and lexical search
+
+Recorded on 2026-10-02 for stage 2 of the Rust port. Each is an edge case left as is; "verified" means observed or read, not reproduced in a user journey.
+
+- `crates/daemon/src/search/query.rs` `excerpt`: a snippet longer than 200 UTF-16 units cut inside an emoji ends in half of it. The TS CLI prints that as U+FFFD in text, CSV and table output (as Rust does) but as a `\udXXX` escape in `--format json`; Rust's JSON has the U+FFFD character. Verified by reading Bun's behaviour; needs a snippet over 200 units with an emoji at unit 200.
+- `crates/daemon/src/search/chunks.rs` and `query.rs`: the chunk bytes for a split surrogate pair and the 64-byte threshold below which Bun reads invalid UTF-8 as `""` were observed with Bun 1.3.14 (`select hex(?)` and `cast(x'…' as text)`). Another Bun may differ; `crates/cli/tests/parity_export_search.rs` re-checks both against the installed Bun. The TS CLI goes away at stage 6, after which only the Rust behaviour matters and both quirks can be dropped (bump `CHUNK_VERSION`).
+- Ranking against BK's live TS CLI: bm25 depends on the whole FTS table. The daemon indexes active and archived chats; the TS CLI indexes only the scopes someone searched or indexed, and keeps chunks of chats it hasn't re-indexed since they changed. So the same query can score, and occasionally order, differently from the installed TS CLI even though both rank the same way over the same chunks (the parity harness gives both all chats). Verified by reading.
+- Exporting a chat that ChatGPT no longer has reports `404 from /backend-api/conversation/<id>`, without the response body the TS CLI appends, by the no-bodies rule. Intentional.
+- `search --format table` measures columns with the `unicode-width` crate, where the TS CLI uses `Bun.stringWidth`. They agree on emoji (with skin tones, ZWJ sequences and VS16), CJK, combining marks and zero-width spaces (`crates/cli/src/search_cmd.rs` tests); rarer sequences may differ by a column. Unverified beyond those.
+- `crates/daemon/src/search/indexer.rs`: a batch read in flight when an explicit `sync` starts can retry a 429 while the sync's client is attached to the progress reporter, so that client may see the HTTP client's retry note for the indexer's request (`rate limited by ChatGPT; waiting 5s`, from `on_retry` in `crates/daemon/src/session.rs`), which isn't about its own sync. Verified by reading; cosmetic.
+- The indexer retries a chat ChatGPT didn't return after an hour, for as long as it's in the index; `daemon status` counts them as "set aside for an hour". A timeout or dropped connection sets nothing aside: it ends the run, and the run after the next pass tries again. A chat deleted in the browser stays in the index until a full sync (see `docs/issues/nightly-full-sync.md`). Verified by reading.
+
+## From the PR #5 review (cubic and CodeRabbit, 2026-10-02)
+
+Comments fixed in the PR are left out. Each line names the place and the claim.
+
+- `crates/core/src/js.rs:47` (CodeRabbit): `number` may accept a string JS `Number()` rejects, from the loose `+-.eE` byte filter. Unverified; `--limit` and ages only.
+- `crates/core/src/js.rs:35`: `number("0x+1")` gives 1 where JS gives NaN, and radix literals over 128 bits give NaN where JS gives a finite number. Verified by reading; only reachable through `--limit`.
+- `crates/store/src/search.rs:233`: `coverage` counts a chat whose chunk-0 title is stale as indexed, while `unindexed` treats it as pending, so status can say complete with a re-index pending. Verified by reading; the TS `coverage` counts the same way.
+- `crates/store/src/search.rs:259`: `lexical` doesn't require the chunk title to match the chat's, so a chat renamed without an `update_time` bump matches on its old title until re-indexed. Verified by reading; mirrors the TS query, and renames bump `update_time`.
+- `crates/store/src/reconcile.rs:80`: `preserve` checks the markdown and render version but not `turns`. Unverified as reachable: `turns` derives from the same render.
+- `crates/daemon/src/sync/reconcile.rs:106`: `check` returns `Ok(false)` both for changed content and for a refused `preserve`, so a superseded snapshot counts as "changed". Verified by reading; the indexer case is `indexer-import-race.md`.
+- `crates/daemon/src/search/indexer.rs:165`: the cached-transcript phase reads and chunks 20 chats inside one writer closure. Verified by reading; milliseconds per group today.
+- `crates/daemon/src/search/indexer.rs:229`: an auth failure on a batch read sets its chats aside for an hour instead of ending the run. Verified by reading.
+- `crates/daemon/src/search/indexer.rs:367`: an unavailable chat that changed keeps its old set-aside entry until it expires, so status counts it as failed. Verified by reading.
+- `crates/daemon/src/sync/mod.rs:153`: `is_running` is a snapshot; a sync can start between the indexer's check and its batch read, so the two can overlap by one request. Verified by reading.
+- `crates/daemon/src/search/mod.rs:17`: chunks are tagged with the bridged TS CLI's `render_version`, while the bytes come from this build's renderer (version 2). Verified by reading; both are 2 today.
+- `crates/daemon/src/js.rs:156`: `template` prints arrays and objects as JSON, where a JS template literal joins arrays and prints `[object Object]`. Verified by reading; reaches only malformed canvas payloads.
+- `crates/daemon/src/server.rs:153`: the unconditional startup wake can add a redundant indexing run after an import that woke it too. Verified by reading; the second run finds nothing to do.
+- `crates/daemon/src/server.rs:254`: `CHATGPT_TEST_MAX_FRAME_BYTES` applies to every connection of a debug daemon that has it set. Verified by reading; debug builds only.
+- `crates/protocol/src/request.rs:37`: a 0.1.0 daemon gets the new requests as unknown; clients restart a daemon older than themselves, so only an unbumped dev build would hit "doesn't know that request". Verified by reading.
+- `crates/protocol/src/response.rs:45`: a huge `search --limit` could exceed the 16 MiB frame and fail instead of answering. Unverified; needs tens of thousands of hits.
+- `crates/cli/src/bridge.rs:59`: a SIGTERM to the CLI during the oversized-export fallback doesn't reach the spawned TS CLI. Verified by reading; see `export-frame-limit.md`.
+- `crates/cli/tests/export_search_cli.rs:371`: the resume test excludes the last 10 ids it saw, which can be the only completed batch. Verified by reading; test only.
+- `crates/cli/tests/support/mod.rs:226`: `bun()` takes the first `bun` file on PATH even when it isn't executable. Verified by reading; test only.
+- `crates/cli/tests/parity_export_search.rs:40`: the harness takes `slugify` from `src/commands/export.ts` by regex, which breaks if the function is reformatted. Verified by reading; it fails loudly.
+- `crates/cli/tests/bridge_cli.rs:26`: the pass-through test gives `rename` export flags. Verified by reading; the stand-in echoes anything.
+- `crates/fake-chatgpt/src/lib.rs:238`: batch reads answered with the injected 500 aren't recorded in `batch_bodies`. Verified by reading; test only.
+- `crates/fake-chatgpt/src/fixtures.rs:49`: `push_under` with an unknown parent makes an orphan node silently. Verified by reading; test only.
+- `crates/fake-chatgpt/src/fixtures.rs:503`: the fixture test's name promises per-kind coverage it doesn't check (the parity harness does). Verified by reading; test only.

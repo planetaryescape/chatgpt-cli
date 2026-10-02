@@ -659,6 +659,7 @@ mod tests {
             ts_sync: Default::default(),
             legacy_import: Default::default(),
             classification: Default::default(),
+            search_index: Default::default(),
         }
     }
 

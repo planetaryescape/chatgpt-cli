@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ImportReport;
+use crate::{ImportReport, SearchIndexStatus};
 
 /// What `Status` reports. Ready means this answers with a compatible
 /// `protocol_version`.
@@ -34,6 +34,9 @@ pub struct DaemonStatus {
     pub legacy_import: ImportStatus,
     #[serde(default)]
     pub classification: ClassificationInfo,
+    /// The background search indexer.
+    #[serde(default)]
+    pub search_index: SearchIndexStatus,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

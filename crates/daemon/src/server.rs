@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use chatgpt_core::{ErrorKind, Paths};
 use chatgpt_protocol::{
-    Codec, Event, FrameTooLarge, Message, Payload, Request, Response, SOCKET_BUFFER_BYTES,
+    Codec, Event, FrameTooLarge, Message, Payload, Request, Response, ResponseData,
+    SOCKET_BUFFER_BYTES,
 };
 use chatgpt_store::{Store, StoreError};
 use fs2::FileExt;
@@ -141,6 +142,11 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
     // Dropping the set when we return aborts open connections and the
     // background work with them.
     let mut tasks = JoinSet::new();
+    // Chunk what the cache already holds (also when there is nothing to
+    // import); fetching waits for a pass. Asked for before the first client
+    // is answered, so `daemon status` shows indexing as pending from the
+    // start.
+    state.indexer.wake();
     let background = Arc::clone(&state);
     tasks.spawn(async move {
         // The TS CLI's judgments and titles show from the first `list`.
@@ -149,6 +155,7 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
         }
         crate::sync::run_scheduled(background).await;
     });
+    tasks.spawn(crate::search::indexer::run(Arc::clone(&state)));
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
@@ -173,7 +180,7 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
 async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<Notify>) {
     // See SOCKET_BUFFER_BYTES. Best effort: a small buffer is only slower.
     let _ = socket2::SockRef::from(&stream).set_send_buffer_size(SOCKET_BUFFER_BYTES);
-    let mut framed = Framed::new(stream, Codec::new());
+    let mut framed = Framed::new(stream, codec());
     while let Some(frame) = framed.next().await {
         let message = match frame {
             Ok(message) => message,
@@ -243,11 +250,28 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
     }
 }
 
+/// Lowers the frame cap in debug builds only, so tests can reach it.
+const MAX_FRAME_ENV: &str = "CHATGPT_TEST_MAX_FRAME_BYTES";
+
+fn codec() -> Codec {
+    let lowered = std::env::var(MAX_FRAME_ENV)
+        .ok()
+        .filter(|_| cfg!(debug_assertions))
+        .and_then(|bytes| bytes.parse().ok());
+    lowered.map_or_else(Codec::new, Codec::with_max_frame)
+}
+
 async fn send(
     framed: &mut Framed<UnixStream, Codec>,
     id: u64,
     response: Response,
 ) -> Result<(), std::io::Error> {
+    let export = matches!(
+        &response,
+        Response::Ok {
+            data: ResponseData::Exported(_)
+        }
+    );
     let message = Message {
         id,
         payload: Payload::Response(response),
@@ -258,15 +282,24 @@ async fn send(
                 .get_ref()
                 .is_some_and(|inner| inner.is::<FrameTooLarge>()) =>
         {
-            // Answer with the reason rather than leaving the client waiting.
-            let payload = error_payload(
-                ErrorKind::Internal,
-                format!("the response was too large to send: {error}"),
-            );
+            // An export too large to send goes to the TS CLI instead; any
+            // other answer says why rather than leaving the client waiting.
+            let response = if export {
+                Response::Ok {
+                    data: ResponseData::ExportTooLarge,
+                }
+            } else {
+                Response::Error {
+                    error: error_payload(
+                        ErrorKind::Internal,
+                        format!("the response was too large to send: {error}"),
+                    ),
+                }
+            };
             framed
                 .send(Message {
                     id,
-                    payload: Payload::Response(Response::Error { error: payload }),
+                    payload: Payload::Response(response),
                 })
                 .await
         }

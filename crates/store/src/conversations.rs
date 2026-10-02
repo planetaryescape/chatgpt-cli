@@ -179,20 +179,42 @@ pub fn query(
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement
-        .query_map(params_from_iter(values), |row| {
-            Ok(IndexedConversation {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                create_time: row.get(2)?,
-                update_time: row.get(3)?,
-                is_archived: row.get::<_, i64>(4)? != 0,
-                pinned: row.get::<_, i64>(5)? != 0,
-                project_id: row.get(6)?,
-                local_title: row.get(7)?,
-            })
-        })?
+        .query_map(params_from_iter(values), indexed)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
+}
+
+/// `ConversationIndex.get`: chats whose id is like `prefix%`, with local
+/// titles. SQL `like`, as in the TS CLI: ASCII case doesn't matter, and `%`
+/// and `_` in the prefix are wildcards.
+pub fn get(
+    connection: &Connection,
+    prefix: &str,
+    local_title_version: u32,
+) -> Result<Vec<IndexedConversation>> {
+    let mut statement = connection.prepare_cached(
+        "select c.id, c.title, c.create_time, c.update_time, c.is_archived, c.pinned, c.project_id,
+            case when l.source = 'manual' or (l.update_time = c.update_time and l.version = ?)
+                then l.title end as local_title
+         from conversations c left join local_titles l on l.id = c.id where c.id like ?",
+    )?;
+    let rows = statement
+        .query_map(params![local_title_version, format!("{prefix}%")], indexed)?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedConversation> {
+    Ok(IndexedConversation {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        create_time: row.get(2)?,
+        update_time: row.get(3)?,
+        is_archived: row.get::<_, i64>(4)? != 0,
+        pinned: row.get::<_, i64>(5)? != 0,
+        project_id: row.get(6)?,
+        local_title: row.get(7)?,
+    })
 }
 
 pub fn set_archived(connection: &Connection, id: &str, archived: bool) -> Result<()> {

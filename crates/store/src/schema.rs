@@ -5,7 +5,11 @@ use rusqlite::Connection;
 use crate::{Result, StoreError};
 
 /// Each migration's SQL, in order; the version is its position plus one.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_index.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_index.sql"),
+    include_str!("../migrations/0002_search.sql"),
+    include_str!("../migrations/0003_search_follows_transcripts.sql"),
+];
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<()> {
     let known = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);

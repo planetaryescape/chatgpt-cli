@@ -1,16 +1,17 @@
 # Search your history
 
-Build the local search index once, then search cached conversations without asking ChatGPT's search API:
+Search cached conversations without asking ChatGPT's search API:
 
 ```sh
 chatgpt sync
-chatgpt search-index
 chatgpt search "garden lighting"
 ```
 
-`search-index` downloads transcripts missing from the cache, splits them into short passages, builds a SQLite full-text index, and embeds the passages with a local model. The first run can take several minutes. Later runs only fetch and embed new or changed chats, and an interrupted run resumes from saved work. It includes pinned chats. Use `chatgpt search-index --archived` to index archived chats, or `--all` to index both states.
+Full-text search needs no indexing step: the background daemon fetches missing transcripts and indexes them after every sync. The first time, that takes a few minutes; until it's done, `search` answers from what's indexed and says `N of M chats indexed` on stderr. `chatgpt daemon status` shows the progress.
 
-Search shows active chats by default in every mode, including `--remote`. Pass `--archived` for archived chats only, or `--all` for both. These filters apply before the result limit in local search. If an archived search is missing chats, run `chatgpt search-index --archived` to index them.
+Semantic and hybrid search (below) still need their own index, built by `chatgpt search-index`. It downloads transcripts missing from the cache, splits them into short passages, builds a SQLite full-text index, and embeds the passages with a local model. The first run can take several minutes. Later runs only fetch and embed new or changed chats, and an interrupted run resumes from saved work. It includes pinned chats. Use `chatgpt search-index --archived` to index archived chats, or `--all` to index both states.
+
+Search shows active chats by default in every mode, including `--remote`. Pass `--archived` for archived chats only, or `--all` for both. These filters apply before the result limit in local search. Full-text search covers archived chats too; for `--semantic` and `--hybrid`, run `chatgpt search-index --archived` to index them.
 ChatGPT's remote search returns at most 40 message hits per request, so an archived filter or repeated hits from one chat can leave fewer than `--limit` conversations.
 
 ## Search by meaning
@@ -39,10 +40,10 @@ JSON is one array on stdout, including `[]` when nothing matches. JSON and CSV u
 
 ```sh
 chatgpt sync
-chatgpt search-index
+chatgpt search-index   # only for --semantic and --hybrid
 ```
 
-`search` automatically adds any current transcripts already in the local cache to the text index. Run `search-index` after `sync` to fetch missing transcripts and refresh embeddings. Changed and deleted chats stop appearing as soon as the local conversation index changes, even before rebuilding search.
+The full-text index follows every sync on its own. Run `search-index` after `sync` to refresh embeddings for semantic and hybrid search. Changed and deleted chats stop appearing as soon as the local conversation index changes, even before rebuilding search.
 
 The previous ChatGPT search remains available when you want it:
 

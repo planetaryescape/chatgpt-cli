@@ -21,7 +21,7 @@ The CLI uses your macOS default browser. To choose another browser or profile, p
 
 ### The Rust CLI (preview)
 
-A Rust `chatgpt` is replacing the TS one. It runs `sync`, `list` and `stats` itself, through a background daemon that keeps the index fresh and holds your session (no Keychain prompt per command), and hands every other command to the TS CLI installed above. Install a release into `~/.local/bin`:
+A Rust `chatgpt` is replacing the TS one. It runs `sync`, `list`, `stats`, `export`/`show` and full-text `search` itself, through a background daemon that keeps the index and the search index fresh and holds your session (no Keychain prompt per command), and hands every other command, including `search --semantic`, `--hybrid` and `--remote`, to the TS CLI installed above. Install a release into `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh
@@ -32,8 +32,8 @@ curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/in
 ## What you can do
 
 ```sh
-chatgpt search-index                                  # build local full-text and semantic indexes
-chatgpt search "garden lighting"                      # full-text search
+chatgpt search "garden lighting"                      # full-text search, indexed after each sync
+chatgpt search-index                                  # build the semantic index
 chatgpt search --semantic "ideas for a small garden"   # local embedding search
 chatgpt search --hybrid "garden lighting"              # combine both
 chatgpt export <chat-id> > conversation.md            # export a chat as Markdown

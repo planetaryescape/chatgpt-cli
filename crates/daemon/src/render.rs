@@ -18,14 +18,23 @@ pub const SEPARATOR: &str = "\n\n---\n\n";
 /// A full conversation from the batch endpoint, with what rendering reads.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Conversation {
-    #[serde(default)]
-    pub title: Option<String>,
+    /// As `${convo.title}` prints it: `null` and `undefined` included.
+    #[serde(default = "undefined", deserialize_with = "template")]
+    pub title: String,
     #[serde(default)]
     pub mapping: Map<String, Value>,
     #[serde(default)]
     pub current_node: Option<String>,
     #[serde(default)]
     pub default_model_slug: Option<String>,
+}
+
+fn undefined() -> String {
+    "undefined".to_owned()
+}
+
+fn template<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(js::template(Some(&Value::deserialize(deserializer)?)))
 }
 
 /// One message, as far as rendering reads it.
@@ -243,11 +252,7 @@ fn final_canvases(convo: &Conversation) -> Vec<(String, String)> {
         match message.recipient() {
             Some("canmore.create_textdoc") => {
                 if let Ok(doc) = serde_json::from_str::<Value>(raw) {
-                    let field = |name: &str| match doc.get(name) {
-                        Some(Value::String(text)) => text.clone(),
-                        Some(other) => other.to_string(),
-                        None => "undefined".to_owned(),
-                    };
+                    let field = |name: &str| js::template(doc.get(name));
                     docs.push((field("name"), field("content")));
                 }
             }
@@ -298,7 +303,7 @@ fn apply_update(content: &mut String, update: &Value) -> Option<()> {
 pub fn render_transcript(id: &str, convo: &Conversation, date: &str) -> Result<String, String> {
     let header = format!(
         "# {}\n\nhttps://chatgpt.com/c/{id} · {date} · {}",
-        convo.title.as_deref().unwrap_or("undefined"),
+        convo.title,
         convo
             .default_model_slug
             .as_deref()
@@ -313,6 +318,40 @@ pub fn render_transcript(id: &str, convo: &Conversation, date: &str) -> Result<S
         sections.push(format!("## Canvas (final): {name}\n\n{content}"));
     }
     Ok(format!("{}\n", sections.join(SEPARATOR)))
+}
+
+/// `renderTranscript` for a batch item, as `getConversationsBatch` maps it:
+/// the date from `Date.parse(create_time) / 1000`.
+pub fn render_batch_item(item: &crate::api::BatchItem) -> Result<String, String> {
+    let created = item
+        .create_time
+        .as_deref()
+        .and_then(js::parse_date)
+        .and_then(js::iso_from_millis)
+        .ok_or("Invalid time value")?;
+    render_transcript(&item.id, &item.conversation, &created[..10])
+}
+
+/// `toCachedTranscript` for a batch item: the cache row for chat `id` as
+/// fetched, under the index's `update_time` (what cache lookups compare
+/// against). The batch names no model, so the header says "unknown model".
+pub fn cached_transcript(
+    item: &crate::api::BatchItem,
+    update_time: &str,
+    render_version: u32,
+) -> Result<chatgpt_store::Transcript, String> {
+    let markdown = render_batch_item(item)?;
+    let turns = visible_turns(&item.conversation)?.len();
+    // `Math.ceil(markdown.length / 4)`, in UTF-16 units as JS counts.
+    let approx_tokens = markdown.encode_utf16().count().div_ceil(4);
+    Ok(chatgpt_store::Transcript {
+        id: item.id.clone(),
+        update_time: update_time.to_owned(),
+        render_version,
+        markdown,
+        turns: i64::try_from(turns).unwrap_or(i64::MAX),
+        approx_tokens: i64::try_from(approx_tokens).unwrap_or(i64::MAX),
+    })
 }
 
 #[cfg(test)]
@@ -383,6 +422,21 @@ mod tests {
         apply_update(&mut content, &edit).expect("applied");
         // JS's \w stops at é.
         assert_eq!(content, "Xé X");
+    }
+
+    #[test]
+    fn a_null_or_missing_title_prints_as_a_template_literal_does() {
+        let titled = |title: Value| -> String {
+            let mut fields = json!({ "mapping": {}, "current_node": null });
+            fields["title"] = title;
+            let convo: Conversation = serde_json::from_value(fields).expect("conversation");
+            convo.title
+        };
+        assert_eq!(titled(Value::Null), "null");
+        assert_eq!(titled(json!(42)), "42");
+        let missing: Conversation =
+            serde_json::from_value(json!({ "mapping": {} })).expect("conversation");
+        assert_eq!(missing.title, "undefined");
     }
 
     #[test]

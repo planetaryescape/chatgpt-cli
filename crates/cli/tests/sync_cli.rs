@@ -201,6 +201,8 @@ fn filters_combine_as_in_the_ts_cli() {
 #[test]
 fn list_answers_from_the_index_without_the_network() {
     let env = synced();
+    // The sync woke the search indexer, which reads transcripts.
+    env.wait_for_indexer();
     let before = env.fake().calls().len();
     let started = Instant::now();
     env.stdout(&["list"]);

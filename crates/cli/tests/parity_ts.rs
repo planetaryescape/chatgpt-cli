@@ -15,27 +15,16 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use fake_chatgpt::Chat;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use support::{Env, QUESTIONS_VERSION};
+use support::{Env, QUESTIONS_VERSION, bun, copy_chats, repo};
 
 const DEEP_VERSION: &str = "2026-09-27.2";
 const LUNA_VERSION: i64 = 8;
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn bun() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("bun"))
-        .find(|candidate| candidate.is_file())
-}
 
 /// A small deterministic generator, so a failure reproduces.
 struct Lcg(u64);
@@ -252,40 +241,6 @@ fn fill_ts_index(db: &Connection, chats: &[Chat], rng: &mut Lcg) {
     }
 }
 
-/// The Rust index's chats, copied into the TS index, so both read the
-/// same rows in the same order.
-fn copy_chats(rust_index: &Path, ts_index: &Path) {
-    let rust = Connection::open_with_flags(rust_index, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    let ts = Connection::open(ts_index).unwrap();
-    ts.execute("delete from conversations", []).unwrap();
-    let mut rows = rust
-        .prepare("select id, title, create_time, update_time, is_archived, pinned, project_id from conversations order by rowid")
-        .unwrap();
-    let mut insert = ts
-        .prepare("insert into conversations values (?, ?, ?, ?, ?, ?, ?)")
-        .unwrap();
-    let mut copied = 0;
-    let mut query = rows.query([]).unwrap();
-    while let Some(row) = query.next().unwrap() {
-        let values: Vec<rusqlite::types::Value> = (0..7).map(|i| row.get(i).unwrap()).collect();
-        insert.execute(rusqlite::params_from_iter(values)).unwrap();
-        copied += 1;
-    }
-    assert_eq!(copied, 120);
-    let synced: String = rust
-        .query_row(
-            "select value from meta where key = 'synced_at'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    ts.execute(
-        "insert or replace into meta values ('synced_at', ?)",
-        [synced],
-    )
-    .unwrap();
-}
-
 struct Ts {
     bun: PathBuf,
     data_home: PathBuf,
@@ -331,7 +286,10 @@ fn list_and_stats_match_the_ts_cli_on_the_same_data() {
     fill_ts_index(&ts_db, &chats, &mut rng);
     drop(ts_db);
     env.cmd().arg("sync").assert().success();
-    copy_chats(&env.data_dir().join("chatgpt.db"), &env.legacy);
+    assert_eq!(
+        copy_chats(&env.data_dir().join("chatgpt.db"), &env.legacy),
+        120
+    );
 
     let ts = Ts {
         bun,

@@ -17,7 +17,7 @@ use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
 use crate::sync::{PassOptions, run_pass};
-use crate::{reads, ts_sync};
+use crate::{export, reads, search, ts_sync};
 
 /// A failed request, worded for people: no response body, cookie or token.
 #[derive(Debug, Clone)]
@@ -109,6 +109,26 @@ pub async fn handle(
             .await
             .map(|report| ResponseData::Stats(Box::new(report))),
         Request::ImportLegacy => ts_sync::import(state).await.map(ResponseData::Imported),
+        Request::Export {
+            reference,
+            stdin_ids,
+            archived,
+            all,
+            session,
+        } => export::export(state, reference, stdin_ids, archived, all, session)
+            .await
+            .map(|chat| ResponseData::Exported(Box::new(chat))),
+        Request::Search {
+            query,
+            limit,
+            archived,
+            all,
+        } => read(state, move |db, profile, _| {
+            let scope = (!all).then_some(archived);
+            search::query::search(db, &query, limit, scope, profile)
+        })
+        .await
+        .map(ResponseData::SearchHits),
         Request::Unknown => Err(Failure::new(
             ErrorKind::Unsupported,
             "this daemon doesn't know that request; run `chatgpt daemon stop` and try again",
@@ -184,5 +204,6 @@ async fn status(state: &State) -> DaemonStatus {
         ts_sync: state.ts_sync_status(),
         legacy_import: state.import_status(),
         classification: state.profile().info(),
+        search_index: state.indexer.status(),
     }
 }

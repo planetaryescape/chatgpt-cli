@@ -17,6 +17,13 @@ pub const NOT_SYNCED: &str = "No local index yet. Run `chatgpt sync` first.";
 const LABELS: [&str; 6] = ["delete", "delete?", "archive", "archive?", "keep", "keep?"];
 const BRAINSTORM_KINDS: [&str; 4] = ["writing", "sermon", "product", "other"];
 
+/// `requireSynced`: when the index last synced, or the TS CLI's error.
+pub fn require_synced(db: &Connection) -> Result<String, Failure> {
+    chatgpt_store::synced_at(db)
+        .map_err(Failure::store)?
+        .ok_or_else(|| Failure::new(ErrorKind::NotSynced, NOT_SYNCED))
+}
+
 /// The chats `list` and `stats` report on, with their current judgments.
 struct Selected {
     synced_at: String,
@@ -32,9 +39,7 @@ fn selected(
     profile: &Profile,
     now_ms: i64,
 ) -> Result<Selected, Failure> {
-    let synced_at = chatgpt_store::synced_at(db)
-        .map_err(Failure::store)?
-        .ok_or_else(|| Failure::new(ErrorKind::NotSynced, NOT_SYNCED))?;
+    let synced_at = require_synced(db)?;
     let chosen = selection(filter, now_ms).map_err(Failure::invalid)?;
     let rows: Vec<IndexedConversation> =
         chatgpt_store::query(db, &chosen.index, profile.local_title_version)

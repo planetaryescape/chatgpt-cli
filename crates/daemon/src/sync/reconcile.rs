@@ -14,8 +14,7 @@ use chatgpt_protocol::ReconcileReport;
 use chatgpt_store::Candidate;
 
 use crate::api::{Api, ApiError, BATCH_MAX, BatchItem};
-use crate::js;
-use crate::render::{SEPARATOR, render_transcript, visible_turns};
+use crate::render::{SEPARATOR, render_batch_item, visible_turns};
 use crate::state::State;
 
 /// A chat that can't be checked is a failure in the report and stays
@@ -73,21 +72,10 @@ pub(super) async fn run(
                 ));
                 continue;
             };
-            match same_content(candidate, item) {
-                Err(why) => report.failures.push(format!("{}: {why}", candidate.id)),
+            match check(state, candidate, item).await {
+                Ok(true) => report.preserved += 1,
                 Ok(false) => report.changed += 1,
-                Ok(true) => {
-                    let id = candidate.id.clone();
-                    let candidate = candidate.clone();
-                    match state
-                        .db_write(move |db| chatgpt_store::preserve(db, &candidate))
-                        .await
-                    {
-                        Ok(true) => report.preserved += 1,
-                        Ok(false) => report.changed += 1,
-                        Err(failure) => report.failures.push(format!("{id}: {}", failure.message)),
-                    }
-                }
+                Err(why) => report.failures.push(format!("{}: {why}", candidate.id)),
             }
         }
         step.update(done);
@@ -110,10 +98,30 @@ pub(super) async fn run(
     Ok(report)
 }
 
+/// One candidate against its fresh copy from the batch endpoint: when the
+/// title and rendered body are unchanged, move every cache forward
+/// (`Ok(true)`); otherwise leave them stale (`Ok(false)`). The search
+/// indexer runs this too before it replaces a stale transcript, so a
+/// metadata-only change never strands judgments, summaries or titles.
+pub(crate) async fn check(
+    state: &State,
+    candidate: &Candidate,
+    item: &BatchItem,
+) -> Result<bool, String> {
+    if !same_content(candidate, item)? {
+        return Ok(false);
+    }
+    let candidate = candidate.clone();
+    state
+        .db_write(move |db| chatgpt_store::preserve(db, &candidate))
+        .await
+        .map_err(|failure| failure.message)
+}
+
 /// `sameContent`. The batch endpoint returns old or rounded update times
 /// for some legacy chats, so only the title and the rendered body count.
 fn same_content(candidate: &Candidate, item: &BatchItem) -> Result<bool, String> {
-    if item.conversation.title.as_deref() != Some(candidate.title.as_str()) {
+    if item.conversation.title != candidate.title {
         return Ok(false);
     }
     let date_prefix: String = candidate.create_time.chars().take(10).collect();
@@ -124,14 +132,7 @@ fn same_content(candidate: &Candidate, item: &BatchItem) -> Result<bool, String>
     if !candidate.markdown.starts_with(&header) {
         return Ok(false);
     }
-    // `Date.parse(create_time) / 1000`, then `toISOString().slice(0, 10)`.
-    let created = item
-        .create_time
-        .as_deref()
-        .and_then(js::parse_date)
-        .and_then(js::iso_from_millis)
-        .ok_or("Invalid time value")?;
-    let fresh = render_transcript(&candidate.id, &item.conversation, &created[..10])?;
+    let fresh = render_batch_item(item)?;
     let fresh_turns = visible_turns(&item.conversation)?.len();
     if i64::try_from(fresh_turns).ok() != Some(candidate.turns) {
         return Ok(false);
@@ -174,10 +175,11 @@ mod tests {
             cached_update_time: "2026-09-01T00:00:00.000Z".into(),
             // The TS CLI cached it from the single-chat endpoint, which
             // names the model; the batch doesn't. Only the body counts.
-            markdown: render_transcript(ID, &original.conversation, "2026-09-01")
+            markdown: crate::render::render_transcript(ID, &original.conversation, "2026-09-01")
                 .expect("render")
                 .replace("unknown model", "gpt-4"),
             turns: 1,
+            render_version: 2,
         }
     }
 

@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DaemonStatus, ImportReport, ListRows, StatsReport, SyncReport};
+use crate::{
+    DaemonStatus, ExportedChat, ImportReport, ListRows, SearchResults, StatsReport, SyncReport,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -35,6 +37,12 @@ pub enum ResponseData {
     Stats(Box<StatsReport>),
     Imported(ImportReport),
     Ack,
+    Exported(Box<ExportedChat>),
+    /// The export is too large for one IPC frame ([`crate::MAX_FRAME_BYTES`]):
+    /// the client hands the command to the TS CLI instead, until exports
+    /// are streamed (docs/issues/export-frame-limit.md).
+    ExportTooLarge,
+    SearchHits(SearchResults),
     #[serde(other)]
     Unknown,
 }
