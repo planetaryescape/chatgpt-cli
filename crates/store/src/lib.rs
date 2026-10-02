@@ -9,7 +9,9 @@
 mod conversations;
 mod judgments;
 mod legacy;
+mod local_titles;
 mod meta;
+mod native;
 mod reconcile;
 mod schema;
 mod search;
@@ -22,8 +24,9 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 pub use conversations::{IndexFilter, IndexedConversation, NewConversation};
-pub use judgments::{JudgmentRow, MemoryJudgmentRow};
+pub use judgments::{JudgmentRow, MemoryJudgmentRow, NewJudgment};
 pub use legacy::{ImportCounts, LEGACY_TABLES, TableCounts};
+pub use local_titles::{ManualTitle, set_local_title};
 pub use reconcile::Candidate;
 pub use search::{ChunkVersions, LexicalRow, Transcript, Unindexed};
 pub use vectors::{NewVector, PendingChunk, VectorRow};
@@ -102,10 +105,10 @@ fn restrict(path: &Path) -> Result<()> {
 }
 
 pub use conversations::{
-    active_watermark, all_ids, apply_delta, archived_ids, count_all, get, query, remove,
-    replace_all, set_archived, synced_at,
+    active_watermark, all_ids, apply_delta, archived_ids, by_ids, count_all, get, query, remove,
+    rename, replace_all, set_archived, set_project, synced_at,
 };
-pub use judgments::{current_judgments, memory_judgment};
+pub use judgments::{current_judgments, judgment, memory_judgment, save_judgment, summary};
 pub use legacy::import_legacy;
 pub use meta::{account, get_meta, set_account, set_meta};
 pub use reconcile::{candidates, preserve};
@@ -114,6 +117,8 @@ pub use search::{
 };
 pub use vectors::{chunk_body, each_vector, pending_vectors, save_vectors, vector_coverage};
 
+#[cfg(test)]
+mod native_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

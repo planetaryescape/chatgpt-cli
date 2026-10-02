@@ -1,6 +1,6 @@
 //! The chat index. Ported from the TS CLI's `src/index/store.ts` @ 1b8c950.
 
-use rusqlite::{Connection, Transaction, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 
 use crate::Result;
 use crate::meta::{get_meta, set_meta};
@@ -230,6 +230,51 @@ pub fn remove(connection: &mut Connection, id: &str) -> Result<()> {
     let transaction = connection.transaction()?;
     transaction.execute("delete from conversations where id = ?", [id])?;
     transaction.execute("delete from local_titles where id = ?", [id])?;
+    crate::native::forget(&transaction, "local_titles", id)?;
     transaction.commit()?;
     Ok(())
+}
+
+/// `ConversationIndex.rename`: the new ChatGPT title. Its search chunks,
+/// built under the old title, stop counting as current.
+pub fn rename(connection: &Connection, id: &str, title: &str) -> Result<()> {
+    connection.execute(
+        "update conversations set title = ? where id = ?",
+        params![title, id],
+    )?;
+    Ok(())
+}
+
+/// `ConversationIndex.setProject`: `None` takes the chat out of any project.
+pub fn set_project(connection: &Connection, id: &str, project_id: Option<&str>) -> Result<()> {
+    connection.execute(
+        "update conversations set project_id = ? where id = ?",
+        params![project_id, id],
+    )?;
+    Ok(())
+}
+
+/// The chats with exactly these ids, in the order asked (an id no longer
+/// indexed is left out), with local titles.
+pub fn by_ids(
+    connection: &Connection,
+    ids: &[String],
+    local_title_version: u32,
+) -> Result<Vec<IndexedConversation>> {
+    let mut statement = connection.prepare_cached(
+        "select c.id, c.title, c.create_time, c.update_time, c.is_archived, c.pinned, c.project_id,
+            case when l.source = 'manual' or (l.update_time = c.update_time and l.version = ?)
+                then l.title end as local_title
+         from conversations c left join local_titles l on l.id = c.id where c.id = ?",
+    )?;
+    let mut chats = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(chat) = statement
+            .query_row(params![local_title_version, id], indexed)
+            .optional()?
+        {
+            chats.push(chat);
+        }
+    }
+    Ok(chats)
 }
