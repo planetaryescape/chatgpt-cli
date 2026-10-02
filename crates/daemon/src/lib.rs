@@ -7,6 +7,7 @@
 //! `chatgpt daemon run --instance <name>`.
 
 mod api;
+mod export;
 mod filters;
 mod handlers;
 mod js;
@@ -15,6 +16,7 @@ mod policy;
 mod progress;
 mod reads;
 mod render;
+mod search;
 mod server;
 mod session;
 mod state;

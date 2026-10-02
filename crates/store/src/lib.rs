@@ -100,8 +100,8 @@ fn restrict(path: &Path) -> Result<()> {
 }
 
 pub use conversations::{
-    active_watermark, all_ids, apply_delta, archived_ids, count_all, query, remove, replace_all,
-    set_archived, synced_at,
+    active_watermark, all_ids, apply_delta, archived_ids, count_all, get, query, remove,
+    replace_all, set_archived, synced_at,
 };
 pub use judgments::{current_judgments, memory_judgment};
 pub use legacy::import_legacy;

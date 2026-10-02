@@ -13,17 +13,21 @@
 
 mod codec;
 mod events;
+mod export;
 mod reads;
 mod request;
 mod response;
+mod search;
 mod status;
 mod sync;
 
 pub use codec::{Codec, FrameTooLarge, MAX_FRAME_BYTES};
 pub use events::{Event, Progress, ProgressKind};
+pub use export::ExportedChat;
 pub use reads::{Filter, Jev, ListRows, MemoryCounts, Row, StatsReport, TopicCounts};
 pub use request::{Request, SessionChoice};
 pub use response::{ErrorPayload, Response, ResponseData};
+pub use search::{SearchHit, SearchIndexStatus, SearchResults};
 use serde::{Deserialize, Serialize};
 pub use status::{
     Backoff, ClassificationInfo, DaemonStatus, ImportStatus, SyncStatus, TsSyncStatus,

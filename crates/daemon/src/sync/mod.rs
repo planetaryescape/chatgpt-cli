@@ -147,6 +147,20 @@ impl Syncer {
     pub fn ts_sync_ran(&self) {
         self.schedule().last_ts_sync = Some(Instant::now());
     }
+
+    /// Whether a pass is running now.
+    pub fn is_running(&self) -> bool {
+        self.running.try_lock().is_err()
+    }
+
+    /// How much of a rate-limit backoff is left, if one holds.
+    pub fn backoff_left(&self) -> Option<Duration> {
+        self.schedule()
+            .backoff
+            .as_ref()
+            .map(|(until, _)| until.saturating_duration_since(Instant::now()))
+            .filter(|left| !left.is_zero())
+    }
 }
 
 impl Schedule {
@@ -215,14 +229,7 @@ pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport,
         .progress
         .clone()
         .map(|sender| state.reporter.attach(sender));
-    let backoff_left = state
-        .syncer
-        .schedule()
-        .backoff
-        .as_ref()
-        .map(|(until, _)| until.saturating_duration_since(Instant::now()))
-        .filter(|left| !left.is_zero());
-    if let Some(left) = backoff_left {
+    if let Some(left) = state.syncer.backoff_left() {
         if !options.explicit || left > EXPLICIT_WAIT {
             return Err(Failure::new(
                 ErrorKind::RateLimited,
@@ -293,13 +300,16 @@ pub async fn run_pass(state: &State, options: PassOptions) -> Result<SyncReport,
     if state.syncer.ts_sync_due(options.explicit) {
         crate::ts_sync::after_pass(state, &choice, options.full, &mut report).await;
     }
+    // New and changed chats, and transcripts the import brought, get
+    // indexed for search.
+    state.indexer.pass_succeeded();
     Ok(report)
 }
 
 /// An API client for `choice` pinned to the session's account, refusing an
 /// account other than the one the index was built from: reconciling one
 /// account's chats against another's would delete them.
-async fn pinned_api(state: &State, choice: SessionChoice) -> Result<Api, ApiError> {
+pub(crate) async fn pinned_api(state: &State, choice: SessionChoice) -> Result<Api, ApiError> {
     let api = Api::new(std::sync::Arc::clone(&state.sessions), choice)
         .pinned()
         .await?;

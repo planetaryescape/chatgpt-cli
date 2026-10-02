@@ -11,6 +11,7 @@ use rusqlite::Connection;
 use crate::handlers::Failure;
 use crate::policy::Profile;
 use crate::progress::Reporter;
+use crate::search::indexer::Indexer;
 use crate::session::Sessions;
 use crate::sync::Syncer;
 
@@ -24,6 +25,7 @@ pub struct State {
     pub sessions: Arc<Sessions>,
     pub reporter: Reporter,
     pub syncer: Syncer,
+    pub indexer: Indexer,
     pub started_at: i64,
     pub version: String,
     profile: RwLock<Arc<Profile>>,
@@ -77,6 +79,7 @@ impl State {
             sessions,
             reporter,
             syncer: Syncer::new(synced_age),
+            indexer: Indexer::default(),
             started_at: now_unix(),
             version,
             profile: RwLock::new(Arc::new(profile)),

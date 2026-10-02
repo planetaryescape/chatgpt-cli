@@ -32,6 +32,27 @@ pub enum Request {
     },
     /// Import the TS CLI's judgments, titles, summaries and transcripts now.
     ImportLegacy,
+    /// `export`/`show`: resolve a link, id or id prefix, fetch the chat now
+    /// and render it.
+    Export {
+        reference: String,
+        #[serde(default)]
+        archived: bool,
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        session: SessionChoice,
+    },
+    /// Lexical `search` over the indexed transcripts. Never touches the
+    /// network; answers from what the background indexer has done so far.
+    Search {
+        query: String,
+        limit: u64,
+        #[serde(default)]
+        archived: bool,
+        #[serde(default)]
+        all: bool,
+    },
     #[serde(other)]
     Unknown,
 }

@@ -17,7 +17,7 @@ use crate::policy::PolicyError;
 use crate::policy::memory::{Cached, memory_counts};
 use crate::state::State;
 use crate::sync::{PassOptions, run_pass};
-use crate::{reads, ts_sync};
+use crate::{export, reads, search, ts_sync};
 
 /// A failed request, worded for people: no response body, cookie or token.
 #[derive(Debug, Clone)]
@@ -85,6 +85,7 @@ pub async fn handle(
         Request::Status => Ok(ResponseData::Status(Box::new(status(state).await))),
         Request::Shutdown => Ok(ResponseData::Ack),
         Request::Sync { full, session } => {
+            let _foreground = state.indexer.foreground();
             // Its own task: a client that goes away mid-sync mustn't cancel
             // the pass halfway.
             let state = Arc::clone(state);
@@ -108,7 +109,31 @@ pub async fn handle(
         Request::Stats { filter, session } => stats(state, *filter, &session)
             .await
             .map(|report| ResponseData::Stats(Box::new(report))),
-        Request::ImportLegacy => ts_sync::import(state).await.map(ResponseData::Imported),
+        Request::ImportLegacy => {
+            let imported = ts_sync::import(state).await.map(ResponseData::Imported);
+            // Imported transcripts can be chunked without fetching.
+            state.indexer.wake();
+            imported
+        }
+        Request::Export {
+            reference,
+            archived,
+            all,
+            session,
+        } => export::export(state, reference, archived, all, session)
+            .await
+            .map(|chat| ResponseData::Exported(Box::new(chat))),
+        Request::Search {
+            query,
+            limit,
+            archived,
+            all,
+        } => read(state, move |db, profile, _| {
+            let scope = (!all).then_some(archived);
+            search::query::search(db, &query, limit, scope, profile)
+        })
+        .await
+        .map(ResponseData::SearchHits),
         Request::Unknown => Err(Failure::new(
             ErrorKind::Unsupported,
             "this daemon doesn't know that request; run `chatgpt daemon stop` and try again",
@@ -169,6 +194,11 @@ async fn stats(
 
 async fn status(state: &State) -> DaemonStatus {
     let synced_at = state.db(chatgpt_store::synced_at).await.ok().flatten();
+    let versions = search::versions(&state.profile());
+    let (chats, indexed) = state
+        .db(move |db| chatgpt_store::coverage(db, None, versions))
+        .await
+        .unwrap_or_default();
     let (sync, backoff) = state.syncer.status(synced_at);
     DaemonStatus {
         protocol_version: PROTOCOL_VERSION,
@@ -184,5 +214,6 @@ async fn status(state: &State) -> DaemonStatus {
         ts_sync: state.ts_sync_status(),
         legacy_import: state.import_status(),
         classification: state.profile().info(),
+        search_index: state.indexer.status(chats, indexed),
     }
 }

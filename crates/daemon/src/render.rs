@@ -315,6 +315,35 @@ pub fn render_transcript(id: &str, convo: &Conversation, date: &str) -> Result<S
     Ok(format!("{}\n", sections.join(SEPARATOR)))
 }
 
+/// `toCachedTranscript` for a batch item: the cache row for chat `id` as
+/// fetched, under the index's `update_time` (what cache lookups compare
+/// against). The batch names no model, so the header says "unknown model".
+pub fn cached_transcript(
+    item: &crate::api::BatchItem,
+    update_time: &str,
+    render_version: u32,
+) -> Result<chatgpt_store::Transcript, String> {
+    // `Date.parse(create_time) / 1000`, then `toISOString().slice(0, 10)`.
+    let created = item
+        .create_time
+        .as_deref()
+        .and_then(js::parse_date)
+        .and_then(js::iso_from_millis)
+        .ok_or("Invalid time value")?;
+    let markdown = render_transcript(&item.id, &item.conversation, &created[..10])?;
+    let turns = visible_turns(&item.conversation)?.len();
+    // `Math.ceil(markdown.length / 4)`, in UTF-16 units as JS counts.
+    let approx_tokens = markdown.encode_utf16().count().div_ceil(4);
+    Ok(chatgpt_store::Transcript {
+        id: item.id.clone(),
+        update_time: update_time.to_owned(),
+        render_version,
+        markdown,
+        turns: i64::try_from(turns).unwrap_or(i64::MAX),
+        approx_tokens: i64::try_from(approx_tokens).unwrap_or(i64::MAX),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

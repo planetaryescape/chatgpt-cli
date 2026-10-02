@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DaemonStatus, ImportReport, ListRows, StatsReport, SyncReport};
+use crate::{
+    DaemonStatus, ExportedChat, ImportReport, ListRows, SearchResults, StatsReport, SyncReport,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -35,6 +37,8 @@ pub enum ResponseData {
     Stats(Box<StatsReport>),
     Imported(ImportReport),
     Ack,
+    Exported(Box<ExportedChat>),
+    SearchHits(SearchResults),
     #[serde(other)]
     Unknown,
 }

@@ -147,8 +147,11 @@ async fn accept_until_shutdown(listener: UnixListener, state: Arc<State>) -> Res
         if let Err(failure) = crate::ts_sync::import(&background).await {
             tracing::info!("no import at startup: {}", failure.message);
         }
+        // Chunk what the cache already holds; fetching waits for a pass.
+        background.indexer.wake();
         crate::sync::run_scheduled(background).await;
     });
+    tasks.spawn(crate::search::indexer::run(Arc::clone(&state)));
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
