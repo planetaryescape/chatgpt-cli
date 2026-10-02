@@ -53,7 +53,7 @@ cargo clippy --all-targets -- -D warnings
 cargo nextest run        # or cargo test
 ```
 
-`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; it skips without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
+`crates/cli/tests/parity_ts.rs` runs this repository's TS CLI (`bun install` first) and the Rust CLI over the same synthetic index and requires identical `list` and `stats` output; `crates/cli/tests/parity_export_search.rs` does the same for `export` (against the TS `renderTranscript`) and lexical `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). Both skip without bun. Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon. To try a live build: `cargo build`, then `target/debug/chatgpt sync` and `target/debug/chatgpt list --limit 5`. [How the Rust CLI works](explanation/rust-daemon.md) covers the daemon, the bridge and the import.
 
 impit is a git dependency that only impersonates Chrome when apify's forks of `h2`, `rustls`, `hyper-util` and `tower-http` are in the graph (`[patch.crates-io]` in `Cargo.toml`), built with `--cfg reqwest_unstable` (`.cargo/config.toml`, which a `RUSTFLAGS` variable overrides). Cargo drops a patch with only a warning when the graph wants a newer version, so `hyper` and `reqwest` stay pinned in `Cargo.lock` to impit's own lockfile versions, and `crates/chatgpt/tests/fingerprint_patches.rs` fails if a fork falls out. Re-check that test after any `cargo update`.
 
@@ -65,7 +65,7 @@ bun run docs:cli
 
 This rewrites `docs/reference/cli.md` from the CLI's `--help`. `bun test` fails when that file is out of date, so run this after changing any command, flag or description in `src/cli.ts`.
 
-Search index changes that alter passage text should bump `CHUNK_VERSION` in `src/search/chunks.ts`. Changes to the model, revision, pooling or quantization should change `MODEL_VERSION` in `src/search/embeddings.ts`. Run `bun src/cli.ts search-index`, then check lexical, semantic and hybrid results on the real account; fixture tests do not measure retrieval quality or runtime.
+Search index changes that alter passage text should bump `CHUNK_VERSION` in `src/search/chunks.ts`, and the Rust port's in `crates/daemon/src/search/chunks.rs`, which keeps the TS chunking (and Bun's bytes for a split emoji) exactly. Changes to the model, revision, pooling or quantization should change `MODEL_VERSION` in `src/search/embeddings.ts`. Run `bun src/cli.ts search-index`, then check lexical, semantic and hybrid results on the real account; fixture tests do not measure retrieval quality or runtime.
 
 ## Change classification
 
