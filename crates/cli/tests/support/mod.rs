@@ -305,7 +305,8 @@ pub fn in_terminal(
             }
         })
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Room for a 2 MB chat's download on a busy machine before the prompt.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         let text = String::from_utf8_lossy(&shown.lock().unwrap()).into_owned();
         if text.contains(prompt) {

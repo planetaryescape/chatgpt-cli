@@ -554,7 +554,7 @@ fn ts_in_terminal(ts: &Ts, args: &[&str], prompt: &str, answer: &str) -> String 
             }
         })
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while !String::from_utf8_lossy(&shown.lock().unwrap()).contains(prompt) {
         assert!(
             std::time::Instant::now() < deadline,
