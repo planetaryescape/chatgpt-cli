@@ -16,8 +16,8 @@ Recorded on 2026-10-02 for stage 5 of the Rust port (`configure`, `classify`, `t
 
 ## Residual risks
 
-- Every save takes the sync pass lock briefly. While the bridge exists a pass can include the TS CLI's sync (up to 10 minutes), so a save, and the step waiting on it, can stall that long. Disappears with the TS sync at stage 6.
+- ~~Every save takes the sync pass lock briefly. While the bridge exists a pass can include the TS CLI's sync (up to 10 minutes), so a save, and the step waiting on it, can stall that long. Disappears with the TS sync at stage 6.~~ Gone with the TS sync: a pass is the daemon's own sync now.
 - The background Jev's "new since enabled" baseline compares `update_time` as text, as sync does; the TS index's mixed millisecond and microsecond formats can order two times in the same millisecond wrongly. At worst a chat is judged one pass late or one more chat is judged.
 - `codex`'s process group is killed after the run is reaped; if the group is already empty and its id reused in that instant, another group gets the signal. macOS hands out PIDs in sequence, so reuse needs a wrap-around within microseconds.
-- The bridged `review` and `tui` read the TS index's own verdicts, made at the installed TS CLI's versions, which `classify` no longer refreshes. Stage 6 ports both.
+- ~~The bridged `review` and `tui` read the TS index's own verdicts, made at the installed TS CLI's versions, which `classify` no longer refreshes. Stage 6 ports both.~~ Resolved in 0.1.5: both are native and read the daemon's verdicts.
 - Judgments imported earlier from the TS index (at the private versions) stay in the daemon's index, stale. The background Jev doesn't judge the history it found when first enabled: a full `chatgpt classify` does (about $0.0002 of Jev per chat, plus summaries and Luna on the subscription).

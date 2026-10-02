@@ -10,7 +10,7 @@ Before you start, finish the [quick start](../README.md#quick-start) and check y
 chatgpt sync
 ```
 
-The first run lists active and archived chats. This example uses fictional counts and titles:
+The first command starts the background daemon, which keeps the index fresh from then on. The first sync lists active and archived chats. This example uses fictional counts and titles:
 
 ```text
 Listed 42 active chat(s) (3.2s)
@@ -18,7 +18,7 @@ Listed 3 archived chat(s) (0.7s)
 Full sync: 45 chats (42 active, 3 archived), +45 vs before, in 3.9s.
 ```
 
-If you use a Chromium browser, macOS may ask for Keychain access to that browser's Safe Storage item the first time. Choose **Always Allow**, or it will ask on every run. Safari may require Full Disk Access for your terminal.
+If you use a Chromium browser, macOS may ask for Keychain access to that browser's Safe Storage item the first time. Choose **Always Allow**, or it will ask again each time the daemon starts. Safari may require Full Disk Access for your terminal.
 
 Check the index:
 

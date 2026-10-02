@@ -7,7 +7,7 @@ Recorded on 2026-10-02. Triaged as edge cases and not fixed in stage 1. Each lin
 - `crates/daemon/src/handlers.rs:142`: `stats --browser X` reads another account's saved memories and counts them against this index's cached classifications. Verified by reading; counts only, nothing is stored.
 - `crates/daemon/src/policy/mod.rs:418`: the Luna branch reads follow-up answers of an older shape leniently, so an old deep answer missing a field changes the verdict differently from the TS CLI. Unverified.
 - `crates/daemon/src/sync/full.rs:129`: a list that comes back short without repeating chats still relies on the single-chat omission check (see `full-sync-short-active-list.md`). Verified live.
-- `crates/core/src/ts_cli.rs:84`: `bun` on PATH is accepted when it's a file but not executable; the bridge then fails at exec instead of trying `~/.bun/bin/bun`. Unverified.
+- ~~`crates/core/src/ts_cli.rs:84`: `bun` on PATH is accepted when it's a file but not executable; the bridge then fails at exec instead of trying `~/.bun/bin/bun`. Unverified.~~ Gone with the bridge.
 - `crates/daemon/src/server.rs:160`: a persistent `accept` error (out of file descriptors) loops without pause, busy-spinning a core. Unverified.
 - `crates/cli/src/daemon_cmd.rs:148`: `daemon logs` reads the whole day's log into memory to print its tail. Verified by reading.
 - `crates/store/src/lib.rs:90`: only the database file is chmod 0600; SQLite creates `-wal` and `-shm` from the process umask. Unverified (SQLite documents copying the database's permissions).

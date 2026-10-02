@@ -50,4 +50,4 @@ A brainstorm needs a score of at least 0.6 on the brainstorming question. Chats 
 
 - Run `chatgpt classify`. Only judged chats have a brainstorm verdict, and `chatgpt stats` shows how many aren't judged yet.
 - Pinned chats are skipped by `classify` unless you pass `--pinned`.
-- Jev can miss one. Search by title (`chatgpt list --title "outline"`) or by content (`chatgpt search "newsletter"`). Run `chatgpt search-index` first to include all transcripts in local search.
+- Jev can miss one. Search by title (`chatgpt list --title "outline"`) or by content (`chatgpt search "newsletter"`). The daemon indexes every transcript in the background; `chatgpt search-index` waits until it has.

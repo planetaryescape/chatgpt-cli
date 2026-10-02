@@ -1,6 +1,6 @@
-# TUI and review parity with the TS CLI
+# TUI and review: what pins their behaviour
 
-The TS TUI is an OpenTUI React app, so its screens can't be compared byte for byte with ratatui's. Instead, every key and state of `src/tui/app.tsx` (with `model.ts`, `list-pane.tsx`, `preview-pane.tsx` and `use-transcript.ts`) and of `src/commands/review.ts` @ 1b8c950 maps to a Rust test below. The TS TUI's own tests (`src/tui/app.test.tsx`, `src/tui/model.test.ts`) are ported one for one.
+`chatgpt tui` and `review` replaced the TS CLI's OpenTUI React app and `review` command (sources in tag `v0.1.5`), whose screens couldn't be compared byte for byte with ratatui's. Instead, every key and state of the TS TUI (`src/tui/app.tsx` with its model, panes and transcript hook) and of `src/commands/review.ts` @ 1b8c950 was mapped to a Rust test, and the TS TUI's own tests were ported one for one. The tables below are that map: the left column is the behaviour, as the TS CLI had it, and the right the test that holds it now.
 
 Test locations:
 

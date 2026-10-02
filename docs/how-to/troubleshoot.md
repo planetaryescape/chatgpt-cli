@@ -2,9 +2,9 @@
 
 Find the message you're seeing and follow its fix.
 
-## macOS asks for Keychain access on every run
+## macOS asks for Keychain access
 
-`chatgpt` reads the selected Chromium browser's **Safe Storage** Keychain entry to decrypt its cookies. Choose **Always Allow** in the prompt. If you chose **Allow**, it asks again next time. Firefox and Safari do not use this Keychain step.
+The daemon reads the selected Chromium browser's **Safe Storage** Keychain entry to decrypt its cookies: when it starts, and again when ChatGPT rejects its token. Choose **Always Allow** in the prompt. If you chose **Allow**, it asks again next time. Firefox and Safari do not use this Keychain step.
 
 ## `Could not read "Dia Safe Storage" from the Keychain`
 
@@ -91,8 +91,24 @@ Use `-o <file>` instead of `--copy`.
 
 ## The TUI shows `Loading transcript…` for a while
 
-The chat's transcript isn't cached yet, so the TUI fetches it. If it stays, you've probably hit the rate limit; wait, or run `chatgpt classify` to cache every transcript in bulk.
+The chat's transcript isn't cached yet, so the TUI fetches it. If it stays, you've probably hit the rate limit; wait a minute. The daemon caches every transcript in the background after each sync; `chatgpt search-index` shows how far it has got.
 
 ## Counts look wrong after deleting in the browser
 
 Run `chatgpt sync --full`. A normal sync can't see deletions made outside `chatgpt`.
+
+## `this daemon doesn't know that request`
+
+A `chatgpt` and a daemon from different releases are talking, and the daemon doesn't have what the command asked for. Run `chatgpt daemon stop`; the next command starts the daemon that matches it. Commands from 0.1.5 that no longer exist, such as `import-legacy`, get this message from a newer daemon.
+
+## `unrecognized subcommand` (exit code 2)
+
+The command doesn't exist in this release. `chatgpt --help` lists the commands. `import-legacy` was removed with the TS CLI's index after 0.1.5.
+
+## Semantic search says `N of M chunks embedded`
+
+The daemon is still embedding, for example after the first sync or after an upgrade rebuilt the search passages. Semantic and hybrid search answer from what's embedded so far; lexical search is complete. `chatgpt daemon status` shows progress, and `chatgpt search-index` waits until it's done.
+
+## `chatgpt` still runs the old TS CLI
+
+An old `bun link` left a `chatgpt` in `~/.bun/bin`, earlier on your PATH than `~/.local/bin`. Remove it (`rm ~/.bun/bin/chatgpt`) or put `~/.local/bin` first; `install.sh` warns about this. The TS CLI's database, `~/.local/share/chatgpt-cli/index.db`, is no longer read and can be deleted.
