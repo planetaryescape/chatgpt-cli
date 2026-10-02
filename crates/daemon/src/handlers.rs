@@ -381,6 +381,7 @@ async fn status(state: &State) -> DaemonStatus {
         sync,
         backoff,
         session: state.sessions.source(&state.syncer.choice()),
+        session_reading: state.sessions.reading(&state.syncer.choice()),
         classification: state.profile().info(),
         search_index: state.indexer.status(),
         embeddings: state.embedder.status(),

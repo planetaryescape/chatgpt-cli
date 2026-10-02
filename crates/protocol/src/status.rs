@@ -28,6 +28,10 @@ pub struct DaemonStatus {
     /// "Default"`; `None` before it first needed one.
     #[serde(default)]
     pub session: Option<String>,
+    /// Whether that session is being read now: a Keychain prompt may be
+    /// waiting for an answer.
+    #[serde(default)]
+    pub session_reading: bool,
     #[serde(default)]
     pub classification: ClassificationInfo,
     /// The background search indexer.

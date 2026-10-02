@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chatgpt::cookies::{BrowserSelection, default_browser, read_browser_session};
 use chatgpt::http::{CHATGPT_BASE, HttpClient, RetryPolicy, RetryReason, Secret};
@@ -37,10 +37,19 @@ pub struct Session {
 /// calls for that browser.
 #[derive(Default)]
 pub struct Sessions {
-    slots: Mutex<HashMap<SessionChoice, Arc<Slot>>>,
+    slots: Mutex<HashMap<SessionChoice, Entry>>,
 }
 
 type Slot = tokio::sync::Mutex<Option<Arc<Session>>>;
+
+struct Entry {
+    slot: Arc<Slot>,
+    used: Instant,
+}
+
+/// A choice nobody asked for in this long gives up its session (one more
+/// cookie read if it's asked for again).
+const UNUSED: Duration = Duration::from_secs(60 * 60);
 
 fn debug_env(name: &str) -> Option<String> {
     if cfg!(debug_assertions) {
@@ -51,20 +60,63 @@ fn debug_env(name: &str) -> Option<String> {
 }
 
 impl Sessions {
+    fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<SessionChoice, Entry>> {
+        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn slot(&self, choice: &SessionChoice) -> Arc<Slot> {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(slots.entry(choice.clone()).or_default())
+        let mut slots = self.slots();
+        let entry = slots.entry(choice.clone()).or_insert_with(|| Entry {
+            slot: Arc::default(),
+            used: Instant::now(),
+        });
+        entry.used = Instant::now();
+        Arc::clone(&entry.slot)
+    }
+
+    /// The slot held for `choice`, without creating one or counting a use.
+    fn peek(&self, choice: &SessionChoice) -> Option<Arc<Slot>> {
+        self.slots()
+            .get(choice)
+            .map(|entry| Arc::clone(&entry.slot))
     }
 
     /// Where the session for `choice` came from, for `daemon status`.
     /// `None` while one is being read: `Status` must answer at once, even
     /// while a Keychain prompt waits.
     pub fn source(&self, choice: &SessionChoice) -> Option<String> {
-        self.slot(choice)
+        self.peek(choice)?
             .try_lock()
             .ok()?
             .as_ref()
             .map(|session| session.source.clone())
+    }
+
+    /// Whether `choice`'s session is being read now (a Keychain prompt may
+    /// be waiting), for `daemon status`.
+    pub fn reading(&self, choice: &SessionChoice) -> bool {
+        self.peek(choice)
+            .is_some_and(|slot| slot.try_lock().is_err())
+    }
+
+    /// Give up the sessions of choices nobody has asked for in an hour,
+    /// except `keep` (the one sync passes use). A slot in use stays.
+    pub fn prune(&self, keep: &SessionChoice) {
+        self.slots().retain(|choice, entry| {
+            choice == keep || entry.used.elapsed() < UNUSED || entry.slot.try_lock().is_err()
+        });
+    }
+
+    /// Forget `choice`'s slot if it's still `slot` and holds no session:
+    /// a choice whose read failed (a mistyped `--browser`) keeps nothing.
+    fn forget_if_empty(&self, choice: &SessionChoice, slot: &Arc<Slot>) {
+        let mut slots = self.slots();
+        let empty = slots.get(choice).is_some_and(|entry| {
+            Arc::ptr_eq(&entry.slot, slot) && entry.slot.try_lock().is_ok_and(|held| held.is_none())
+        });
+        if empty {
+            slots.remove(choice);
+        }
     }
 
     /// The session held for `choice`, or a new one read from the browser.
@@ -74,9 +126,18 @@ impl Sessions {
         if let Some(session) = held.as_ref() {
             return Ok(Arc::clone(session));
         }
-        let session = Arc::new(self.open(choice).await?);
-        *held = Some(Arc::clone(&session));
-        Ok(session)
+        match self.open(choice).await {
+            Ok(session) => {
+                let session = Arc::new(session);
+                *held = Some(Arc::clone(&session));
+                Ok(session)
+            }
+            Err(error) => {
+                drop(held);
+                self.forget_if_empty(choice, &slot);
+                Err(error)
+            }
+        }
     }
 
     /// Read `choice`'s cookies again and exchange them for a new token,
@@ -174,4 +235,53 @@ async fn read_cookies(choice: &SessionChoice) -> Result<(String, String), ApiErr
             format!("reading cookies failed: {error}"),
         )
     })?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn choice(browser: &str) -> SessionChoice {
+        SessionChoice {
+            browser: Some(browser.into()),
+            ..SessionChoice::default()
+        }
+    }
+
+    fn held(sessions: &Sessions) -> Vec<String> {
+        let mut held: Vec<String> = sessions
+            .slots()
+            .keys()
+            .filter_map(|choice| choice.browser.clone())
+            .collect();
+        held.sort();
+        held
+    }
+
+    #[tokio::test]
+    async fn unused_and_failed_choices_are_dropped_and_the_syncs_kept() {
+        let sessions = Sessions::default();
+        for browser in ["sync", "old", "busy", "recent"] {
+            sessions.slot(&choice(browser));
+        }
+        let long_ago = Instant::now().checked_sub(UNUSED * 2).expect("an instant");
+        for browser in ["sync", "old", "busy"] {
+            sessions.slots().get_mut(&choice(browser)).expect("held").used = long_ago;
+        }
+        let busy = sessions.peek(&choice("busy")).expect("held");
+        let reading = busy.lock().await;
+        assert!(sessions.reading(&choice("busy")), "a read in progress shows");
+        assert!(!sessions.reading(&choice("recent")));
+        sessions.prune(&choice("sync"));
+        assert_eq!(held(&sessions), ["busy", "recent", "sync"]);
+        drop(reading);
+
+        // A choice whose read failed keeps no slot.
+        let failed = sessions.slot(&choice("typo"));
+        sessions.forget_if_empty(&choice("typo"), &failed);
+        assert!(sessions.peek(&choice("typo")).is_none());
+        // Status never makes one either.
+        assert_eq!(sessions.source(&choice("never")), None);
+        assert!(sessions.peek(&choice("never")).is_none());
+    }
 }

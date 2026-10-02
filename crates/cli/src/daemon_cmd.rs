@@ -70,7 +70,13 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
     }
     lines.push(format!(
         "session: {}",
-        status.session.as_deref().unwrap_or("not read yet")
+        match status.session.as_deref() {
+            Some(source) => source,
+            None if status.session_reading => {
+                "reading session… (a Keychain prompt may be waiting)"
+            }
+            None => "not read yet",
+        }
     ));
     let classification = &status.classification;
     lines.push(format!(

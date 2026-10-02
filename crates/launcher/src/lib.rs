@@ -963,6 +963,7 @@ mod tests {
             sync: Default::default(),
             backoff: None,
             session: None,
+            session_reading: false,
             classification: Default::default(),
             search_index: Default::default(),
             embeddings: Default::default(),

@@ -288,6 +288,7 @@ fn secs(duration: Duration) -> i64 {
 /// life.
 pub async fn run_scheduled(state: std::sync::Arc<State>) {
     loop {
+        state.sessions.prune(&state.syncer.choice());
         let (due, full) = {
             let schedule = state.syncer.schedule();
             (schedule.until_due(), schedule.full_due(now_unix()))
