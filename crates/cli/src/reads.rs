@@ -33,7 +33,7 @@ fn invalid(message: &str) -> ClientError {
 }
 
 /// `requireSynced`'s note when the index is more than a day old.
-fn stale_note(synced_at: &str) {
+pub fn stale_note(synced_at: &str) {
     let Ok(synced) = chrono::DateTime::parse_from_rfc3339(synced_at) else {
         return;
     };

@@ -109,7 +109,30 @@ fn status_text(status: &DaemonStatus, now: i64) -> String {
     if let Some(problem) = &classification.problem {
         lines.push(format!("classification problem: {problem}"));
     }
+    lines.push(search_index_line(&status.search_index));
+    if let Some(error) = &status.search_index.last_error {
+        lines.push(format!("search index error: {error}"));
+    }
     lines.join("\n") + "\n"
+}
+
+/// How far the background search indexer has got.
+fn search_index_line(index: &chatgpt_protocol::SearchIndexStatus) -> String {
+    let mut parts = vec![format!(
+        "{} of {} chats indexed",
+        index.indexed, index.chats
+    )];
+    if index.in_progress {
+        parts.push("indexing now".to_owned());
+    }
+    parts.push(format!("{} transcript(s) fetched", index.fetched));
+    if index.failed > 0 {
+        parts.push(format!("{} not returned by ChatGPT", index.failed));
+    }
+    if let Some(waiting) = &index.waiting {
+        parts.push(waiting.clone());
+    }
+    format!("search index: {}", parts.join(", "))
 }
 
 pub async fn stop(paths: &Paths) -> Result<ExitCode, ClientError> {

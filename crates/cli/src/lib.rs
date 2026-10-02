@@ -1,7 +1,8 @@
-//! The `chatgpt` command. `sync`, `list`, `stats`, `daemon` and
-//! `import-legacy` are native: they ask the daemon over IPC and print its
-//! answer. Every other command is handed, unchanged, to the TS CLI (the
-//! bridge).
+//! The `chatgpt` command. `sync`, `list`, `stats`, `export`, lexical
+//! `search`, `daemon` and `import-legacy` are native: they ask the daemon
+//! over IPC and print its answer. Every other command, and `search` with
+//! `--semantic`, `--hybrid` or `--remote`, is handed, unchanged, to the TS
+//! CLI (the bridge).
 //!
 //! This crate never touches the index or chatgpt.com itself: only the
 //! daemon does (tests/workspace_boundaries.rs). `main.rs` passes the
@@ -10,9 +11,11 @@
 mod args;
 mod bridge;
 mod daemon_cmd;
+mod export_cmd;
 mod launch_agent;
 mod output;
 mod reads;
+mod search_cmd;
 mod sync_cmd;
 
 use std::ffi::OsString;
@@ -49,7 +52,8 @@ const VALUE_OPTIONS: &[&str] = &["--browser", "--profile", "--instance"];
 /// Whether this build runs the command itself: a native command, `help`
 /// for one, top-level `--help`/`--version`, or no command at all.
 /// Anything else, unknown commands and options included, goes to the TS CLI,
-/// which knows what to say about them.
+/// which knows what to say about them, and so does a `search` in a mode
+/// only the TS CLI has.
 fn is_native(args: &[OsString]) -> bool {
     let mut words = args.iter().skip(1).map(|arg| arg.to_string_lossy());
     let mut command = None;
@@ -75,6 +79,9 @@ fn is_native(args: &[OsString]) -> bool {
         Some("help") => words
             .next()
             .is_none_or(|topic| args::NATIVE.contains(&topic.as_ref())),
+        Some("search") => !words
+            .take_while(|word| word != "--")
+            .any(|word| args::BRIDGED_SEARCH_FLAGS.contains(&word.as_ref())),
         Some(command) => args::NATIVE.contains(&command),
     }
 }
@@ -98,6 +105,8 @@ fn run(cli: Cli, daemon: DaemonEntry) -> Result<ExitCode, ClientError> {
                 Command::Sync { full } => sync_cmd::sync(&paths, full, session).await,
                 Command::List(list) => reads::list(&paths, list).await,
                 Command::Stats(filters) => reads::stats(&paths, filters, session).await,
+                Command::Export(export) => export_cmd::export(&paths, export, session).await,
+                Command::Search(search) => search_cmd::search(&paths, search).await,
                 Command::ImportLegacy => sync_cmd::import_legacy(&paths).await,
                 Command::Daemon(DaemonCommand::Status { json }) => {
                     daemon_cmd::status(&paths, json).await
@@ -155,10 +164,17 @@ mod tests {
         assert!(native("daemon status"));
         assert!(native("help list"));
         assert!(native("help"));
-        assert!(!native("export abc"));
-        assert!(!native("export --help"));
+        assert!(native("export abc -o"));
+        assert!(native("show abc"));
+        assert!(native("help export"));
+        assert!(native("search rust --format json --limit 5"));
+        assert!(native("search -- --semantic"));
+        assert!(!native("search rust --semantic"));
+        assert!(!native("search --hybrid rust"));
+        assert!(!native("--browser chrome search rust --remote --limit 5"));
+        assert!(!native("search-index"));
         assert!(!native("--browser chrome classify"));
-        assert!(!native("help export"));
+        assert!(!native("help classify"));
         assert!(!native("frobnicate"));
         assert!(!native("--frobnicate list"));
     }

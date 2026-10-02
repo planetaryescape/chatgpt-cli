@@ -84,6 +84,9 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "env-filter"] }
+# Terminal column widths for `search --format table`, as Bun.stringWidth
+# counts them (emoji and East Asian wide characters take two).
+unicode-width = "0.2"
 
 assert_cmd = "2"
 tempfile = "3"

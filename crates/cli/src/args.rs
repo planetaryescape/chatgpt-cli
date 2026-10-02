@@ -1,5 +1,6 @@
 //! The native commands' arguments, matching the TS CLI's flags
-//! (`src/cli.ts` @ 1b8c950) for `sync`, `list` and `stats`.
+//! (`src/cli.ts` @ 1b8c950) for `sync`, `list`, `stats`, `export` and
+//! lexical `search`.
 
 use clap::{Args, Parser, Subcommand};
 
@@ -15,16 +16,8 @@ pub const BRIDGED: &[(&str, &str)] = &[
         "List and delete saved memories, or read the memory summary",
     ),
     (
-        "export",
-        "Export a conversation as markdown: chat link, id, or id prefix (alias: show)",
-    ),
-    (
         "search-index",
         "Build or refresh the local text and semantic search index",
-    ),
-    (
-        "search",
-        "Search the local transcript index; use --semantic or --hybrid for meaning-based matches",
     ),
     ("project", "Create, list and manage chat projects"),
     (
@@ -65,7 +58,20 @@ pub const BRIDGED: &[(&str, &str)] = &[
     ),
 ];
 
-pub const NATIVE: &[&str] = &["sync", "list", "stats", "daemon", "import-legacy"];
+pub const NATIVE: &[&str] = &[
+    "sync",
+    "list",
+    "stats",
+    "export",
+    "show",
+    "search",
+    "daemon",
+    "import-legacy",
+];
+
+/// `search` flags whose modes the TS CLI still runs: a `search` with one of
+/// them is bridged.
+pub const BRIDGED_SEARCH_FLAGS: &[&str] = &["--semantic", "--hybrid", "--remote"];
 
 fn bridged_help() -> String {
     let width = BRIDGED
@@ -116,6 +122,14 @@ pub enum Command {
     List(ListArgs),
     /// Chat suggestions, brainstorms and topics, plus saved-memory suggestions
     Stats(FilterArgs),
+    /// Export a conversation as markdown: chat link, id, or id prefix
+    #[command(visible_alias = "show")]
+    Export(ExportArgs),
+    /// Search the local transcript index; use --semantic or --hybrid for meaning-based matches
+    #[command(
+        after_help = "--semantic, --hybrid and --remote run in the TS CLI: `chatgpt search <query> --semantic --help` shows its options."
+    )]
+    Search(SearchArgs),
     /// Start, stop and inspect the background daemon
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -174,6 +188,41 @@ pub struct ListArgs {
     /// Print only the number of matches
     #[arg(long)]
     pub count: bool,
+}
+
+#[derive(Args)]
+pub struct ExportArgs {
+    /// Chat link, id, or id prefix
+    pub link: String,
+    /// Write to a file (default name: from the title)
+    #[arg(short, long, value_name = "file", num_args = 0..=1, default_missing_value = "")]
+    pub output: Option<String>,
+    /// Copy to the clipboard
+    #[arg(short, long)]
+    pub copy: bool,
+    /// Allow an archived conversation
+    #[arg(long)]
+    pub archived: bool,
+    /// Allow either active or archived
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Args)]
+pub struct SearchArgs {
+    pub query: String,
+    /// Search archived conversations instead of active ones
+    #[arg(long)]
+    pub archived: bool,
+    /// Search both active and archived conversations
+    #[arg(long)]
+    pub all: bool,
+    /// Output format: json, csv, table, or ids (default: two-line text)
+    #[arg(long, value_name = "format")]
+    pub format: Option<String>,
+    /// Maximum conversations
+    #[arg(long, value_name = "n", default_value = "20")]
+    pub limit: String,
 }
 
 #[derive(Subcommand)]
