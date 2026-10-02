@@ -204,10 +204,10 @@ async fn index(state: &State) -> Result<(), String> {
             })
             .await
             .map_err(|failure| failure.message)?;
-        let chunked: Vec<(Unindexed, String, Vec<Vec<u8>>)> = read
+        let chunked: Vec<(Unindexed, String, Vec<String>)> = read
             .into_iter()
             .map(|(chat, markdown)| {
-                let bodies = chunk_bytes(&markdown);
+                let bodies = transcript_chunks(&markdown);
                 (chat, markdown, bodies)
             })
             .collect();
@@ -371,7 +371,7 @@ async fn save_batch(
     let preserved: Vec<_> = preserved
         .into_iter()
         .map(|(chat, markdown)| {
-            let bodies = chunk_bytes(&markdown);
+            let bodies = transcript_chunks(&markdown);
             (chat, markdown, bodies)
         })
         .collect();
@@ -379,7 +379,7 @@ async fn save_batch(
     let ready: Vec<_> = ready
         .into_iter()
         .map(|(chat, transcript)| {
-            let bodies = chunk_bytes(&transcript.markdown);
+            let bodies = transcript_chunks(&transcript.markdown);
             (chat, transcript, bodies)
         })
         .collect();
@@ -396,8 +396,8 @@ async fn save_batch(
 /// fetches the chat again. How many were saved.
 fn save_fetched(
     db: &mut rusqlite::Connection,
-    ready: &[(Unindexed, chatgpt_store::Transcript, Vec<Vec<u8>>)],
-    preserved: &[(Unindexed, String, Vec<Vec<u8>>)],
+    ready: &[(Unindexed, chatgpt_store::Transcript, Vec<String>)],
+    preserved: &[(Unindexed, String, Vec<String>)],
     versions: ChunkVersions,
 ) -> chatgpt_store::Result<u64> {
     let mut saved = 0;
@@ -438,13 +438,6 @@ async fn count(state: &State, versions: ChunkVersions) -> Result<(), String> {
     inner.chats = chats;
     inner.indexed = indexed;
     Ok(())
-}
-
-pub(crate) fn chunk_bytes(markdown: &str) -> Vec<Vec<u8>> {
-    transcript_chunks(markdown)
-        .into_iter()
-        .map(String::into_bytes)
-        .collect()
 }
 
 /// `missing` without chats ChatGPT recently didn't return (unless they

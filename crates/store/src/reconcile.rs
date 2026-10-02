@@ -77,12 +77,13 @@ pub fn preserve(connection: &mut Connection, candidate: &Candidate) -> Result<bo
     let verified = transaction
         .query_row(
             "select 1 from transcripts
-             where id = ? and update_time = ? and render_version = ? and markdown = ?",
+             where id = ? and update_time = ? and render_version = ? and markdown = ? and turns = ?",
             params![
                 candidate.id,
                 candidate.cached_update_time,
                 candidate.render_version,
-                candidate.markdown
+                candidate.markdown,
+                candidate.turns
             ],
             |_| Ok(()),
         )

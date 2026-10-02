@@ -45,7 +45,7 @@ fn chunks_are_searchable_only_while_current_for_their_chat() {
         chat("a", "Cafe plans", "2026-01-02T00:00:00Z", false),
         chat("b", "Other", "2026-01-01T00:00:00Z", true),
     ]);
-    let bodies = |text: &str| vec![text.as_bytes().to_vec()];
+    let bodies = |text: &str| vec![text.to_owned()];
     store
         .write(|db| {
             replace_chunks(
@@ -68,10 +68,7 @@ fn chunks_are_searchable_only_while_current_for_their_chat() {
         .read(|db| lexical(db, "\"cafe\"", Some(false), V, 200))
         .unwrap();
     assert_eq!(ids(&found), ["a"]);
-    assert_eq!(
-        String::from_utf8(found[0].snippet.clone()).unwrap(),
-        "Meet at the café on Tuesday about rust"
-    );
+    assert_eq!(found[0].snippet, "Meet at the café on Tuesday about rust");
     let both = store
         .read(|db| lexical(db, "\"rust\"", None, V, 200))
         .unwrap();
@@ -127,25 +124,73 @@ fn chunks_are_searchable_only_while_current_for_their_chat() {
 }
 
 #[test]
-fn chunk_bytes_that_are_not_utf8_are_stored_and_read_as_they_are() {
-    let (_dir, store) = store_with(&[chat("a", "T", "2026-01-01T00:00:00Z", false)]);
-    // What a chunk from before CHUNK_VERSION 2 can hold: the bytes Bun
-    // wrote for half of a surrogate pair.
-    let body = b"hello rust \xED\xA0\xBD".to_vec();
-    store
-        .write(|db| {
-            replace_chunks(
-                db,
-                &target("a", "T", "2026-01-01T00:00:00Z"),
-                V,
-                std::slice::from_ref(&body),
-            )
+fn chunks_that_may_not_be_utf8_are_dropped_by_the_text_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chatgpt.db");
+    {
+        let store = Store::open(&path).unwrap();
+        store
+            .write(|db| {
+                replace_all(db, &[chat("a", "T", "t", false), chat("b", "T", "t", false)], "t")?;
+                replace_chunks(db, &target("b", "T", "t"), ChunkVersions { render: 2, chunk: 2 }, &["kept".to_owned()])?;
+                // What a chunk from before chunk version 2 can hold: the
+                // bytes Bun wrote for half of a surrogate pair.
+                db.execute(
+                    "insert into search_chunks
+                     (conversation_id, update_time, render_version, chunk_version, chunk_index, title, body)
+                     values ('a', 't', 2, 1, 0, 'T', cast(x'68656c6c6f20eda0bd' as text))",
+                    [],
+                )?;
+                db.execute("insert into search_indexed values ('a', 't', 2, 1)", [])?;
+                db.pragma_update(None, "user_version", 6)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let left: Vec<(String, String)> = store
+        .read(|db| {
+            let mut statement = db.prepare("select conversation_id, body from search_chunks")?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
         })
         .unwrap();
-    let found = store
-        .read(|db| lexical(db, "\"rust\"", None, V, 200))
+    assert_eq!(left, [("b".to_owned(), "kept".to_owned())]);
+    let indexed: i64 = store
+        .read(|db| Ok(db.query_row("select count(*) from search_indexed", [], |r| r.get(0))?))
         .unwrap();
-    assert_eq!(found[0].snippet, body);
+    assert_eq!(indexed, 1);
+    let fts: i64 = store
+        .read(|db| {
+            Ok(db.query_row(
+                "select count(*) from search_fts where search_fts match 'hello'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(fts, 0, "the FTS rows went with them");
+}
+
+// docs/issues/export-search-followups.md: `coverage` and `lexical` agree
+// with `unindexed` that chunks under an old title aren't current.
+#[test]
+fn chunks_under_an_old_title_are_not_current_anywhere() {
+    let (_dir, store) = store_with(&[chat("a", "New name", "t", false)]);
+    store
+        .write(|db| replace_chunks(db, &target("a", "Old name", "t"), V, &["body text".to_owned()]))
+        .unwrap();
+    assert_eq!(store.read(|db| unindexed(db, V)).unwrap().len(), 1);
+    assert_eq!(store.read(|db| coverage(db, None, V)).unwrap(), (1, 0));
+    assert!(store.read(|db| lexical(db, "\"old\"", None, V, 200)).unwrap().is_empty());
+    assert!(store.read(|db| lexical(db, "\"body\"", None, V, 200)).unwrap().is_empty());
+    assert_eq!(
+        store.read(|db| vector_coverage(db, None, V, "m")).unwrap(),
+        (0, 0)
+    );
+    assert!(store.read(|db| pending_vectors(db, V, "m", 0, 10)).unwrap().is_empty());
 }
 
 #[test]
@@ -166,7 +211,7 @@ fn a_cached_transcript_is_found_for_its_update_time_only() {
                 &saved,
                 &target("a", "T", &saved.update_time),
                 V,
-                &[b"## Me\n\nhi".to_vec()],
+                &["## Me\n\nhi".to_owned()],
             )
         })
         .unwrap();
@@ -196,7 +241,7 @@ fn reconcile_moves_search_chunks_with_the_other_caches() {
                 "insert into transcripts values ('a', ?, 2, '# Idea', 1, 1)",
                 [old],
             )?;
-            replace_chunks(db, &target("a", "Idea", old), V, &[b"an idea".to_vec()])
+            replace_chunks(db, &target("a", "Idea", old), V, &["an idea".to_owned()])
         })
         .unwrap();
     assert!(
@@ -232,7 +277,7 @@ fn chunks_never_outlive_the_transcript_they_were_built_from() {
                 "insert into transcripts values ('a', 't1', 2, '# Idea\n\n---\n\noldword', 1, 1)",
                 [],
             )?;
-            replace_chunks(db, &target("a", "Idea", "t1"), V, &[b"oldword".to_vec()])?;
+            replace_chunks(db, &target("a", "Idea", "t1"), V, &["oldword".to_owned()])?;
             // The chat moves on; the indexer is backing off.
             apply_delta(db, &[chat("a", "Idea", "t2", false)], &[], "t2")
         })
@@ -276,7 +321,7 @@ fn moving_a_transcript_forward_keeps_its_chunks() {
                 "insert into transcripts values ('a', 't1', 2, '# Idea', 1, 1)",
                 [],
             )?;
-            replace_chunks(db, &target("a", "Idea", "t1"), V, &[b"an idea".to_vec()])?;
+            replace_chunks(db, &target("a", "Idea", "t1"), V, &["an idea".to_owned()])?;
             // Same content, only the time: the reconcile's kind of write.
             db.execute(
                 "update transcripts set update_time = 't2' where id = 'a'",
@@ -322,4 +367,28 @@ fn reconcile_skips_a_transcript_replaced_after_it_was_verified() {
         .read(|db| Ok(db.query_row("select update_time from transcripts", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(time, "t1", "B stays stale");
+}
+
+#[test]
+fn reconcile_skips_a_transcript_whose_turns_changed_after_it_was_verified() {
+    let (_dir, store) = store_with(&[chat("a", "Idea", "t2", false)]);
+    store
+        .write(|db| {
+            db.execute(
+                "insert into transcripts values ('a', 't1', 2, '# Idea', 1, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let found = store
+        .read(|db| candidates(db, &["a".to_owned()], 2))
+        .unwrap();
+    store
+        .write(|db| {
+            db.execute("update transcripts set turns = 2 where id = 'a'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!store.write(|db| preserve(db, &found[0])).unwrap());
 }

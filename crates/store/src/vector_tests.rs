@@ -39,7 +39,7 @@ fn store_with(chats: &[NewConversation]) -> (tempfile::TempDir, Store) {
 }
 
 fn chunk(store: &Store, id: &str, update_time: &str, bodies: &[&str]) {
-    let bodies: Vec<Vec<u8>> = bodies.iter().map(|body| body.as_bytes().to_vec()).collect();
+    let bodies: Vec<String> = bodies.iter().map(|&body| body.to_owned()).collect();
     store
         .write(|db| replace_chunks(db, &target(id, update_time), V, &bodies))
         .unwrap();
@@ -47,8 +47,12 @@ fn chunk(store: &Store, id: &str, update_time: &str, bodies: &[&str]) {
 
 /// Embed every pending chunk with a vector of its id.
 fn embed_all(store: &Store) -> usize {
+    embed_all_at(store, V)
+}
+
+fn embed_all_at(store: &Store, versions: ChunkVersions) -> usize {
     let pending = store
-        .read(|db| pending_vectors(db, V, MODEL, 0, 1000))
+        .read(|db| pending_vectors(db, versions, MODEL, 0, 1000))
         .unwrap();
     let vectors: Vec<NewVector> = pending
         .into_iter()
@@ -77,7 +81,7 @@ fn pending_chunks_are_current_ones_without_a_vector_from_this_model() {
         .unwrap();
     assert_eq!(pending.len(), 3);
     // The TS CLI embeds `title || '\n' || body`.
-    assert_eq!(pending[0].text, b"Title a\nalpha one");
+    assert_eq!(pending[0].text, "Title a\nalpha one");
     // Paging resumes after an id.
     let rest = store
         .read(|db| pending_vectors(db, V, MODEL, pending[0].id, 1))
@@ -204,7 +208,7 @@ fn a_vector_for_text_the_chunk_no_longer_holds_is_dropped() {
     // A deleted chunk gets no vector either.
     let gone = NewVector {
         chunk_id: 999,
-        text: b"x".to_vec(),
+        text: "x".to_owned(),
         embedding: vec![0; 384 * 4],
     };
     assert_eq!(
@@ -215,10 +219,15 @@ fn a_vector_for_text_the_chunk_no_longer_holds_is_dropped() {
 
 #[test]
 fn an_index_from_before_vectors_upgrades_in_place() {
+    const V2: ChunkVersions = ChunkVersions {
+        render: 2,
+        chunk: 2,
+    };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chatgpt.db");
     {
-        // 0.1.1's schema, with a chat already chunked.
+        // 0.1.1's schema, with a chat already chunked (at chunk version 2,
+        // which the text migration keeps).
         let mut db = Connection::open(&path).unwrap();
         let transaction = db.transaction().unwrap();
         for sql in [
@@ -231,34 +240,34 @@ fn an_index_from_before_vectors_upgrades_in_place() {
         transaction.pragma_update(None, "user_version", 3).unwrap();
         transaction.commit().unwrap();
         replace_all(&mut db, &[chat("a", "t1", false)], "t").unwrap();
-        replace_chunks(&mut db, &target("a", "t1"), V, &[b"kept".to_vec()]).unwrap();
+        replace_chunks(&mut db, &target("a", "t1"), V2, &["kept".to_owned()]).unwrap();
     }
     let store = Store::open(&path).unwrap();
     let version: i64 = store
         .read(|db| Ok(db.query_row("pragma user_version", [], |r| r.get(0))?))
         .unwrap();
-    assert_eq!(version, 6);
-    assert_eq!(store.read(|db| coverage(db, None, V)).unwrap(), (1, 1));
+    assert_eq!(version, 7);
+    assert_eq!(store.read(|db| coverage(db, None, V2)).unwrap(), (1, 1));
     assert_eq!(
         store
-            .read(|db| lexical(db, "\"kept\"", None, V, 10))
+            .read(|db| lexical(db, "\"kept\"", None, V2, 10))
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
         store
-            .read(|db| vector_coverage(db, None, V, MODEL))
+            .read(|db| vector_coverage(db, None, V2, MODEL))
             .unwrap(),
         (1, 0),
         "the existing chunks wait for vectors"
     );
-    assert_eq!(embed_all(&store), 1);
+    assert_eq!(embed_all_at(&store, V2), 1);
     let body = store
         .read(|db| {
             let id: i64 = db.query_row("select id from search_chunks", [], |r| r.get(0))?;
             chunk_body(db, id)
         })
         .unwrap();
-    assert_eq!(body.as_deref(), Some(&b"kept"[..]));
+    assert_eq!(body.as_deref(), Some("kept"));
 }

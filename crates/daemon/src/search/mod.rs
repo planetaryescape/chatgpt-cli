@@ -140,7 +140,7 @@ mod tests {
                     project_id: None,
                 };
                 chatgpt_store::replace_all(db, &[row], "t")?;
-                chatgpt_store::replace_chunks(db, &chat, versions, &[b"first".to_vec()])
+                chatgpt_store::replace_chunks(db, &chat, versions, &["first".to_owned()])
             })
             .expect("index");
         let body = |db: &Connection| {
@@ -159,7 +159,7 @@ mod tests {
                                 db,
                                 &chat,
                                 versions,
-                                &[b"second".to_vec()],
+                                &["second".to_owned()],
                             )
                         })
                         .map_err(Failure::store)?;
@@ -169,12 +169,12 @@ mod tests {
             .expect("read")
             .map_err(|failure| failure.message)
             .expect("snapshot");
-        assert_eq!(seen, (b"first".to_vec(), b"first".to_vec()));
+        assert_eq!(seen, ("first".to_owned(), "first".to_owned()));
         let now = store
             .read(|db| Ok(body(db).map_err(|failure| failure.message)))
             .expect("read")
             .expect("body");
-        assert_eq!(now, b"second", "the id was reused");
+        assert_eq!(now, "second", "the id was reused");
     }
 
     #[test]

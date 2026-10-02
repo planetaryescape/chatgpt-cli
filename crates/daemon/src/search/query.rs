@@ -69,7 +69,7 @@ pub fn lexical_hits(
         if !seen.insert(row.id.clone()) {
             continue;
         }
-        let snippet = match String::from_utf8_lossy(&row.snippet).as_ref() {
+        let snippet = match row.snippet.as_str() {
             "" => excerpt(&row.title),
             text => excerpt(text),
         };

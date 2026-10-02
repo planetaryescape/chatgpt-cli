@@ -97,7 +97,7 @@ pub fn semantic_hits(
             let body = chatgpt_store::chunk_body(db, best.chunk_id)
                 .map_err(Failure::store)?
                 .unwrap_or_default();
-            let snippet = excerpt(&String::from_utf8_lossy(&body));
+            let snippet = excerpt(&body);
             Ok(SearchHit {
                 id,
                 title: best.title,
@@ -316,8 +316,7 @@ mod tests {
             .write(|db| {
                 chatgpt_store::replace_all(db, &chats, "t")?;
                 for (id, bodies, _) in &chunks {
-                    let bodies: Vec<Vec<u8>> =
-                        bodies.iter().map(|body| body.as_bytes().to_vec()).collect();
+                    let bodies: Vec<String> = bodies.iter().map(|&body| body.to_owned()).collect();
                     let target = Unindexed {
                         id: (*id).into(),
                         title: format!("Title {id}"),

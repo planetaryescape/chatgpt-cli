@@ -416,8 +416,7 @@ async fn embed_pending(state: &State) -> Result<(), String> {
                 continue;
             }
             super::indexer::yield_to_requests(state).await;
-            let text = String::from_utf8_lossy(&chunk.text);
-            match state.embedder.embed(&model, &text).await {
+            match state.embedder.embed(&model, &chunk.text).await {
                 Ok(vector) => batch.push(NewVector {
                     chunk_id: chunk.id,
                     text: chunk.text,

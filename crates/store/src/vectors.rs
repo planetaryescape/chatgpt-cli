@@ -3,9 +3,7 @@
 //! `coverage` and `semantic` in the TS CLI's `src/search/store.ts` @
 //! 1b8c950.
 //!
-//! A chunk's text is `title || '\n' || body` as SQLite concatenates the
-//! stored bytes, which may not be UTF-8 (see `search.rs`); callers decide
-//! how to read it.
+//! A chunk's text is `title || '\n' || body`.
 
 use rusqlite::types::{Type, ValueRef};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -17,8 +15,8 @@ use crate::search::ChunkVersions;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingChunk {
     pub id: i64,
-    /// `title || '\n' || body`, as stored.
-    pub text: Vec<u8>,
+    /// `title || '\n' || body`.
+    pub text: String,
 }
 
 /// A vector to save, for the chunk text it was made from.
@@ -26,7 +24,7 @@ pub struct PendingChunk {
 pub struct NewVector {
     pub chunk_id: i64,
     /// The chunk's `title || '\n' || body` when it was read.
-    pub text: Vec<u8>,
+    pub text: String,
     /// Little-endian `f32`s.
     pub embedding: Vec<u8>,
 }
@@ -49,14 +47,6 @@ fn text<'a>(row: &'a rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'a st
     })
 }
 
-/// Stored chunk text as bytes, which may not be UTF-8 (`search.rs`).
-pub(crate) fn text_bytes(value: ValueRef<'_>) -> Vec<u8> {
-    match value {
-        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.to_vec(),
-        _ => Vec::new(),
-    }
-}
-
 /// `pendingVectors` for every chat (`archived` null), in id order, from
 /// after `after_id`, at most `limit`: only chunks current for their chat
 /// and without a vector from `model_version`.
@@ -71,7 +61,7 @@ pub fn pending_vectors(
         "select sc.id, sc.title || char(10) || sc.body from search_chunks sc
          join conversations c on c.id = sc.conversation_id and c.update_time = sc.update_time
          left join search_vectors v on v.chunk_id = sc.id
-         where sc.render_version = ?1 and sc.chunk_version = ?2
+         where sc.render_version = ?1 and sc.chunk_version = ?2 and sc.title = c.title
          and (v.chunk_id is null or v.model_version != ?3)
          and sc.id > ?4
          order by sc.id limit ?5",
@@ -88,7 +78,7 @@ pub fn pending_vectors(
             |row| {
                 Ok(PendingChunk {
                     id: row.get(0)?,
-                    text: text_bytes(row.get_ref(1)?),
+                    text: row.get(1)?,
                 })
             },
         )?
@@ -112,7 +102,7 @@ pub fn save_vectors(
             "insert or replace into search_vectors (chunk_id, model_version, embedding)
              select ?1, ?2, ?3 where exists (
                 select 1 from search_chunks
-                where id = ?1 and cast(title || char(10) || body as blob) = ?4)",
+                where id = ?1 and title || char(10) || body = ?4)",
         )?;
         for vector in vectors {
             saved += insert.execute(params![
@@ -141,11 +131,11 @@ pub fn vector_coverage(
         "select
             (select count(*) from search_chunks sc join conversations c on c.id = sc.conversation_id
                 where sc.update_time = c.update_time and sc.render_version = ?2 and sc.chunk_version = ?3
-                and (?1 is null or c.is_archived = ?1)),
+                and sc.title = c.title and (?1 is null or c.is_archived = ?1)),
             (select count(*) from search_vectors v join search_chunks sc on sc.id = v.chunk_id
                 join conversations c on c.id = sc.conversation_id and c.update_time = sc.update_time
                 where v.model_version = ?4 and sc.render_version = ?2 and sc.chunk_version = ?3
-                and (?1 is null or c.is_archived = ?1))",
+                and sc.title = c.title and (?1 is null or c.is_archived = ?1))",
         params![scope, versions.render, versions.chunk, model_version],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -172,7 +162,7 @@ pub fn each_vector(
             join search_chunks sc on sc.id = v.chunk_id
             join conversations c on c.id = sc.conversation_id and c.update_time = sc.update_time
             where v.model_version = ? and sc.render_version = ? and sc.chunk_version = ?
-            and (?4 is null or c.is_archived = ?4)",
+            and sc.title = c.title and (?4 is null or c.is_archived = ?4)",
     )?;
     let mut rows = statement.query(params![
         model_version,
@@ -198,9 +188,9 @@ pub fn each_vector(
 }
 
 /// A chunk's body as stored, for its excerpt.
-pub fn chunk_body(connection: &Connection, chunk_id: i64) -> Result<Option<Vec<u8>>> {
+pub fn chunk_body(connection: &Connection, chunk_id: i64) -> Result<Option<String>> {
     Ok(connection
         .prepare_cached("select body from search_chunks where id = ?")?
-        .query_row([chunk_id], |row| Ok(text_bytes(row.get_ref(0)?)))
+        .query_row([chunk_id], |row| row.get(0))
         .optional()?)
 }
