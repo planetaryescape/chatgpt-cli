@@ -194,12 +194,9 @@ async fn index(state: &State) -> Result<(), String> {
             .db(move |db| {
                 let mut read = Vec::new();
                 for chat in group {
-                    if let Some(transcript) = chatgpt_store::transcript(
-                        db,
-                        &chat.id,
-                        &chat.update_time,
-                        versions.render,
-                    )? {
+                    if let Some(transcript) =
+                        chatgpt_store::transcript(db, &chat.id, &chat.update_time, versions.render)?
+                    {
                         read.push((chat, transcript.markdown));
                     }
                 }
@@ -522,14 +519,11 @@ mod tests {
 
     #[test]
     fn a_set_aside_chat_that_changed_or_left_stops_counting_as_failed() {
-        let mut unavailable: HashMap<String, (String, Instant)> = [
-            ("same", "t1"),
-            ("changed", "t1"),
-            ("indexed-since", "t1"),
-        ]
-        .into_iter()
-        .map(|(id, time)| (id.to_owned(), (time.to_owned(), Instant::now())))
-        .collect();
+        let mut unavailable: HashMap<String, (String, Instant)> =
+            [("same", "t1"), ("changed", "t1"), ("indexed-since", "t1")]
+                .into_iter()
+                .map(|(id, time)| (id.to_owned(), (time.to_owned(), Instant::now())))
+                .collect();
         let ready = without_set_aside(
             &mut unavailable,
             vec![chat("same", "t1"), chat("changed", "t2"), chat("new", "t1")],

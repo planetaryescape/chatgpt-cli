@@ -497,7 +497,11 @@ fn a_short_active_list_is_read_again_before_checking_chats_one_by_one() {
         ),
         "{stderr}"
     );
-    assert_eq!(single_reads(&env), reads_before, "no chat was read one by one");
+    assert_eq!(
+        single_reads(&env),
+        reads_before,
+        "no chat was read one by one"
+    );
     assert_eq!(indexed_count(&env), 150);
 }
 
@@ -523,14 +527,14 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 fn the_daily_full_sync_drops_a_chat_deleted_while_active() {
     let env = quick_schedule(chats());
     let first_full = env.status()["sync"]["last_full_at"].as_i64().unwrap();
-    env.fake()
-        .state()
-        .chats
-        .retain(|chat| chat.id != "e-old");
+    env.fake().state().chats.retain(|chat| chat.id != "e-old");
     // Only a full pass drops it; `daemon status` doesn't count as use.
     wait_until("the background full sync", || indexed_count(&env) == 4);
     let sync = env.status()["sync"].clone();
-    assert!(sync["last_full_at"].as_i64().unwrap() >= first_full, "{sync}");
+    assert!(
+        sync["last_full_at"].as_i64().unwrap() >= first_full,
+        "{sync}"
+    );
     assert!(sync["next_full_at"].as_i64().is_some(), "{sync}");
     assert!(
         env.stdout(&["daemon", "status"]).contains("full sync: "),
@@ -552,6 +556,10 @@ fn the_daily_full_sync_reads_only_a_few_left_out_chats_one_by_one() {
             .as_str()
             .is_some_and(|error| error.contains("chatgpt sync --full"))
     });
-    assert_eq!(single_reads(&env), reads_before, "nothing was read one by one");
+    assert_eq!(
+        single_reads(&env),
+        reads_before,
+        "nothing was read one by one"
+    );
     assert_eq!(indexed_count(&env), 60, "the index is unchanged");
 }

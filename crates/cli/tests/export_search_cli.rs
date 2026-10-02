@@ -652,7 +652,9 @@ fn a_session_refused_mid_indexing_ends_the_run_without_setting_chats_aside() {
     let index = env.wait_for_indexer();
     assert_eq!(index["failed"], 0, "{index}");
     assert!(
-        index["last_error"].as_str().is_some_and(|error| error.contains("401")),
+        index["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("401")),
         "{index}"
     );
     // Once ChatGPT takes the session again, every chat is fetched at once:

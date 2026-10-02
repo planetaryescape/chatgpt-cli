@@ -256,6 +256,9 @@ mod tests {
             change_lines.try_recv().map(|progress| progress.line).ok(),
             Some("change's retry".to_owned())
         );
-        assert!(sync_lines.try_recv().is_err(), "the sync heard another's retry");
+        assert!(
+            sync_lines.try_recv().is_err(),
+            "the sync heard another's retry"
+        );
     }
 }

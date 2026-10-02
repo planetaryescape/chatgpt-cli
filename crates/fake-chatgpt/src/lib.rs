@@ -295,10 +295,7 @@ impl Respond for Handler {
             state.short_listings = state.short_listings.saturating_sub(1);
         }
         let flaky = active_listing && state.flaky_now;
-        if active_listing
-            && state.short_now
-            && query(request, "offset").as_deref() != Some("0")
-        {
+        if active_listing && state.short_now && query(request, "offset").as_deref() != Some("0") {
             return ResponseTemplate::new(200).set_body_json(json!({ "items": [], "total": 0 }));
         }
         let chats = if other {

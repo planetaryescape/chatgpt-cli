@@ -387,7 +387,10 @@ enum Probe {
     Ready(Box<DaemonClient>, Box<DaemonStatus>),
     /// Something answers, but not in a way this build can use. `pid`: the
     /// one it reported, else the one its PID file named.
-    Incompatible { why: String, pid: Option<u32> },
+    Incompatible {
+        why: String,
+        pid: Option<u32>,
+    },
     Unreachable,
 }
 

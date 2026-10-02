@@ -339,6 +339,9 @@ fn chats_new_since_the_background_jev_baseline_compare_by_time_not_text() {
             .map(|(id, _)| id)
             .collect::<Vec<_>>()
     };
-    assert_eq!(new_since("2026-10-01T14:05:59.206Z"), ["d-next-day", "a-later"]);
+    assert_eq!(
+        new_since("2026-10-01T14:05:59.206Z"),
+        ["d-next-day", "a-later"]
+    );
     assert_eq!(new_since("").len(), 4, "no baseline: every chat");
 }

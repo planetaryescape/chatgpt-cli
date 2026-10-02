@@ -235,9 +235,9 @@ impl Schedule {
     /// after the last one, a day after one a rate limit stopped, an hour
     /// after one that failed otherwise. It waits for an idle moment too.
     fn next_full_at(&self, now: i64) -> i64 {
-        let after_last = self
-            .last_full
-            .map_or(now, |at| at.saturating_add(secs(self.cadence.full_interval)));
+        let after_last = self.last_full.map_or(now, |at| {
+            at.saturating_add(secs(self.cadence.full_interval))
+        });
         let after_failure = self.full_failed.map_or(now, |(at, rate_limited)| {
             let wait = if rate_limited {
                 self.cadence.full_interval
@@ -531,7 +531,10 @@ mod tests {
     #[test]
     fn the_daily_full_sync_waits_for_a_day_and_for_nobody_using_the_cli() {
         let now = now_unix();
-        assert!(idle_schedule(None).full_due(now), "never ran: due once idle");
+        assert!(
+            idle_schedule(None).full_due(now),
+            "never ran: due once idle"
+        );
         assert!(!idle_schedule(Some(now - HOUR)).full_due(now));
         assert!(idle_schedule(Some(now - 25 * HOUR)).full_due(now));
 

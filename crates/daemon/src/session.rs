@@ -266,11 +266,18 @@ mod tests {
         }
         let long_ago = Instant::now().checked_sub(UNUSED * 2).expect("an instant");
         for browser in ["sync", "old", "busy"] {
-            sessions.slots().get_mut(&choice(browser)).expect("held").used = long_ago;
+            sessions
+                .slots()
+                .get_mut(&choice(browser))
+                .expect("held")
+                .used = long_ago;
         }
         let busy = sessions.peek(&choice("busy")).expect("held");
         let reading = busy.lock().await;
-        assert!(sessions.reading(&choice("busy")), "a read in progress shows");
+        assert!(
+            sessions.reading(&choice("busy")),
+            "a read in progress shows"
+        );
         assert!(!sessions.reading(&choice("recent")));
         sessions.prune(&choice("sync"));
         assert_eq!(held(&sessions), ["busy", "recent", "sync"]);

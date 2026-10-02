@@ -280,7 +280,9 @@ mod tests {
         let profile = dir.path().join("cargo-cache/release");
         std::fs::create_dir_all(profile.join(".fingerprint")).expect("mkdir");
         std::fs::create_dir_all(profile.join("deps")).expect("mkdir");
-        assert!(!path_has_cargo_target_profile_ancestor(&profile.join("chatgpt")));
+        assert!(!path_has_cargo_target_profile_ancestor(
+            &profile.join("chatgpt")
+        ));
         assert!(in_cargo_output_dir(&profile.join("chatgpt")));
         assert!(in_cargo_output_dir(&profile.join("deps/chatgpt-0123")));
         let installed = dir.path().join("bin");

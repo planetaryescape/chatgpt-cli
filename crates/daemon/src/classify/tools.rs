@@ -245,7 +245,10 @@ mod tests {
             && chatgpt_core::ps_field(u32::try_from(left).expect("pid"), "state")
                 .is_some_and(|state| !state.starts_with('Z'))
         {
-            assert!(std::time::Instant::now() < deadline, "pid {left} outlived the run");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid {left} outlived the run"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }

@@ -224,7 +224,10 @@ fn a_daemon_stuck_starting_up_is_stopped_and_started_again() {
             "CHATGPT_TEST_STALL_STARTUP".to_owned(),
             marker.display().to_string(),
         ),
-        ("CHATGPT_TEST_READY_TIMEOUT_MS".to_owned(), "2000".to_owned()),
+        (
+            "CHATGPT_TEST_READY_TIMEOUT_MS".to_owned(),
+            "2000".to_owned(),
+        ),
     ]);
     let output = env
         .cmd()
