@@ -20,7 +20,6 @@ How to change `chatgpt` safely: where things live, how to verify a change, and w
 | `crates/fake-chatgpt/` | A fake chatgpt.com (reads, writes and their quirks), fake TypeSafe, OpenAI and Anthropic APIs, and the answers the debug binary's stand-in `codex` and `claude` give (`model_answers.rs`), for tests |
 | `third_party/impit/` | impit with one patch: no environment writes after startup (`third_party/README.md`) |
 | `install.sh` | Installs a release into `~/.local/bin`, checking its SHA-256 |
-| `packaging/homebrew/`, `scripts/render_homebrew_formula.sh` | The Homebrew formula template and its renderer; the release workflow's `homebrew` job pushes each release's formula to planetaryescape/homebrew-chatgpt-cli |
 
 ## Verify a change
 
