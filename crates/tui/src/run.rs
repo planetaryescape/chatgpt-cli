@@ -1,7 +1,7 @@
 //! Running the TUI: the terminal, the keyboard, and the daemon.
 //!
 //! Three threads: this one draws and owns the [`App`]; one reads the
-//! keyboard; one runs the daemon requests and the clipboard, polls the
+//! keyboard (pausing while `$PAGER` has the terminal); one runs the daemon requests and the clipboard, polls the
 //! daemon's `Status` for a changed index, and watches for SIGTERM, SIGHUP
 //! and SIGINT. They meet in one channel, which this thread blocks on:
 //! nothing is drawn, and no CPU is used, until a key, an answer, a resize
@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chatgpt_core::{ErrorKind, Paths};
@@ -43,9 +44,71 @@ use crate::connections::Connections;
 /// How often the index is checked for a sync or background Jev run.
 const POLL: Duration = Duration::from_secs(30);
 
+/// How long the keyboard thread waits for a key before checking whether
+/// it should pause.
+const KEY_WAIT: Duration = Duration::from_millis(50);
+
 /// Set by the panic hook, so the loop stops instead of drawing on a
 /// terminal that's been restored.
 static PANICKED: AtomicBool = AtomicBool::new(false);
+
+/// Set while `$PAGER` has the terminal: Ctrl-C there is the pager's.
+static PAGING: AtomicBool = AtomicBool::new(false);
+
+/// The keyboard thread's reads, which stop while `$PAGER` has the
+/// terminal: a key read here would never reach the pager.
+#[derive(Default)]
+struct Keyboard {
+    paused: AtomicBool,
+    /// Held by the keyboard thread while it waits for a key, and by
+    /// [`Keyboard::pause`] while the pager runs.
+    reading: Mutex<()>,
+}
+
+impl Keyboard {
+    /// Send each key, resize and so on as an [`Event::Input`], until the
+    /// loop is gone.
+    fn read(&self, events: &Sender<Event>) {
+        loop {
+            if self.paused.load(Ordering::SeqCst) {
+                std::thread::sleep(KEY_WAIT);
+                continue;
+            }
+            let _reading = self
+                .reading
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.paused.load(Ordering::SeqCst) {
+                continue;
+            }
+            let input = match event::poll(KEY_WAIT) {
+                Ok(true) => event::read(),
+                Ok(false) => continue,
+                Err(error) => Err(error),
+            };
+            let Ok(input) = input else {
+                return;
+            };
+            if events.send(Event::Input(input)).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Run `then` once the keyboard thread has stopped reading.
+    fn pause<T>(&self, then: impl FnOnce() -> T) -> T {
+        self.paused.store(true, Ordering::SeqCst);
+        let result = {
+            let _reading = self
+                .reading
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            then()
+        };
+        self.paused.store(false, Ordering::SeqCst);
+        result
+    }
+}
 
 pub(crate) enum Event {
     Input(TermEvent),
@@ -81,21 +144,17 @@ pub fn run(paths: &Paths, session: SessionChoice) -> Result<ExitCode, ClientErro
 
     let (events, inbox) = std::sync::mpsc::channel();
     let jobs = start_worker(runtime, paths.clone(), client, session, events.clone());
+    let keyboard = Arc::new(Keyboard::default());
     std::thread::spawn({
+        let keyboard = Arc::clone(&keyboard);
         let events = events.clone();
-        move || {
-            while let Ok(input) = event::read() {
-                if events.send(Event::Input(input)).is_err() {
-                    break;
-                }
-            }
-        }
+        move || keyboard.read(&events)
     });
     install_panic_hook();
     let mut screen = Screen::enter().map_err(|error| terminal_error(&error))?;
     let mut app = App::new(rows, status.classification.topics.clone(), now_ms);
     app.index = Some(IndexStamp::of(&status));
-    let result = event_loop(&mut screen.terminal, &mut app, &inbox, &jobs);
+    let result = event_loop(&mut screen.terminal, &mut app, &inbox, &jobs, &keyboard);
     drop(screen);
     result
 }
@@ -122,6 +181,7 @@ fn event_loop(
     app: &mut App,
     inbox: &Receiver<Event>,
     jobs: &UnboundedSender<Effect>,
+    keyboard: &Keyboard,
 ) -> Result<ExitCode, ClientError> {
     // The chat whose transcript to fetch once the debounce passes.
     let mut pending: Option<(ChatKey, Instant)> = None;
@@ -140,6 +200,11 @@ fn event_loop(
                     if let Err(error) = chatgpt_core::desktop::open_chat(&id) {
                         app.status = format!("Couldn't open the browser: {error}");
                     }
+                }
+                Effect::Page { markdown } => {
+                    keyboard
+                        .pause(|| page(terminal, &markdown, app))
+                        .map_err(|error| terminal_error(&error))?;
                 }
                 effect => {
                     if jobs.send(effect).is_err() {
@@ -296,12 +361,19 @@ impl Signals {
         })
     }
 
-    /// The first of them stops the TUI, which restores the terminal.
+    /// The first of them stops the TUI, which restores the terminal;
+    /// except SIGINT while `$PAGER` runs, which is Ctrl-C in the pager.
     async fn watch(mut self, events: Sender<Event>) {
-        let number = tokio::select! {
-            _ = self.terminate.recv() => 15,
-            _ = self.hangup.recv() => 1,
-            _ = self.interrupt.recv() => 2,
+        let number = loop {
+            tokio::select! {
+                _ = self.terminate.recv() => break 15,
+                _ = self.hangup.recv() => break 1,
+                _ = self.interrupt.recv() => {
+                    if !PAGING.load(Ordering::SeqCst) {
+                        break 2;
+                    }
+                }
+            }
         };
         let _ = events.send(Event::Signal(number));
     }
@@ -375,7 +447,9 @@ async fn perform(
             Outcome::Copied(copied)
         }
         // Handled on the main thread.
-        Effect::FetchLater { .. } | Effect::Open { .. } | Effect::Quit => return,
+        Effect::FetchLater { .. } | Effect::Open { .. } | Effect::Page { .. } | Effect::Quit => {
+            return;
+        }
     };
     let _ = events.send(Event::Outcome(outcome));
 }
@@ -443,6 +517,27 @@ fn crashed() -> ClientError {
     )
 }
 
+/// The terminal given back, `markdown` in `$PAGER` until it quits, and
+/// the screen taken again. Failing to start the pager is the status line;
+/// failing to take the screen back ends the TUI.
+fn page(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    markdown: &str,
+    app: &mut App,
+) -> std::io::Result<()> {
+    restore();
+    PAGING.store(true, Ordering::SeqCst);
+    let paged = chatgpt_core::desktop::page(markdown);
+    PAGING.store(false, Ordering::SeqCst);
+    Screen::take()?;
+    repaint(terminal)?;
+    app.status = match paged {
+        Ok(()) => String::new(),
+        Err(error) => format!("Couldn't page the transcript: {error}"),
+    };
+    Ok(())
+}
+
 /// Wipe the screen and draw every cell next time. Not `Terminal::clear`,
 /// which asks the terminal where its cursor is: the keyboard thread would
 /// take that answer, and the question would time out.
@@ -465,9 +560,8 @@ struct Screen {
 
 impl Screen {
     fn enter() -> std::io::Result<Self> {
-        enable_raw_mode()?;
-        let entered = execute!(std::io::stdout(), EnterAlternateScreen, cursor::Hide)
-            .and_then(|()| Terminal::new(CrosstermBackend::new(std::io::stdout())));
+        let entered =
+            Self::take().and_then(|()| Terminal::new(CrosstermBackend::new(std::io::stdout())));
         match entered {
             Ok(terminal) => Ok(Self { terminal }),
             Err(error) => {
@@ -475,6 +569,12 @@ impl Screen {
                 Err(error)
             }
         }
+    }
+
+    /// Raw mode and the alternate screen, as [`restore`] undoes them.
+    fn take() -> std::io::Result<()> {
+        enable_raw_mode()?;
+        execute!(std::io::stdout(), EnterAlternateScreen, cursor::Hide)
     }
 }
 

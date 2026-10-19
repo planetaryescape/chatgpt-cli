@@ -22,6 +22,7 @@ use crate::model::{
 pub const DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub const HELP: &str = "j/k ↑/↓  move            g/G  top/bottom       ctrl-d/u  page
+tab      focus list / preview (move keys scroll a focused preview)
 J/K      scroll preview  /    filter titles    esc  clear filter
 1-6      all · delete · archive · keep · unjudged · unsure
 t/T      next/previous topic                    A    archived view
@@ -30,10 +31,11 @@ b/B      brainstorms: off · any · writing · sermon · product · other
 d / a    mark delete / archive (again to unmark)   u  unmark
 enter    take suggestion and move on             x    apply marks
 c        copy transcript    o  open in browser  r    reload data
+v        view transcript in $PAGER
 n        edit local title (ChatGPT title stays unchanged)
 q        quit               ?  close help";
 
-pub const HINTS: &str = "? help · / filter · 1-6 suggestion · t topic · y age · b brainstorms · n title · d/a mark · enter accept · x apply · q quit";
+pub const HINTS: &str = "? help · tab focus · / filter · 1-6 suggestion · t topic · y age · b brainstorms · n title · d/a mark · enter accept · x apply · q quit";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -57,6 +59,15 @@ pub enum Mode {
         done: usize,
         total: usize,
     },
+}
+
+/// The pane the move keys act on: the list moves the cursor, the preview
+/// scrolls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Focus {
+    #[default]
+    List,
+    Preview,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +149,10 @@ pub enum Effect {
     Open {
         id: String,
     },
+    /// Hand the terminal to `$PAGER` with this text until it quits.
+    Page {
+        markdown: String,
+    },
     Quit,
 }
 
@@ -190,6 +205,7 @@ pub struct App {
     pub start: usize,
     pub marks: HashMap<String, Mark>,
     pub mode: Mode,
+    pub focus: Focus,
     pub status: String,
     /// The failures of the last apply, one line each: every failed chat
     /// is named here, so it stays identifiable even when the list no
@@ -235,6 +251,7 @@ impl App {
             start: 0,
             marks: HashMap::new(),
             mode: Mode::Browse,
+            focus: Focus::default(),
             status: String::new(),
             failures: Vec::new(),
             quit_armed: false,
@@ -369,6 +386,16 @@ impl App {
         if name != 'q' || ctrl {
             self.quit_armed = false;
         }
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.focus = match self.focus {
+                Focus::List => Focus::Preview,
+                Focus::Preview => Focus::List,
+            };
+            return;
+        }
+        if self.focus == Focus::Preview && self.preview_key(key.code, name, shifted, ctrl) {
+            return;
+        }
         let list_height = self.list_height;
         match key.code {
             KeyCode::Esc => return self.change_view(effects, |view| view.query.clear()),
@@ -440,6 +467,22 @@ impl App {
         }
     }
 
+    /// With the preview focused, the move keys scroll it. Whether `key`
+    /// was one.
+    fn preview_key(&mut self, code: KeyCode, name: char, shifted: bool, ctrl: bool) -> bool {
+        let page = self.preview_height as isize;
+        match (code, name, shifted, ctrl) {
+            (KeyCode::Down, ..) | (_, 'j', false, false) => self.scroll_by(1),
+            (KeyCode::Up, ..) | (_, 'k', false, false) => self.scroll_by(-1),
+            (KeyCode::PageDown, ..) | (_, 'd', _, true) => self.scroll_by(page),
+            (KeyCode::PageUp, ..) | (_, 'u', _, true) => self.scroll_by(-page),
+            (_, 'g', false, false) => self.preview.scroll = 0,
+            (_, 'g', true, false) => self.scroll_by(isize::MAX),
+            _ => return false,
+        }
+        true
+    }
+
     /// The keys that act on the selected chat.
     fn row_key(&mut self, name: char, shifted: bool, effects: &mut Vec<Effect>) {
         let Some(row) = self.current() else {
@@ -462,22 +505,36 @@ impl App {
                 effects.push(Effect::Open { id });
                 "Opened in the browser.".clone_into(&mut self.status);
             }
-            ('c', _) => match &self.preview.transcript {
-                Transcript::Ready(markdown)
-                    if self
-                        .preview
-                        .key
-                        .as_ref()
-                        .is_some_and(|(shown, _)| *shown == id) =>
-                {
-                    effects.push(Effect::Copy {
-                        markdown: markdown.clone(),
-                        title: row.display_title.clone(),
-                    });
-                }
-                _ => "Transcript not loaded yet.".clone_into(&mut self.status),
+            ('c', _) => match self.shown_transcript(&id) {
+                Some(markdown) => effects.push(Effect::Copy {
+                    markdown: markdown.to_owned(),
+                    title: row.display_title.clone(),
+                }),
+                None => "Transcript not loaded yet.".clone_into(&mut self.status),
+            },
+            ('v', _) => match self.shown_transcript(&id) {
+                Some(markdown) => effects.push(Effect::Page {
+                    markdown: markdown.to_owned(),
+                }),
+                None => "Transcript not loaded yet.".clone_into(&mut self.status),
             },
             _ => {}
+        }
+    }
+
+    /// Chat `id`'s transcript, once the preview has it.
+    fn shown_transcript(&self, id: &str) -> Option<&str> {
+        match &self.preview.transcript {
+            Transcript::Ready(markdown)
+                if self
+                    .preview
+                    .key
+                    .as_ref()
+                    .is_some_and(|(shown, _)| shown == id) =>
+            {
+                Some(markdown)
+            }
+            _ => None,
         }
     }
 

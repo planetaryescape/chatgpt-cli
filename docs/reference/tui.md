@@ -17,6 +17,8 @@ The TUI reads the local index, so run `chatgpt sync` first. Suggestions come fro
 | Right pane: preview | Dates and flags, Jev or Luna verdict and reason, the summary (for chats over ~12k tokens), then the transcript |
 | Footer | Key hints, or the status of the last action, and one line per failure of the last apply |
 
+One pane has focus, shown by its highlighted border: the list at start. `tab` (or `shift-tab`) switches it.
+
 ## Keys
 
 ### Move
@@ -30,6 +32,9 @@ The TUI reads the local index, so run `chatgpt sync` first. Suggestions come fro
 | `ctrl-u` / `pageup` | Up a page |
 | `J` / `K` | Scroll the preview down / up |
 | `space` | Scroll the preview down a page |
+| `tab` / `shift-tab` | Focus the other pane |
+
+With the preview focused, `j`/`k`/`↓`/`↑` scroll it a line, `ctrl-d`/`ctrl-u`/`pagedown`/`pageup` a page, and `g`/`G` go to its top and bottom; the cursor stays on its chat. Every other key acts as it does with the list focused.
 
 ### Filter
 
@@ -79,6 +84,7 @@ If the daemon itself can't be reached, nothing is known about which chats change
 | Key | Action |
 |---|---|
 | `c` | Copy the selected chat's transcript as markdown |
+| `v` | View the selected chat's transcript in `$PAGER` (`less` if unset), with `-R` added. Quitting the pager returns to the TUI |
 | `o` | Open the selected chat in your browser |
 | `r` | Reload from the local index, for example after `chatgpt classify` in another terminal |
 | `n` | Edit the selected chat's local display title; `enter` saves and `esc` cancels. ChatGPT's own title is unchanged |

@@ -21,4 +21,4 @@ expression: h.screen()
 "│                                                                    ││                                                                    │"
 "│                                                                    ││                                                                    │"
 "└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
-"? help · / filter · 1-6 suggestion · t topic · y age · b brainstorms · n title · d/a mark · enter accept · x apply · q quit                 "
+"? help · tab focus · / filter · 1-6 suggestion · t topic · y age · b brainstorms · n title · d/a mark · enter accept · x apply · q quit     "

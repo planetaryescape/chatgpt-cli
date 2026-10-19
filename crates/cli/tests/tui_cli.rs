@@ -242,6 +242,43 @@ fn a_local_title_goes_to_the_index_and_a_refused_one_says_why() {
     );
 }
 
+/// `v` hands the terminal to `$PAGER` with the transcript, and the TUI
+/// takes it back and answers keys after.
+#[test]
+fn v_pages_the_transcript_and_tab_scrolls_the_preview() {
+    let mut env = synced();
+    let pager = recording_tool(&env, "pager");
+    env.extra_env.push((
+        "PAGER".into(),
+        env.tools.join("pager").display().to_string(),
+    ));
+    let mut pty = Pty::spawn(&env, &["tui"], None, ROWS, COLS);
+    pty.wait_for_screen("Hello from a-one");
+    pty.send("v");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let paged = loop {
+        match std::fs::read_to_string(&pager) {
+            Ok(paged) if paged.contains("Hello from a-one") => break paged,
+            _ => {
+                assert!(std::time::Instant::now() < deadline, "the pager never ran");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    };
+    assert!(paged.starts_with("args:-R\n# One\n"), "{paged}");
+    assert!(paged.contains("Hello from a-one"), "{paged}");
+
+    // Keys reach the TUI again; with the preview focused, `j` scrolls it
+    // instead of moving to the next chat.
+    pty.send("\tj");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(pty.screen().contains("Hello from a-one"));
+    pty.send("\tj");
+    pty.wait_for_screen("Hello from b-two");
+    pty.send("q");
+    assert_eq!(pty.finish(), Some(0));
+}
+
 #[test]
 fn the_terminal_is_given_back_on_quit_ctrl_c_and_a_panic() {
     let mut env = synced();

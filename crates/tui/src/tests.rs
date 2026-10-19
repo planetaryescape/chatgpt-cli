@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use chatgpt_protocol::ChatTranscript;
 
-use crate::app::{App, Effect, IndexStamp, Mode, Outcome, Transcript};
+use crate::app::{App, Effect, Focus, IndexStamp, Mode, Outcome, Transcript};
 use crate::model::Mark;
 use crate::model::tests::{judged, row};
 
@@ -661,6 +661,63 @@ fn copy_open_reload_and_preview_scrolling() {
     assert_eq!(h.app.selected, 2, "a page down, clamped");
     h.key(KeyCode::PageUp);
     assert_eq!(h.app.selected, 0);
+}
+
+#[test]
+fn tab_focuses_the_preview_and_the_move_keys_scroll_it() {
+    let mut h = Harness::new();
+    let long: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    h.cached("a1", &long, None);
+    // The focused pane's border is the accent; the other's isn't.
+    let borders = |h: &mut Harness| {
+        h.draw();
+        let buffer = h.terminal.backend().buffer();
+        (buffer[(0, 1)].fg, buffer[(70, 1)].fg)
+    };
+    let (list, preview) = borders(&mut h);
+    h.key(KeyCode::Tab);
+    assert_eq!(h.app.focus, Focus::Preview);
+    assert_eq!(borders(&mut h), (preview, list));
+    insta::assert_snapshot!("preview_focused", h.screen());
+
+    h.keys("jj");
+    h.key(KeyCode::Down);
+    assert_eq!(h.app.preview.scroll, 3);
+    h.key(KeyCode::Char('k'));
+    assert_eq!(h.app.preview.scroll, 2);
+    h.key_with(KeyCode::Char('d'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.preview.scroll, 2 + h.app.preview_height);
+    h.key(KeyCode::PageUp);
+    assert_eq!(h.app.preview.scroll, 2);
+    h.key(KeyCode::Char('G'));
+    let max = h.app.preview_lines - h.app.preview_height;
+    assert_eq!(h.app.preview.scroll, max, "the bottom");
+    h.key(KeyCode::Char('g'));
+    assert_eq!(h.app.preview.scroll, 0);
+    assert_eq!(h.app.selected, 0, "the cursor never moved");
+
+    // The other keys still act on the selected chat.
+    h.key(KeyCode::Char('d'));
+    assert_eq!(h.app.mark_counts(), (1, 0));
+
+    h.key(KeyCode::BackTab);
+    assert_eq!(h.app.focus, Focus::List);
+    h.key(KeyCode::Char('j'));
+    assert_eq!(h.app.selected, 1);
+}
+
+#[test]
+fn v_pages_the_loaded_transcript() {
+    let mut h = Harness::new();
+    assert!(h.key(KeyCode::Char('v')).is_empty());
+    assert!(h.screen().contains("Transcript not loaded yet."));
+    h.cached("a1", "hello from a1", None);
+    assert_eq!(
+        h.key(KeyCode::Char('v')),
+        [Effect::Page {
+            markdown: "hello from a1".into()
+        }]
+    );
 }
 
 #[test]
