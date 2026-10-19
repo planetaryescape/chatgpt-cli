@@ -1,7 +1,8 @@
 //! The macOS programs the TS CLI hands things to: `pbcopy` for `export
 //! --copy` and the TUI's `c`, `open` for a chat's link (`src/commands/export.ts`,
-//! `src/tui/app.tsx`, `src/commands/review.ts` @ 1b8c950). Both are found on
-//! `PATH`, as `Bun.spawn` finds them.
+//! `src/tui/app.tsx`, `src/commands/review.ts` @ 1b8c950), and `$PAGER`
+//! for a transcript in `review` and the TUI. All are found on `PATH`, as
+//! `Bun.spawn` finds them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -76,5 +77,36 @@ pub fn open_chat(id: &str) -> Result<(), DesktopError> {
         })?;
     // Reaped off the caller's thread, so it never lingers as a zombie.
     std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// `$PAGER` (else `less`) with `-R`, `text` on its stdin, until it quits.
+/// A `PAGER` with arguments (`less -S`) keeps them. The caller hands it
+/// the terminal.
+pub fn page(text: &str) -> Result<(), DesktopError> {
+    let pager = std::env::var("PAGER")
+        .ok()
+        .filter(|pager| !pager.trim().is_empty())
+        .unwrap_or_else(|| "less".to_owned());
+    let mut words = pager.split_whitespace();
+    let Some(program) = words.next() else {
+        return Ok(());
+    };
+    let mut child = Command::new(program)
+        .args(words)
+        .arg("-R")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|_| {
+            DesktopError::new(
+                ErrorKind::Internal,
+                format!("couldn't start the pager {program}"),
+            )
+        })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // A pager quit early stops reading; that's fine.
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let _ = child.wait();
     Ok(())
 }

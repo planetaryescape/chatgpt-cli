@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, HELP, HINTS, Mode, Transcript};
+use crate::app::{App, Focus, HELP, HINTS, Mode, Transcript};
 use crate::input::LineInput;
 use crate::model::Mark;
 
@@ -38,6 +38,15 @@ fn suggestion_color(suggestion: &str) -> Color {
         "archive" => color::ARCHIVE,
         _ => color::KEEP,
     }
+}
+
+/// The focused pane's border stands out.
+fn border(app: &App, pane: Focus) -> Style {
+    Style::new().fg(if app.focus == pane {
+        color::ACCENT
+    } else {
+        color::BORDER
+    })
 }
 
 fn dim(text: impl Into<String>) -> Span<'static> {
@@ -135,7 +144,7 @@ fn pad(text: &str, width: usize) -> String {
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered()
-        .border_style(Style::new().fg(color::ACCENT))
+        .border_style(border(app, Focus::List))
         .title("Conversations");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -306,7 +315,7 @@ fn preview_parts(app: &App) -> Vec<(Cow<'_, str>, Style)> {
 
 fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.current().is_none() {
-        let block = Block::bordered().border_style(Style::new().fg(color::BORDER));
+        let block = Block::bordered().border_style(border(app, Focus::Preview));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new(dim("Nothing selected.")), inner);
@@ -317,7 +326,7 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let block = Block::bordered()
-        .border_style(Style::new().fg(color::BORDER))
+        .border_style(border(app, Focus::Preview))
         .title(printable(&row.display_title));
     let inner = block.inner(area);
     frame.render_widget(block, area);

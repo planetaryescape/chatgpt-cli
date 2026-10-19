@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::AsFd;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 use std::str::Chars;
 use std::sync::mpsc::Receiver;
 
@@ -184,7 +184,9 @@ async fn triage(
                 if let Some(markdown) = loaded.get(&row.id).and_then(|chat| chat.markdown.as_ref())
                 {
                     tty.cooked()?;
-                    page(markdown);
+                    if let Err(error) = chatgpt_core::desktop::page(markdown) {
+                        print(&format!("({error})\n"));
+                    }
                     tty.raw()?;
                 }
                 shown = None;
@@ -354,33 +356,6 @@ fn clear_screen() {
     if std::io::stdout().is_terminal() {
         print("\x1b[H\x1b[2J");
     }
-}
-
-/// `$PAGER` (else `less`) with `-R`, the transcript on its stdin. A
-/// `PAGER` with arguments (`less -S`) keeps them.
-fn page(text: &str) {
-    let pager = std::env::var("PAGER")
-        .ok()
-        .filter(|pager| !pager.trim().is_empty())
-        .unwrap_or_else(|| "less".to_owned());
-    let mut words = pager.split_whitespace();
-    let Some(program) = words.next() else {
-        return;
-    };
-    let child = std::process::Command::new(program)
-        .args(words)
-        .arg("-R")
-        .stdin(Stdio::piped())
-        .spawn();
-    let Ok(mut child) = child else {
-        print(&format!("(couldn't start the pager {program})\n"));
-        return;
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        // A pager quit early stops reading; that's fine.
-        let _ = stdin.write_all(text.as_bytes());
-    }
-    let _ = child.wait();
 }
 
 /// `/dev/tty` in the raw mode Node's `setRawMode(true)` sets
