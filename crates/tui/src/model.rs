@@ -92,27 +92,25 @@ impl Default for View {
 }
 
 /// `parseAge(value, now).toISOString()`: the cutoff an age filter keeps
-/// chats updated before.
-fn cutoff(age: &str, now_ms: i64) -> Option<String> {
-    let (count, unit) = age.split_at(age.len().checked_sub(1)?);
-    let days: i64 = match unit {
-        "d" => 1,
-        "w" => 7,
-        "m" => 30,
-        "y" => 365,
-        _ => return None,
-    };
-    let millis = now_ms - count.parse::<i64>().ok()? * days * 86_400_000;
-    let time = chrono::DateTime::from_timestamp_millis(millis)?;
-    Some(time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+/// chats updated before. The error is why there is none: an age the CLI
+/// cannot read shows no chats, never all of them.
+fn cutoff(age: &str, now_ms: i64) -> Result<String, String> {
+    let millis = chatgpt_core::js::parse_age(age, now_ms).map_err(|why| why.to_string())?;
+    chatgpt_core::js::iso_from_millis(millis).ok_or_else(|| "Invalid time value".to_owned())
+}
+
+/// Why the view's age shows nothing, if it can't be read at all.
+pub fn age_error(view: &View, now_ms: i64) -> Option<String> {
+    if view.older_than == "any" {
+        return None;
+    }
+    cutoff(view.older_than, now_ms).err()
 }
 
 /// `visibleRows`: the indices of the rows `view` shows, in order.
 pub fn visible_rows(rows: &[Row], view: &View, now_ms: i64) -> Vec<usize> {
     let query = trim(&view.query).to_lowercase();
-    let cutoff = (view.older_than != "any")
-        .then(|| cutoff(view.older_than, now_ms))
-        .flatten();
+    let cutoff = (view.older_than != "any").then(|| cutoff(view.older_than, now_ms));
     rows.iter()
         .enumerate()
         .filter(|(_, row)| {
@@ -120,11 +118,15 @@ pub fn visible_rows(rows: &[Row], view: &View, now_ms: i64) -> Vec<usize> {
             if (row.is_archived != 0) != view.archived {
                 return false;
             }
-            if cutoff
-                .as_deref()
-                .is_some_and(|cutoff| row.update_time.as_str() >= cutoff)
-            {
-                return false;
+            if let Some(cutoff) = &cutoff {
+                // An age the CLI cannot read shows no chats, never all of
+                // them.
+                let Ok(cutoff) = cutoff else {
+                    return false;
+                };
+                if row.update_time.as_str() >= cutoff.as_str() {
+                    return false;
+                }
             }
             if view.brainstorm != "off" {
                 match jev.and_then(|jev| jev.brainstorm.as_deref()) {
@@ -308,13 +310,27 @@ pub(crate) mod tests {
         };
         assert_eq!(ids(&year), ["1", "4"]);
         assert_eq!(
-            cutoff("30d", NOW).as_deref(),
+            cutoff("30d", NOW).ok().as_deref(),
             Some("2026-08-28T00:00:00.000Z")
         );
         assert_eq!(
-            cutoff("6m", NOW).as_deref(),
+            cutoff("6m", NOW).ok().as_deref(),
             Some("2026-03-31T00:00:00.000Z")
         );
+    }
+
+    /// An age the CLI cannot read shows no chats, never every chat.
+    #[test]
+    fn an_age_the_cli_cannot_read_shows_nothing() {
+        for age in ["3x", "30é", "999999999999999y"] {
+            let view = View {
+                older_than: age,
+                ..View::default()
+            };
+            assert!(ids(&view).is_empty(), "{age} showed every chat");
+            assert!(age_error(&view, NOW).is_some(), "{age}");
+        }
+        assert_eq!(age_error(&View::default(), NOW), None);
     }
 
     #[test]

@@ -10,7 +10,6 @@ use crate::policy::{Judged, PolicyError, Profile, Verdict};
 
 const BRAINSTORM_KINDS: [&str; 4] = ["writing", "sermon", "product", "other"];
 const SUGGESTIONS: [&str; 3] = ["delete", "archive", "keep"];
-const DAY_MS: i64 = 86_400_000;
 
 /// A filter the TS CLI rejects, with its message.
 #[derive(Debug, thiserror::Error)]
@@ -23,28 +22,10 @@ pub struct Selection {
     pub title: Option<JsRegex>,
 }
 
-/// `parseAge`: `30d`, `12w`, `6m`, `2y` before `now_ms`.
+/// `parseAge`: `30d`, `12w`, `6m`, `2y` before `now_ms`, from the shared
+/// parser, so the daemon and the TUI read an age the same way.
 fn parse_age(value: &str, now_ms: i64) -> Result<i64, InvalidFilter> {
-    let invalid = || {
-        InvalidFilter(format!(
-            "Invalid age \"{value}\". Use a number and unit, e.g. 30d, 12w, 6m, 2y."
-        ))
-    };
-    let unit_at = value.char_indices().last().map_or(0, |(at, _)| at);
-    let (digits, unit) = value.split_at(unit_at);
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(invalid());
-    }
-    let unit_days = match unit {
-        "d" => 1.0,
-        "w" => 7.0,
-        "m" => 30.0,
-        "y" => 365.0,
-        _ => return Err(invalid()),
-    };
-    // As JS numbers: a huge count makes an invalid date, not an overflow.
-    let days = js::number(digits) * unit_days;
-    Ok(now_ms - (days * DAY_MS as f64).min(i64::MAX as f64) as i64)
+    js::parse_age(value, now_ms).map_err(|why| InvalidFilter(why.to_string()))
 }
 
 fn parse_date(value: &str) -> Result<i64, InvalidFilter> {

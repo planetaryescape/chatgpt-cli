@@ -46,10 +46,14 @@ fn dim(text: impl Into<String>) -> Span<'static> {
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    // The footer's rows: the status, and one line per failure of the last
+    // apply, up to half the screen.
+    let room = usize::from(area.height).div_ceil(2).max(1);
+    let lines = footer_lines(app, usize::from(area.width).max(1), room);
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
-        Constraint::Length(1),
+        Constraint::Length(u16::try_from(lines.len()).unwrap_or(u16::MAX)),
     ])
     .areas(area);
     draw_header(frame, app, header);
@@ -58,7 +62,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Layout::horizontal([Constraint::Length(list_width), Constraint::Fill(1)]).areas(body);
     draw_list(frame, app, list);
     draw_preview(frame, app, preview);
-    draw_footer(frame, app, footer);
+    frame.render_widget(Paragraph::new(lines), footer);
     match &app.mode {
         Mode::Help => draw_help(frame, area),
         Mode::Confirm(input) => draw_confirm(frame, app, input, area),
@@ -397,8 +401,38 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(shown), text_area);
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let line = match &app.mode {
+/// The footer's lines: the status (or the key hints), then one line per
+/// failure of the last apply, so that every failed chat is named even
+/// when the list no longer shows it. When they don't all fit, the last
+/// line says how many are hidden; they are all still marked.
+fn footer_lines(app: &App, width: usize, room: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![status_line(app)];
+    let mut hidden = 0usize;
+    for failure in &app.failures {
+        let wrapped = textwrap::wrap(&printable(failure), width.max(1))
+            .into_iter()
+            .map(|line| Line::from(dim(line.into_owned())))
+            .collect::<Vec<_>>();
+        // Room for the failure, and for the line that counts the ones
+        // that don't fit.
+        let space = room.saturating_sub(lines.len() + usize::from(hidden > 0));
+        if wrapped.len() > space {
+            hidden += 1;
+            continue;
+        }
+        lines.extend(wrapped);
+    }
+    if hidden > 0 && lines.len() < room {
+        lines.push(Line::from(dim(format!("…and {hidden} more failed."))));
+    }
+    lines.truncate(room);
+    lines
+}
+
+/// The footer's first line: the filter being typed, the status of the
+/// last action, or the key hints.
+fn status_line(app: &App) -> Line<'static> {
+    match &app.mode {
         Mode::Filter(input) => {
             let mut spans = vec![Span::styled("/", Style::new().fg(color::ACCENT))];
             if input.text().is_empty() {
@@ -414,8 +448,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         }
         _ if !app.status.is_empty() => Line::from(dim(printable(&app.status))),
         _ => Line::from(dim(HINTS)),
-    };
-    frame.render_widget(Paragraph::new(line), area);
+    }
 }
 
 /// The text with the cursor shown as a reversed cell.

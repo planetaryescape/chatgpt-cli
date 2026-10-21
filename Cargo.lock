@@ -537,6 +537,7 @@ dependencies = [
 name = "chatgpt-core"
 version = "0.2.2"
 dependencies = [
+ "chrono",
  "dirs",
  "serde_json",
  "tempfile",

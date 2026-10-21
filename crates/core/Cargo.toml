@@ -6,6 +6,7 @@ publish = false
 description = "Shared by every chatgpt crate: file locations, instances, error kinds and where the TS CLI lives."
 
 [dependencies]
+chrono = { workspace = true }
 dirs = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

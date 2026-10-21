@@ -1,5 +1,16 @@
 //! JavaScript's text and number semantics the TS CLI's output depends on:
-//! `String.prototype.trim`, `\s`, and `Number(text)`.
+//! `String.prototype.trim`, `\s`, `Number(text)`, `parseAge` and
+//! `Date.prototype.toISOString`.
+
+use chrono::{DateTime, Utc};
+
+/// A day in milliseconds, as the CLI's ages count.
+const DAY_MS: i64 = 86_400_000;
+
+/// An age the CLI cannot read, with the TS CLI's message for one.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Invalid age \"{0}\". Use a number and unit, e.g. 30d, 12w, 6m, 2y.")]
+pub struct InvalidAge(pub String);
 
 /// JS whitespace and line terminators: `str::trim` plus U+FEFF, minus
 /// U+0085, which Unicode calls whitespace and JS doesn't.
@@ -98,6 +109,41 @@ fn radix_integer(digits: &str, radix: u32) -> f64 {
     }
     let scale = i32::try_from(rest.len()).unwrap_or(i32::MAX);
     leading as f64 * 2f64.powi(scale)
+}
+
+/// `parseAge`: `30d`, `12w`, `6m`, `2y` before `now_ms`, in milliseconds
+/// since 1970. As JS numbers: a count too large for a date is clamped
+/// rather than an overflow, and the date it gives is then one JS cannot
+/// write. An age it cannot read is an error, with the TS CLI's message.
+pub fn parse_age(value: &str, now_ms: i64) -> Result<i64, InvalidAge> {
+    let invalid = || InvalidAge(value.to_owned());
+    let unit_at = value.char_indices().last().map_or(0, |(at, _)| at);
+    let (digits, unit) = value.split_at(unit_at);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let unit_days = match unit {
+        "d" => 1.0,
+        "w" => 7.0,
+        "m" => 30.0,
+        "y" => 365.0,
+        _ => return Err(invalid()),
+    };
+    // As JS numbers: a huge count makes an invalid date, not an overflow.
+    let days = number(digits) * unit_days;
+    let millis = (days * DAY_MS as f64).min(i64::MAX as f64);
+    // Clamped, so a count too large for a date cannot overflow either.
+    Ok(now_ms.saturating_sub(millis as i64))
+}
+
+/// `Date.prototype.toISOString` for a time in milliseconds since 1970:
+/// `YYYY-MM-DDTHH:MM:SS.sssZ`. `None` where JS throws "Invalid time
+/// value".
+pub fn iso_from_millis(millis: i64) -> Option<String> {
+    // JS dates span ±8.64e15 ms; toISOString only formats 4-digit years
+    // that way, which covers every date a chat can have.
+    let time = DateTime::<Utc>::from_timestamp_millis(millis)?;
+    Some(time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 /// `text.replace(/\s+/g, " ")`: every run of JS whitespace as one space.
@@ -248,5 +294,46 @@ mod tests {
     #[test]
     fn whitespace_runs_collapse_as_js_replace_does() {
         assert_eq!(collapse_spaces("a \n\t b\u{FEFF}\u{85}c"), "a b \u{85}c");
+    }
+
+    #[test]
+    fn ages_are_read_as_js_reads_them() {
+        // 2026-09-27T00:00:00Z.
+        const NOW: i64 = 1_790_467_200_000;
+        assert_eq!(parse_age("30d", NOW), Ok(NOW - 30 * 86_400_000));
+        assert_eq!(parse_age("12w", NOW), Ok(NOW - 84 * 86_400_000));
+        assert_eq!(parse_age("6m", NOW), Ok(NOW - 180 * 86_400_000));
+        assert_eq!(parse_age("2y", NOW), Ok(NOW - 730 * 86_400_000));
+        assert_eq!(parse_age("0d", NOW), Ok(NOW));
+        for age in ["3x", "30é", "é", "", "d", "-1d", "1.5d"] {
+            let error = parse_age(age, NOW).err().map(|error| error.to_string());
+            let expected =
+                format!("Invalid age \"{age}\". Use a number and unit, e.g. 30d, 12w, 6m, 2y.");
+            assert_eq!(error.as_deref(), Some(expected.as_str()), "{age}");
+        }
+    }
+
+    #[test]
+    fn a_count_too_large_for_a_date_is_clamped_and_writes_no_date() {
+        const NOW: i64 = 1_790_467_200_000;
+        // A count past every date JS can hold: clamped, not an overflow,
+        // and the date it gives cannot be written.
+        let millis = parse_age("999999999999999y", NOW).expect("readable");
+        assert_eq!(millis, i64::MIN + NOW + 1);
+        assert_eq!(iso_from_millis(millis), None);
+        // The same for the biggest count a day count can reach.
+        assert_eq!(
+            parse_age("9223372036854775807d", NOW),
+            Ok(i64::MIN + NOW + 1)
+        );
+    }
+
+    #[test]
+    fn iso_strings_match_to_iso_string() {
+        assert_eq!(
+            iso_from_millis(1_735_689_600_000).as_deref(),
+            Some("2025-01-01T00:00:00.000Z")
+        );
+        assert_eq!(iso_from_millis(i64::MAX), None);
     }
 }

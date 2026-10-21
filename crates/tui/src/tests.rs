@@ -440,7 +440,7 @@ fn apply_needs_apply_typed_and_sends_exactly_the_marks() {
 }
 
 #[test]
-fn a_failed_apply_says_how_many_failed_and_a_refused_one_keeps_the_marks() {
+fn a_failed_apply_says_how_many_failed_and_keeps_the_failed_chats_marked() {
     let mut h = Harness::new();
     h.key(KeyCode::Char('d'));
     h.key(KeyCode::Char('x'));
@@ -452,11 +452,22 @@ fn a_failed_apply_says_how_many_failed_and_a_refused_one_keeps_the_marks() {
             "a1 Empty test chat: 500 from /backend-api/conversation/a1".into(),
         ]),
     });
+    let screen = h.screen();
     assert!(
-        h.screen()
-            .contains("1 failed: a1 Empty test chat: 500 from /backend-api/conversation/a1")
+        screen.contains("Applied 0 change(s); 1 failed."),
+        "{screen}"
     );
-    h.key(KeyCode::Char('d'));
+    assert!(
+        screen.contains("a1 Empty test chat: 500 from /backend-api/conversation/a1"),
+        "{screen}"
+    );
+    assert_eq!(
+        h.app.marks.get("a1"),
+        Some(&Mark::Delete),
+        "the failed chat keeps its mark, to retry it"
+    );
+    // The mark is still there, so `x` retries that one chat without
+    // marking anything again.
     h.key(KeyCode::Char('x'));
     h.keys("apply");
     let ticket = ticket_of(&h.key(KeyCode::Enter));
@@ -465,6 +476,77 @@ fn a_failed_apply_says_how_many_failed_and_a_refused_one_keeps_the_marks() {
         result: Err("the daemon isn't running".into()),
     });
     assert_eq!(h.app.marks.len(), 1);
+}
+
+/// Three chats marked, two applied and one refused: the two that worked
+/// are unmarked, the one that failed keeps its mark, and every failure is
+/// named.
+#[test]
+fn only_the_failed_chats_keep_their_marks_and_every_failure_is_named() {
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('d'));
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('a'));
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('d'));
+    assert_eq!(h.app.mark_counts(), (2, 1));
+    h.key(KeyCode::Char('x'));
+    h.keys("apply");
+    let ticket = ticket_of(&h.key(KeyCode::Enter));
+    h.answer(Outcome::Applied {
+        ticket,
+        result: Ok(vec![
+            "b2 Postgres backup plan: 500 from /backend-api/conversation/b2".into(),
+            "c3 Unjudged third chat: 404 Not Found from /backend-api/conversation/c3".into(),
+        ]),
+    });
+    // The two that worked are unmarked; the two that failed keep theirs.
+    assert!(!h.app.marks.contains_key("a1"), "a1 was deleted");
+    assert_eq!(h.app.marks.get("b2"), Some(&Mark::Archive));
+    assert_eq!(h.app.marks.get("c3"), Some(&Mark::Delete));
+    assert_eq!(h.app.mark_counts(), (1, 1));
+    let screen = h.screen();
+    assert!(
+        screen.contains("Applied 1 change(s); 2 failed."),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("b2 Postgres backup plan: 500 from /backend-api/conversation/b2"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("c3 Unjudged third chat: 404 Not Found from /backend-api/conversation/c3"),
+        "{screen}"
+    );
+    insta::assert_snapshot!("failed_apply", screen);
+}
+
+/// A failed chat the list no longer shows is still named, and still
+/// marked, so it can be retried on its own.
+#[test]
+fn a_failed_chat_the_list_hides_is_still_named_and_marked() {
+    let mut h = Harness::new();
+    h.key(KeyCode::Char('d'));
+    h.key(KeyCode::Char('x'));
+    h.keys("apply");
+    let ticket = ticket_of(&h.key(KeyCode::Enter));
+    h.answer(Outcome::Applied {
+        ticket,
+        result: Ok(vec![
+            "a1 Empty test chat: 500 from /backend-api/conversation/a1".into(),
+        ]),
+    });
+    // The list now shows only the chats Jev didn't judge: a1 is gone
+    // from it, but its failure is still named.
+    h.key(KeyCode::Char('5'));
+    let screen = h.screen();
+    assert!(screen.contains("1 of 4 · active · unjudged"), "{screen}");
+    assert!(
+        screen.contains("a1 Empty test chat: 500 from /backend-api/conversation/a1"),
+        "{screen}"
+    );
+    assert_eq!(h.app.marks.get("a1"), Some(&Mark::Delete));
+    assert!(screen.contains("marked: 1 delete, 0 archive"), "{screen}");
 }
 
 #[test]
