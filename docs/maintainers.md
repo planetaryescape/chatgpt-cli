@@ -53,9 +53,15 @@ The CLI began as a TypeScript one, and the Rust port matched its output byte for
 
 ### The parity harness
 
-`crates/cli/tests/parity_write.rs` runs one write command in both CLIs and compares what they did. The TypeScript CLI and the Rust CLI archive the same chat, each against its own fake chatgpt.com, and their stdout, stderr, exit status and the HTTP writes they sent are compared. Durations and rates are left out of the comparison; everything else on stderr is compared byte for byte. Exit codes are compared as success or failure, because the Rust CLI's invalid-input errors exit 2 where the TS CLI exits 1. A difference fails the test with both sides printed.
+Two harnesses run write commands in both CLIs and compare what they did. `crates/cli/tests/parity_write.rs` runs one write command — `archive` — in the TypeScript CLI and in the Rust CLI, each against its own fake chatgpt.com, and their stdout, stderr, exit status and the HTTP writes they sent are compared. Durations and rates are left out of the comparison; everything else on stderr is compared byte for byte. Exit codes are compared as success or failure, because the Rust CLI's invalid-input errors exit 2 where the TS CLI exits 1. A difference fails the test with both sides printed.
 
-Each CLI is also held to the **expected** end state — the chat archived in ChatGPT and in each index, and exactly one write each — not only to the other's. Two CLIs that agree on doing nothing would pass a comparison on its own, so every scenario in the widened write path must say what it expects to have happened.
+`crates/cli/tests/parity_write_path.rs` widens that to the whole write path, with the scenarios the v0.1.5 harness ran (`git show v0.1.5:crates/cli/tests/parity_mutations.rs`): previews and dry runs (`archive`, `unarchive`, `delete` by filter, `--brainstorm`, `--suggest`), the selection errors (no ids, an unknown id, an archived chat, an ambiguous prefix, a bad age, an unknown suggestion), the changes themselves (`archive`, `unarchive`, `delete`, `rename`, `title`), the project moves (`project list`, `add`, `remove`, a read-only project, an unknown one) and the memory deletes (`memory delete`, a prefix, an unconfirmed delete). Both CLIs also get a fake TypeSafe, so neither reaches the real one.
+
+Each CLI is also held to the **expected** end state — the chat archived in ChatGPT and in each index, the chat deleted from both, the title and project changed, the memory gone, the manual local title saved, and exactly the requests each CLI must send — not only to the other's. Two CLIs that agree on doing nothing would pass a comparison on its own, so every scenario in the widened write path must say what it expects to have happened. The requests are sorted before they are compared, because the Rust CLI runs a bulk change with three workers at once.
+
+The differences the harness asserts as expected are the ones the repository documents: the exit code (1 in the TS CLI, 2 in the Rust CLI, for invalid input) and the failure line (the TS CLI quotes the body, `404 from /backend-api/…: <body>`, the Rust one does not, `404 Not Found from /backend-api/…`), both in `docs/issues/mutations-followups.md`. Nothing else differs today: every other scenario's stdout, stderr and requests are byte for byte equal.
+
+A write that answers 404 has its own test, `a_404_drops_the_chat_from_both_indexes`: both CLIs fail, both drop the chat from their index (the Rust daemon reads a 404 as "the chat is gone"), and both leave it in ChatGPT's own list, so an expected-state assertion for a failing command has to expect the row's absence.
 
 The TypeScript CLI was this repository's own code until the Rust port replaced it: commit `1b8c950` ("feat: create ChatGPT projects from CLI") is its last state — the commit the port was made from — and an ancestor of `main`. So the harness needs a checkout of it, which is a worktree of this repository:
 
@@ -68,11 +74,16 @@ Then point the test at it and run it:
 
 ```sh
 CHATGPT_TS_REPO=$PWD/../chatgpt-ts-port-base cargo nextest run -p chatgpt-cli --test parity_write --no-capture
+CHATGPT_TS_REPO=$PWD/../chatgpt-ts-port-base cargo nextest run -p chatgpt-cli --test parity_write_path --no-capture
 ```
 
 Without `CHATGPT_TS_REPO`, or without a `bun` that runs, the test skips with a note, so CI (which has neither) stays green. The TS CLI reads its own index (`$XDG_DATA_HOME/chatgpt-cli/index.db`), which the Rust CLI's index is copied into, and reaches its fake through a Bun plugin that points its HTTP client there. The plugin throws, rather than let the TS CLI reach the real chatgpt.com, if `src/api/client.ts` no longer holds the string it replaces; the test also reads that file first and fails if its base-URL line changed at all, because the plugin's guard alone lets a different base through. The TS CLI runs with a synthetic `HOME` and its own `XDG_*` directories, so it reads neither the developer's config nor the developer's cookies; that is why the harness looks for a `bun` on `PATH` that runs with that `HOME` (a version manager's shim can need the real one).
 
-The write path is proved for `archive` alone so far. The rest of the v0.1.5 harness (unarchive, delete, rename, title, projects, memories, the Jev guard, and the export and search reads) is still only in the tag.
+Both CLIs are sealed off from every real service, the way the tests' `Env` seals the Rust one: only the stand-in `codex` and `claude` are on the `PATH`, the TypeSafe base URL always points at the fake (or at `http://127.0.0.1:9`, which nothing answers — never at the SDK's default, `api.typesafe.ai`), and no OpenAI or Anthropic key is carried, because the TypeScript CLI has no base URL for either (both are hard-coded) and would otherwise call the real one. A proxy would carry the fake's traffic off the machine, so none is passed on either side. `the_ts_cli_cannot_reach_a_real_service` checks this: the environment as built, and a Jev-asking command that reaches the fake TypeSafe rather than a real service.
+
+`CHATGPT_PARITY_SEED_DIFFERENCE=1` breaks the TS side's projects before the scenarios, to show that the harness fails with both sides printed when the two CLIs differ.
+
+The write path is proved for `archive` alone in `parity_write.rs`, and for the whole path in `parity_write_path.rs` but for the Jev guard (`--check`), which asks Jev about each chat and summarises the long ones, and so needs the model CLIs as well as the fake TypeSafe. The export and search reads are still only in the tag (`v0.1.5`); they are pinned by the goldens instead.
 
 ### impit
 

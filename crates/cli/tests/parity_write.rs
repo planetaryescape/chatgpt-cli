@@ -21,41 +21,11 @@
 
 mod support;
 
-use std::path::PathBuf;
-use std::process::Command;
-
-use fake_chatgpt::{COOKIE, Chat, FakeChatGpt};
+use fake_chatgpt::{Chat, FakeChatGpt};
 use support::{
-    Env, bun_for, copy_chats, copy_judgments, delete_answers, judge, normalize, ts_index, ts_repo,
-    writes,
+    Env, PARITY_PLUGIN, Ts, bun_for, copy_chats, copy_judgments, delete_answers, judge, normalize,
+    ts_index, ts_repo, writes,
 };
-
-/// Points the TS CLI's HTTP client at its fake chatgpt.com, with its cookie.
-/// Verbatim from the v0.1.5 harness: its guard throws rather than let the
-/// TS CLI talk to the real chatgpt.com if `src/api/client.ts` changed.
-const PARITY_PLUGIN: &str = r#"
-import { plugin } from "bun";
-const base = process.env.PARITY_FAKE_BASE;
-const cookie = process.env.PARITY_FAKE_COOKIE;
-const eq = cookie?.indexOf("=") ?? -1;
-if (!base || !cookie || eq < 1) throw new Error("PARITY_FAKE_BASE and PARITY_FAKE_COOKIE (name=value) must be set");
-plugin({
-	name: "parity",
-	setup(build) {
-		build.onLoad({ filter: /\/src\/api\/client\.ts$/ }, async ({ path }) => {
-			const source = await Bun.file(path).text();
-			const session = `({ browser: "fake", profile: undefined, cookies: [{ name: ${JSON.stringify(cookie.slice(0, eq))}, value: ${JSON.stringify(cookie.slice(eq + 1))} }] })`;
-			const patched = source
-				.replace('const BASE = "https://chatgpt.com";', `const BASE = ${JSON.stringify(base)};`)
-				.replace("readBrowserSession(this.browserSelection())", session);
-			if (!patched.includes(session) || patched.includes("https://chatgpt.com")) {
-				throw new Error("src/api/client.ts changed: update the parity plugin");
-			}
-			return { contents: patched, loader: "ts" };
-		});
-	},
-});
-"#;
 
 fn chats() -> Vec<Chat> {
     let mut chats = vec![
@@ -67,49 +37,6 @@ fn chats() -> Vec<Chat> {
     archived.archived = true;
     chats.push(archived);
     chats
-}
-
-/// The TS CLI, run against its own fake chatgpt.com.
-struct Ts {
-    bun: PathBuf,
-    repo: PathBuf,
-    /// Where the TS CLI's own home, config and cache live.
-    work: PathBuf,
-    data_home: PathBuf,
-    home: PathBuf,
-    plugin: PathBuf,
-    fake_url: String,
-}
-
-impl Ts {
-    fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(&self.bun);
-        command
-            .arg("--preload")
-            .arg(&self.plugin)
-            .arg(self.repo.join("src/cli.ts"))
-            .args(args)
-            .env("XDG_DATA_HOME", &self.data_home)
-            .env("XDG_CONFIG_HOME", self.work.join("config"))
-            .env("XDG_CACHE_HOME", self.work.join("cache"))
-            .env("HOME", &self.home)
-            .env("PARITY_FAKE_BASE", &self.fake_url)
-            .env("PARITY_FAKE_COOKIE", COOKIE)
-            .env_remove("CHATGPT_BROWSER")
-            .env_remove("CHATGPT_BROWSER_PROFILE")
-            .current_dir(&self.repo);
-        command
-    }
-
-    /// The exit code, stdout and stderr of one run.
-    fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
-        let output = self.command(args).output().unwrap();
-        (
-            output.status.code(),
-            String::from_utf8(output.stdout).unwrap(),
-            String::from_utf8(output.stderr).unwrap(),
-        )
-    }
 }
 
 /// The exit code, stdout and stderr of one Rust CLI run.
@@ -205,7 +132,9 @@ fn archiving_a_chat_prints_and_writes_as_the_ts_cli_does() {
         data_home: ts_data_home,
         home: ts_home,
         plugin,
+        tools: env.tools.clone(),
         fake_url: ts_fake.url.clone(),
+        typesafe_url: None,
     };
 
     // The write: one chat, archived in ChatGPT and in each index.
