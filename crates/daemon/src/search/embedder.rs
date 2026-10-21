@@ -110,6 +110,10 @@ struct Inner {
     last_finished_at: Option<i64>,
     /// The files were checked (or downloaded) and are in place.
     model_ready: bool,
+    /// The model is missing or unusable: the embedder is getting it back.
+    /// The coverage doesn't show this work: every chunk can have a
+    /// vector and the model still be gone.
+    model_broken: bool,
     download_failed_at: Option<Instant>,
     last_used: Option<Instant>,
     /// When a worker last found the model unusable and woke a run to
@@ -128,6 +132,17 @@ fn worker_model() -> Result<WorkerModel, String> {
     super::model::dir().map(WorkerModel::Files)
 }
 
+/// Whether the model's files are in the cache, as far as a quick look
+/// tells: the fake embedder (tests) needs no model, and without a
+/// directory to keep it in there is no model to use.
+fn model_in_place() -> bool {
+    match worker_model() {
+        Ok(WorkerModel::Files(dir)) => chatgpt_embed::model::present(&dir),
+        Ok(WorkerModel::Fake) => true,
+        Err(_) => false,
+    }
+}
+
 impl Embedder {
     fn inner(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
@@ -135,7 +150,12 @@ impl Embedder {
 
     /// Start a run (or another one after the current run).
     pub fn wake(&self) {
-        self.inner().requested += 1;
+        let mut inner = self.inner();
+        inner.requested += 1;
+        // A run needs the model: if it isn't in place, the run is about to
+        // fetch it, which the coverage doesn't show.
+        inner.model_broken |= !model_in_place();
+        drop(inner);
         self.wake.notify_one();
     }
 
@@ -158,6 +178,13 @@ impl Embedder {
         }
     }
 
+    /// Whether the embedder has work the coverage doesn't show: the model
+    /// is missing or unusable, and it is getting it back. Every chunk can
+    /// have a vector and the model still be gone.
+    pub fn model_work(&self) -> bool {
+        self.inner().model_broken
+    }
+
     /// Embed a search query, ahead of the next background chunk.
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, String> {
         let model = worker_model()?;
@@ -169,6 +196,7 @@ impl Embedder {
             let why = {
                 let mut inner = self.inner();
                 inner.model_ready = false;
+                inner.model_broken = true;
                 inner.waiting.clone().unwrap_or_else(|| {
                     "the embedding model is missing from its cache; the daemon is downloading it again"
                         .to_owned()
@@ -241,6 +269,7 @@ impl Embedder {
                 // files and fetches them again, under the download backoff.
                 Err(WorkerError::Unusable(_)) => {
                     inner.model_ready = false;
+                    inner.model_broken = true;
                     let due = inner
                         .repair_woken_at
                         .is_none_or(|at| at.elapsed() >= download_retry());
@@ -353,23 +382,38 @@ async fn model_ready(state: &State, model: &WorkerModel) -> bool {
             return false;
         }
     }
-    let doing = if chatgpt_embed::model::present(dir) {
+    let present = chatgpt_embed::model::present(dir);
+    let doing = if present {
         "checking the embedding model"
     } else {
         "downloading the embedding model"
     };
-    state.embedder.inner().waiting = Some(doing.to_owned());
-    let ready = super::model::ensure(dir).await;
+    {
+        let mut inner = state.embedder.inner();
+        inner.model_broken |= !present;
+        inner.waiting = Some(doing.to_owned());
+    }
+    let ready = super::model::ensure(dir, || {
+        // A file is missing or damaged (only the checksum tells), and it is
+        // being fetched again: the model is being recovered, which the
+        // coverage can't show.
+        let mut inner = state.embedder.inner();
+        inner.model_broken = true;
+        inner.waiting = Some("downloading the embedding model".to_owned());
+    })
+    .await;
     let mut inner = state.embedder.inner();
     match ready {
         Ok(()) => {
             inner.model_ready = true;
+            inner.model_broken = false;
             inner.waiting = None;
             true
         }
         Err(why) => {
             tracing::warn!("embedding model unavailable: {why}");
             inner.download_failed_at = Some(Instant::now());
+            inner.model_broken = true;
             inner.waiting = Some(format!(
                 "the embedding model isn't available ({why}); trying again in {} minutes",
                 download_retry().as_secs().div_ceil(60)

@@ -76,7 +76,9 @@ pub struct EmbeddingStatus {
     pub chunks: u64,
     #[serde(default)]
     pub embedded: u64,
-    /// Embedding now, or asked to and about to start.
+    /// Embedding now, or asked to and about to start: chunks left to
+    /// embed, or the model being fetched again, which the counts can't
+    /// show.
     #[serde(default)]
     pub in_progress: bool,
     /// Chunks the model failed on, skipped until the daemon restarts.
@@ -100,7 +102,8 @@ pub struct SearchIndexStatus {
     pub chats: u64,
     #[serde(default)]
     pub indexed: u64,
-    /// Indexing now, or asked to and about to start.
+    /// Indexing now, or asked to and about to start, with chats left to
+    /// index.
     #[serde(default)]
     pub in_progress: bool,
     /// Transcripts fetched from ChatGPT since the daemon started.

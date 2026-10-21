@@ -30,8 +30,11 @@ fn base_url() -> String {
 }
 
 /// Make sure every file is in `dir` and matches its checksum, downloading
-/// what isn't. The error says why, without any file content.
-pub async fn ensure(dir: &Path) -> Result<(), String> {
+/// what isn't. `repairing` is called before each file is fetched again,
+/// so the caller can say the model is being recovered: a file that is
+/// only the right size is damaged, and only the checksum tells. The error
+/// says why, without any file content.
+pub async fn ensure(dir: &Path, repairing: impl Fn() + Send + Sync) -> Result<(), String> {
     for file in FILES {
         let check_dir = dir.to_path_buf();
         let verified = tokio::task::spawn_blocking(move || model::verify_file(&check_dir, &file))
@@ -40,6 +43,7 @@ pub async fn ensure(dir: &Path) -> Result<(), String> {
         if verified.is_ok() {
             continue;
         }
+        repairing();
         download(dir, &file).await?;
     }
     Ok(())

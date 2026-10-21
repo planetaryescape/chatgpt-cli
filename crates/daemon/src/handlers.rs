@@ -377,6 +377,34 @@ async fn stats(
 async fn status(state: &State) -> DaemonStatus {
     let synced_at = state.db(chatgpt_store::synced_at).await.ok().flatten();
     let (sync, backoff) = state.syncer.status(synced_at);
+    let coverage = state.coverage().await;
+    let mut search_index = state.indexer.status();
+    let mut embeddings = state.embedder.status();
+    if let Some(coverage) = coverage {
+        // What the index really holds, counted from the index itself: the
+        // background passes only count when they finish, so before the
+        // first one the numbers would be zeros.
+        search_index.chats = coverage.chats;
+        search_index.indexed = coverage.indexed;
+        embeddings.chunks = coverage.chunks;
+        embeddings.embedded = coverage.embedded;
+        // A pass with nothing to do isn't work: a daemon that has just
+        // started doesn't index what is already indexed, and doesn't
+        // embed what is already embedded. The model is the embedder's own
+        // work: the coverage doesn't show it.
+        //
+        // The indexer's own answer, read above: the indexer is busy when
+        // it is working, and its chunks are the embedder's work before it
+        // is woken for them.
+        let indexing = search_index.in_progress;
+        search_index.in_progress &= coverage.indexed < coverage.chats;
+        let pending = coverage.embedded < coverage.chunks;
+        embeddings.in_progress = (embeddings.in_progress
+            && (pending || state.embedder.model_work()))
+            // Chunks the indexer has just written are the embedder's work
+            // too, before it is woken for them.
+            || (pending && indexing);
+    }
     DaemonStatus {
         protocol_version: PROTOCOL_VERSION,
         version: state.version.clone(),
@@ -390,8 +418,8 @@ async fn status(state: &State) -> DaemonStatus {
         session: state.sessions.source(&state.syncer.choice()),
         session_reading: state.sessions.reading(&state.syncer.choice()),
         classification: state.profile().info(),
-        search_index: state.indexer.status(),
-        embeddings: state.embedder.status(),
+        search_index,
+        embeddings,
         auto_jev: state.auto_jev.status(),
     }
 }

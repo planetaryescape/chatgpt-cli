@@ -8,6 +8,7 @@ mod support;
 
 use std::os::unix::net::UnixListener;
 
+use fake_chatgpt::Chat;
 use nix::unistd::{Pid, getsid};
 use support::{Env, mode, pid_exists};
 
@@ -51,6 +52,83 @@ fn a_stale_socket_is_replaced_by_a_new_daemon() {
     drop(UnixListener::bind(&socket).unwrap());
     let status = env.status();
     assert!(pid_exists(status["pid"].as_u64().unwrap()));
+}
+
+/// The chats the fake chatgpt.com holds.
+fn chats() -> Vec<Chat> {
+    let mut rust = Chat::new("a-rust", "Rust runtimes", "2026-09-27T10:00:00.000000Z");
+    rust.text = "async rust with tokio and smol runtimes".into();
+    let mut garden = Chat::new("b-garden", "Garden plan", "2026-09-26T10:00:00.000000Z");
+    garden.text = "compost beds and tomatoes in the garden".into();
+    vec![rust, garden]
+}
+
+/// The chats and chunks the index holds, once every chat is indexed and
+/// every chunk embedded.
+fn complete(env: &Env) -> (u64, u64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let status = env.status();
+        let index = &status["search_index"];
+        let embeddings = &status["embeddings"];
+        let chats = index["chats"].as_u64().unwrap();
+        let chunks = embeddings["chunks"].as_u64().unwrap();
+        if chats > 0
+            && index["indexed"].as_u64() == Some(chats)
+            && chunks > 0
+            && embeddings["embedded"].as_u64() == Some(chunks)
+        {
+            return (chats, chunks);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the index never came complete: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The daemon's first status tells how much of the index there is, even
+/// before it has counted anything, and doesn't claim work that isn't
+/// happening.
+///
+/// The daemon's writer is held while it starts, so its first pass can't
+/// count anything before the first status is answered: the status has to
+/// count the index itself.
+#[test]
+fn the_first_status_reports_the_index_as_it_is() {
+    let env = Env::with_fake(chats());
+    env.cmd().arg("sync").assert().success();
+    let (chats, chunks) = complete(&env);
+    env.cmd().args(["daemon", "stop"]).assert().success();
+
+    let held = env.index_db();
+    held.execute_batch("begin immediate").unwrap();
+    let status = env.status();
+    assert_eq!(status["search_index"]["chats"], chats, "{status}");
+    assert_eq!(status["search_index"]["indexed"], chats, "{status}");
+    assert_eq!(status["embeddings"]["chunks"], chunks, "{status}");
+    assert_eq!(status["embeddings"]["embedded"], chunks, "{status}");
+    assert_eq!(
+        status["search_index"]["in_progress"], false,
+        "claims work that isn't happening: {status}"
+    );
+    assert_eq!(
+        status["embeddings"]["in_progress"], false,
+        "claims work that isn't happening: {status}"
+    );
+    let text = env.stdout(&["daemon", "status"]);
+    assert!(
+        text.contains(&format!("search index: {chats} of {chats} chats indexed")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("embeddings: {chunks} of {chunks} chunks embedded")),
+        "{text}"
+    );
+    assert!(!text.contains("indexing now"), "{text}");
+    assert!(!text.contains("embedding now"), "{text}");
+    held.execute_batch("rollback").unwrap();
 }
 
 #[test]

@@ -723,6 +723,102 @@ fn a_model_damaged_in_place_is_repaired_without_waiting_for_a_sync() {
     assert_eq!(stdout.lines().next(), Some("b-garden"));
 }
 
+/// A model that is damaged before the daemon starts: only the checksum
+/// can tell, and the status has to say the model is being fetched again.
+#[test]
+fn a_model_damaged_before_the_daemon_starts_is_recovered_and_the_status_says_so() {
+    let cached = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".cache")))
+        .map(|root| model_dir(&root));
+    let Some(cached) = cached.filter(|dir| dir.join("onnx/model_quantized.onnx").is_file()) else {
+        eprintln!("skipping: the embedding model isn't cached on this machine");
+        return;
+    };
+    let mut env = Env::with_fake(chats());
+    let dir = model_dir(&env.home.path().join("xdg-cache"));
+    std::fs::create_dir_all(dir.join("onnx")).unwrap();
+    for file in ["onnx/model_quantized.onnx", "tokenizer.json"] {
+        std::fs::copy(cached.join(file), dir.join(file)).unwrap();
+    }
+    let model = dir.join("onnx/model_quantized.onnx");
+    let good: &'static [u8] = Box::leak(std::fs::read(&model).unwrap().into_boxed_slice());
+    // The real embedder, and a model server slow enough to see the daemon
+    // fetching the model again.
+    env.extra_env
+        .push(("CHATGPT_TEST_EMBEDDER".into(), String::new()));
+    env.extra_env
+        .push(("CHATGPT_MODEL_BASE_URL".into(), serve_slowly(good)));
+
+    // The index and its vectors are complete first, with the good model.
+    synced(&env);
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["embedded"], embeddings["chunks"], "{embeddings}");
+
+    // The model is damaged in place: the same size, the wrong bytes, so
+    // only the checksum can tell.
+    let mut damaged = good.to_vec();
+    let middle = damaged.len() / 2;
+    for byte in &mut damaged[middle..middle + 64] {
+        *byte ^= 0xFF;
+    }
+    std::fs::write(&model, &damaged).unwrap();
+    // A new daemon checks the model again, and finds it damaged.
+    env.cmd().args(["daemon", "stop"]).assert().success();
+
+    // While it is fetched again, the status says so, although every chunk
+    // has a vector and the counts can't show the work.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut recovering = None;
+    while Instant::now() < deadline {
+        let embeddings = env.status()["embeddings"].clone();
+        if embeddings["in_progress"] == true {
+            recovering = Some(embeddings);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let recovering = recovering.expect("the status never said the model was being recovered");
+    assert_eq!(recovering["embedded"], recovering["chunks"], "{recovering}");
+    assert!(
+        recovering["waiting"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("embedding model"),
+        "{recovering}"
+    );
+
+    // The model is fetched again, and the status settles.
+    let embeddings = env.wait_for_embedder();
+    assert_eq!(embeddings["waiting"], Value::Null, "{embeddings}");
+    assert!(
+        std::fs::read(&model).unwrap() == good,
+        "the model was fetched again"
+    );
+}
+
+/// A server that answers every request with `body`, after a pause long
+/// enough to watch the daemon work while it fetches the model.
+fn serve_slowly(body: &'static [u8]) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            std::thread::sleep(Duration::from_secs(3));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body);
+        }
+    });
+    url
+}
+
 /// A server that answers its first `failures` requests with 503, then
 /// every request with 200 and `body`.
 fn serve_after_failures(failures: usize, body: &'static [u8]) -> String {

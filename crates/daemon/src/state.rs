@@ -1,6 +1,6 @@
 //! What every part of the daemon shares.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chatgpt_core::Paths;
 use chatgpt_store::Store;
@@ -32,6 +32,10 @@ pub struct State {
     pub flight: crate::classify::flight::InFlight,
     pub started_at: i64,
     pub version: String,
+    /// The search index's coverage, and the index's version when it was
+    /// read: the version changes with every commit to the index, and
+    /// counting the coverage is not cheap on a large index.
+    coverage: Arc<Mutex<Option<(i64, crate::search::Coverage)>>>,
 }
 
 pub fn now_unix() -> i64 {
@@ -72,6 +76,7 @@ impl State {
             flight: Default::default(),
             started_at: now_unix(),
             version,
+            coverage: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -102,5 +107,34 @@ impl State {
     /// The classification versions verdicts are read with: this build's.
     pub fn profile(&self) -> &'static Profile {
         Profile::current()
+    }
+
+    /// The search index's coverage: the chats it holds, how many have
+    /// current chunks, and how many of those chunks have a vector. It is
+    /// counted from the index itself, so it is right from the first
+    /// answer, before any pass has run.
+    ///
+    /// The count is kept until the index changes: it walks every chunk
+    /// and every vector, which is slow on a large index, and a status is
+    /// asked for before every command. The index's version changes with
+    /// every commit to it, so a change drops the count.
+    pub async fn coverage(&self) -> Option<crate::search::Coverage> {
+        let versions = crate::search::versions(self.profile());
+        let counted = Arc::clone(&self.coverage);
+        self.db(move |db| {
+            let version: i64 = db.query_row("pragma data_version", [], |row| row.get(0))?;
+            let mut counted = counted.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((seen, coverage)) = *counted
+                && seen == version
+            {
+                return Ok(Some(coverage));
+            }
+            let coverage = crate::search::coverage(db, None, versions)?;
+            *counted = Some((version, coverage));
+            Ok(Some(coverage))
+        })
+        .await
+        .ok()
+        .flatten()
     }
 }
