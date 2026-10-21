@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::process::{ExitCode, Stdio};
+use std::str::Chars;
 use std::sync::mpsc::Receiver;
 
 use chatgpt_core::js::{clip, utf16_prefix};
@@ -453,12 +454,50 @@ impl RawTty {
     }
 }
 
+/// The character every terminal escape sequence starts with.
+const ESC: char = '\x1b';
+
 /// A read's keys: an escape sequence whole, else one per character.
+///
+/// A sequence can start anywhere in a read — a terminal that writes its
+/// own output coalesces it with what the user types — so the read is
+/// scanned for one, not checked for one at the start. A sequence that
+/// starts the read doesn't swallow the keys after it.
 fn keys(chunk: &str) -> Vec<String> {
-    if chunk.starts_with('\x1b') {
-        return vec![chunk.to_owned()];
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = chunk.chars();
+    while let Some(ch) = rest.next() {
+        if ch == ESC {
+            out.push(escape_sequence(&mut rest));
+        } else {
+            out.push(ch.to_string());
+        }
     }
-    chunk.chars().map(String::from).collect()
+    out
+}
+
+/// The escape sequence the rest of the read starts with: `ESC [ …` or
+/// `ESC O …` (an arrow key, a function key), or `ESC` and the key after
+/// it (alt+key). An `ESC` with nothing after it is the escape key on its
+/// own.
+fn escape_sequence(rest: &mut Chars<'_>) -> String {
+    let mut sequence = String::from(ESC);
+    let Some(next) = rest.next() else {
+        return sequence;
+    };
+    sequence.push(next);
+    if next != '[' && next != 'O' {
+        // alt+key: the two characters are the key.
+        return sequence;
+    }
+    // A control sequence ends at its final byte.
+    for ch in rest.by_ref() {
+        sequence.push(ch);
+        if ('\x40'..='\x7e').contains(&ch) {
+            break;
+        }
+    }
+    sequence
 }
 
 /// SIGTERM, SIGHUP and SIGINT (Ctrl-C reaches the review as a key) would
@@ -540,5 +579,21 @@ mod tests {
     fn a_read_splits_into_keys_but_an_escape_sequence_stays_whole() {
         assert_eq!(keys("ak\r"), ["a", "k", "\r"]);
         assert_eq!(keys("\x1b[A"), ["\x1b[A"]);
+    }
+
+    #[test]
+    fn an_escape_sequence_is_a_key_wherever_it_is_in_a_read() {
+        // A terminal's own writes coalesce with what the user types, so
+        // an escape sequence can start in the middle of a read.
+        assert_eq!(keys("jk\x1b[D"), ["j", "k", "\x1b[D"]);
+        // Alt+key is one key: the letter in it decides nothing.
+        assert_eq!(keys("jk\x1bd"), ["j", "k", "\x1bd"]);
+    }
+
+    #[test]
+    fn a_read_that_starts_with_an_escape_sequence_keeps_the_keys_after_it() {
+        assert_eq!(keys("\x1b[Djk"), ["\x1b[D", "j", "k"]);
+        // The escape key on its own is a key of its own.
+        assert_eq!(keys("\x1b"), ["\x1b"]);
     }
 }

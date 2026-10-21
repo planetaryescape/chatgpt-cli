@@ -140,8 +140,12 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let height = usize::from(inner.height);
+    // The list height the app pages by is at least one row, so the scroll
+    // origin is read with that height and not with the rows the list has:
+    // on a terminal too short to give the list a row, the two agree.
     app.list_height = height.max(1);
-    app.start = crate::model::window_start(app.selected, app.start, height, app.visible.len());
+    app.start =
+        crate::model::window_start(app.selected, app.start, app.list_height, app.visible.len());
     if app.visible.is_empty() {
         frame.render_widget(Paragraph::new(dim("No conversations match.")), inner);
         return;
