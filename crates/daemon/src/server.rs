@@ -309,6 +309,9 @@ async fn serve_connection(stream: UnixStream, state: Arc<State>, shutdown: Arc<N
 }
 
 /// Lowers the frame cap in debug builds only, so tests can reach it.
+/// The cap is the daemon's, not a client's: every connection of a daemon
+/// started with it set answers under it, so an answer over the cap goes
+/// out as `Part` events.
 const MAX_FRAME_ENV: &str = "CHATGPT_TEST_MAX_FRAME_BYTES";
 
 fn codec() -> Codec {

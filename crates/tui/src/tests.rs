@@ -677,6 +677,21 @@ fn a_resize_redraws_at_the_new_size() {
     insta::assert_snapshot!("small_terminal", screen);
 }
 
+/// A terminal too short to give the list a row: the app pages by one row
+/// all the same, so the scroll origin is read with that row and not with
+/// the none the list has.
+#[test]
+fn a_terminal_with_no_room_for_a_row_scrolls_where_the_app_says() {
+    let mut h = Harness::new();
+    h.terminal.backend_mut().resize(100, 3);
+    h.screen();
+    assert_eq!(h.app.list_height, 1, "the list has no room for a row");
+    h.key(KeyCode::Char('j'));
+    h.key(KeyCode::Char('j'));
+    assert_eq!(h.app.selected, 2);
+    assert_eq!(h.app.start, 2, "the origin is the one row the app pages by");
+}
+
 /// A title save still out when the box is closed, the chat marked and an
 /// apply started: its late answer mustn't unlock the apply, or a second
 /// `x` would send the marks again.

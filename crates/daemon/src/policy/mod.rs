@@ -466,10 +466,18 @@ impl<'a> Judged<'a> {
             self.row.luna_reason.as_deref().unwrap_or("reviewed")
         );
         if luna_suggestion == "delete" {
-            // Only these three follow-up answers are read here, whatever the
-            // follow-up's version, as in verdictOf.
+            // The follow-up's answers are read only when they are the
+            // current ones, as the Jev branch reads them: a judgment
+            // made at another version is stale until `classify` runs
+            // again (`Profile`). The three answers read here are read
+            // leniently — one the follow-up doesn't have is absent, not
+            // an error — so a chat is never left unjudged by a missing
+            // answer. That is safe today: the follow-up's questions have
+            // never changed shape, and every answer is validated before
+            // it is stored (`classify::questions::validate`).
             let deep: Option<RawDeepAnswers> = self
                 .deep_answers()
+                .filter(|_| self.deep_is_current())
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|error| self.error(error.to_string()))?;

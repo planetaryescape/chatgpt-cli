@@ -251,6 +251,25 @@ fn nothing_matched_needs_no_terminal() {
     );
 }
 
+/// Keys typed faster than the review handles them arrive in one read.
+/// An escape sequence in that read is a key of its own, and the keys
+/// after it are still keys.
+#[test]
+fn an_escape_sequence_does_not_swallow_the_keys_after_it() {
+    let env = synced();
+    let mut pty = Pty::spawn(&env, &["review"], None, 40, 120);
+    pty.wait_for("[1/3]  One");
+    // An arrow key and a decision in one read: the arrow is not a key
+    // the review knows, and the decision that follows it still lands.
+    pty.send("\x1b[Da");
+    pty.wait_for("[2/3]  Two");
+    pty.send("q");
+    pty.wait_for("Reviewed 1: keep 0, archive 1, delete 0.");
+    pty.send("no\n");
+    pty.wait_for("Nothing changed.");
+    assert_eq!(pty.finish(), Some(0));
+}
+
 /// A transcript many frames long reaches the pager whole, byte for byte
 /// as the cache holds it. A lowered frame cap (debug builds only) stands in
 /// for 16 MiB.

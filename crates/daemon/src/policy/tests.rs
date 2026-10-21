@@ -213,6 +213,48 @@ fn a_past_trip_with_a_substantial_family_record_is_protected_from_a_delete_revie
     assert_eq!((v.suggestion.as_str(), v.unsure), ("keep", false));
 }
 
+/// The follow-up's answers are read only when they are the current ones,
+/// in the Luna branch as in the Jev branch: an answer of another version
+/// is stale until `classify` runs again, and neither branch reads it.
+#[test]
+fn an_old_deep_answer_is_read_by_neither_branch() {
+    let mut answers = base_answers(0.9);
+    answers["time_bound"] = json!({ "noul": 0.95 });
+    answers["overtaken_by_time"] = json!({ "noul": 0.6 });
+    let mut deep = base_deep();
+    deep["personal_record_lost"]["noul"] = json!(0.79);
+    deep["original_thinking_lost"]["noul"] = json!(0.66);
+    let mut j = with_luna(row(&answers), "delete", None, "Only old trip logistics");
+    j.deep_answers = Some(deep.to_string());
+    // The current follow-up's answers protect the chat.
+    assert_eq!(verdict(&j).suggestion, "keep");
+    // An answer of another version protects nothing.
+    let mut old = j.clone();
+    old.deep_version = Some("2020-01-01.1".into());
+    let v = verdict(&old);
+    assert_eq!(v.suggestion, "delete");
+    assert!(!v.reason.contains("protected"), "{}", v.reason);
+    // The Jev branch leaves the answers of another version alone too.
+    let current = profile();
+    let judged = Judged::new(&old, &current).unwrap();
+    assert_eq!(
+        judged.jev_verdict().unwrap().suggestion,
+        judged.base_verdict().unwrap().suggestion
+    );
+    // An answer of another shape is not read either: the answers it
+    // still has protect nothing, as they are not read.
+    let mut older = old.clone();
+    let mut shape = deep.clone();
+    shape
+        .as_object_mut()
+        .expect("an object")
+        .remove("original_thinking_lost");
+    older.deep_answers = Some(shape.to_string());
+    let v = verdict(&older);
+    assert_eq!(v.suggestion, "delete");
+    assert!(!v.reason.contains("protected"), "{}", v.reason);
+}
+
 #[test]
 fn possible_personal_records_and_artifacts_are_archived_instead_of_deleted() {
     let mut answers = base_answers(0.9);
