@@ -146,7 +146,8 @@ pub use judgments::{
 pub use meta::{account, bind_account, get_meta, set_meta};
 pub use reconcile::{candidates, preserve};
 pub use search::{
-    coverage, lexical, prune_search, replace_chunks, save_indexed, transcript, unindexed,
+    coverage, lexical, prune_search, replace_chunks, save_indexed, save_transcript_only,
+    transcript, unindexed,
 };
 pub use vectors::{
     chunk_body, each_vector, pending_vectors, record_vector_failure, save_vectors, vector_coverage,

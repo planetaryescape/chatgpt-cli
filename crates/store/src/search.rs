@@ -138,6 +138,18 @@ pub fn replace_chunks(
     Ok(())
 }
 
+/// A freshly fetched transcript, on its own: the indexer chunks the cached
+/// transcript in the background, so a caller that only needs the text
+/// doesn't wait for the index's work. The chat's chunks go with the
+/// transcript they were cut from (a trigger), so the indexer chunks the
+/// new one.
+pub fn save_transcript_only(connection: &mut Connection, transcript: &Transcript) -> Result<()> {
+    let transaction = connection.transaction()?;
+    save_transcript(&transaction, transcript)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 /// A freshly fetched transcript and its chunks, together: a chat is never
 /// left with one and not the other.
 pub fn save_indexed(

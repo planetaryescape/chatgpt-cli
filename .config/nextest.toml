@@ -13,8 +13,8 @@ fail-fast = false
 # chats through debug builds. Under a full parallel run on a loaded machine
 # either can take about a minute. The parity harnesses run both CLIs, each
 # against its own fakes, and the model path moves a 2 MB chat through the
-# Rust daemon (which chunks it for the search index) as well as through the
-# TS CLI (which only saves it).
+# Rust daemon (which caches it, and leaves the search index's passages to
+# the indexer) as well as through the TS CLI (which only saves it).
 [[profile.default.overrides]]
 filter = "binary(golden) | binary(classify_cli)"
 slow-timeout = { period = "60s", terminate-after = 3 }

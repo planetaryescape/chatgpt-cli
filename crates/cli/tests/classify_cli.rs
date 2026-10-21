@@ -268,6 +268,42 @@ fn a_large_batch_of_summaries_is_asked_about_first_unless_yes() {
     assert_eq!(row(&rows, "h-huge")["jev"]["suggestion"], "keep");
 }
 
+/// A classification caches the transcript it downloads without the chat's
+/// search chunks: the indexer cuts them in the background, and `search`
+/// finds the chat once it has
+/// (`docs/issues/parity-classify-transcript-download-cost.md`).
+#[test]
+fn a_classified_chat_is_searchable_once_the_indexer_has_chunked_it() {
+    let typesafe = FakeTypeSafe::start();
+    let env = with_models(&typesafe);
+    let mut huge = huge();
+    // A word nothing else in the fake says.
+    huge.text = "quokka ".repeat(400_100);
+    env.fake().state().chats.push(huge);
+    // The indexer's own batch read fails, so the transcript is cached by
+    // the classification pass, not by the indexer.
+    env.fake().state().fail_batch = 1;
+    env.cmd().arg("sync").assert().success();
+    env.wait_for_indexer();
+
+    let (code, _, stderr) = run(&env, &["classify", "h-huge", "-y"]);
+    assert_eq!(code, Some(0), "{stderr}");
+
+    // The indexer chunks it in the background.
+    let started = Instant::now();
+    env.wait_for_indexer();
+
+    let (code, stdout, stderr) = run(&env, &["search", "quokka", "--format", "ids"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.trim(), "h-huge", "{stdout}");
+    // The index catches up in the indexer's next run: the cut itself is
+    // about a tenth of a second, so half a minute is generous on a loaded
+    // machine.
+    let caught_up = started.elapsed();
+    eprintln!("the index caught up in {caught_up:?}");
+    assert!(caught_up < Duration::from_secs(30), "{caught_up:?}");
+}
+
 #[test]
 fn summarisers_fall_back_in_the_ts_order() {
     let typesafe = FakeTypeSafe::start();

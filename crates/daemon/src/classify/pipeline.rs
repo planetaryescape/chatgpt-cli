@@ -6,6 +6,11 @@
 //! summarise (when needed) and judge the long ones. Every finished chat is
 //! saved at once, so a run that stops partway keeps what it paid for.
 //!
+//! The transcripts a run downloads are cached on their own: the search
+//! index's chunks are the indexer's work, and it makes them in the
+//! background, so a classification pass doesn't wait for them
+//! (`docs/issues/parity-classify-transcript-download-cost.md`).
+//!
 //! Used by `classify`, the Jev guard (`--check`), and the background Jev,
 //! which never summarises: a long chat without a cached summary waits for
 //! a `classify` someone runs.
@@ -374,8 +379,10 @@ pub async fn cached_summaries(
 }
 
 /// The transcripts of `to_fetch` not cached for the chat's `update_time`,
-/// through the batch endpoint ten at a time, saved (with their search
-/// chunks) batch by batch, so an interrupted run resumes.
+/// through the batch endpoint ten at a time, saved batch by batch, so an
+/// interrupted run resumes. They are saved without their search chunks:
+/// the indexer chunks a cached transcript in the background, so a
+/// classification pass doesn't wait for the index's work.
 #[allow(
     clippy::too_many_arguments,
     reason = "the TS steps' wording differs per caller"
@@ -417,6 +424,9 @@ pub async fn download(
                     }
                 }
                 save_transcripts(state, &saved).await?;
+                // The indexer chunks the cached transcripts in the
+                // background; it has to know there are any to chunk.
+                state.indexer.wake();
                 downloaded += saved.len();
                 for (chat, transcript) in saved {
                     transcripts.insert(chat.id, transcript);
@@ -441,13 +451,18 @@ pub async fn download(
     Ok(())
 }
 
-/// Save fetched transcripts with their search chunks, under the sync pass
-/// lock, each at the `update_time` its chat had when it was fetched.
+/// Save fetched transcripts under the sync pass lock, each at the
+/// `update_time` its chat had when it was fetched.
+///
+/// The transcripts are saved **without their search chunks**: the indexer
+/// chunks a cached transcript in the background, so a classification pass
+/// doesn't wait for the index's work
+/// (`docs/issues/parity-classify-transcript-download-cost.md`).
 pub async fn save_transcripts(
     state: &State,
     saved: &[(IndexedConversation, Transcript)],
 ) -> Result<(), Failure> {
-    save(state, saved, false).await.map(|_| ())
+    save(state, saved, false, Chunks::Without).await.map(|_| ())
 }
 
 /// [`save_transcripts`] for one transcript, only while the index still
@@ -459,7 +474,18 @@ pub async fn save_transcript_if_current(
     chat: &IndexedConversation,
     transcript: Transcript,
 ) -> Result<bool, Failure> {
-    Ok(save(state, &[(chat.clone(), transcript)], true).await? == 1)
+    Ok(save(state, &[(chat.clone(), transcript)], true, Chunks::With).await? == 1)
+}
+
+/// Whether a save writes the chat's search chunks with its transcript.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Chunks {
+    /// With them: what the transcript's own path (the export, the review)
+    /// does — it caches a chat and the index's passages in one go.
+    With,
+    /// Without them: the indexer cuts the cached transcript's passages in
+    /// the background, so the caller doesn't wait for the index's work.
+    Without,
 }
 
 /// Save `saved` under the pass lock, all of them or (`only_current`) those
@@ -468,6 +494,7 @@ async fn save(
     state: &State,
     saved: &[(IndexedConversation, Transcript)],
     only_current: bool,
+    chunks: Chunks,
 ) -> Result<usize, Failure> {
     let versions = crate::search::versions(state.profile());
     let rows: Vec<(Unindexed, Transcript, Vec<String>)> = saved
@@ -479,7 +506,11 @@ async fn save(
                 update_time: chat.update_time.clone(),
                 cached: true,
             };
-            let bodies = crate::search::chunks::transcript_chunks(&transcript.markdown);
+            // The chunks are cut before the lock, so it is held briefly.
+            let bodies = match chunks {
+                Chunks::With => crate::search::chunks::transcript_chunks(&transcript.markdown),
+                Chunks::Without => Vec::new(),
+            };
             (target, transcript.clone(), bodies)
         })
         .collect();
@@ -499,7 +530,14 @@ async fn save(
                         continue;
                     }
                 }
-                chatgpt_store::save_indexed(db, transcript, target, versions, bodies)?;
+                match chunks {
+                    Chunks::With => {
+                        chatgpt_store::save_indexed(db, transcript, target, versions, bodies)?;
+                    }
+                    Chunks::Without => {
+                        chatgpt_store::save_transcript_only(db, transcript)?;
+                    }
+                }
                 count += 1;
             }
             Ok(count)
@@ -509,6 +547,94 @@ async fn save(
 
 /// Why a late result wasn't saved.
 pub const CHANGED: &str = "the chat changed while it was being classified; run classify again";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The classification pass caches the transcript it downloads without
+    /// the chat's search chunks: the indexer cuts them in the background,
+    /// so a classification pass doesn't wait for the index's work
+    /// (`docs/issues/parity-classify-transcript-download-cost.md`).
+    #[tokio::test]
+    async fn a_classified_transcript_is_cached_for_the_indexer_to_chunk() {
+        let dir = tempfile::tempdir().expect("dir");
+        let paths = chatgpt_core::Paths::under(chatgpt_core::Instance::Default, dir.path(), None);
+        std::fs::create_dir_all(&paths.data_dir).expect("data dir");
+        let store = chatgpt_store::Store::open(&paths.data_dir.join("chatgpt.db")).expect("store");
+        let chat = IndexedConversation {
+            id: "a".into(),
+            title: "A".into(),
+            create_time: "t0".into(),
+            update_time: "t1".into(),
+            is_archived: false,
+            pinned: false,
+            project_id: None,
+            local_title: None,
+        };
+        store
+            .write(|db| {
+                chatgpt_store::replace_all(
+                    db,
+                    &[chatgpt_store::NewConversation {
+                        id: chat.id.clone(),
+                        title: chat.title.clone(),
+                        create_time: chat.create_time.clone(),
+                        update_time: chat.update_time.clone(),
+                        is_archived: false,
+                        pinned: false,
+                        project_id: None,
+                    }],
+                    "now",
+                )
+            })
+            .expect("seed");
+        let state = State::new(paths, store);
+        let render = state.profile().render_version;
+        let transcript = Transcript {
+            id: chat.id.clone(),
+            update_time: chat.update_time.clone(),
+            render_version: render,
+            markdown: "# A\n\n---\n\n## Me\n\nhello there".into(),
+            turns: 1,
+            approx_tokens: 4,
+        };
+        save_transcripts(&state, &[(chat.clone(), transcript.clone())])
+            .await
+            .expect("saved");
+
+        // The transcript is cached, at the chat's own `update_time`.
+        let cached = state
+            .store
+            .read(|db| chatgpt_store::transcript(db, "a", "t1", render))
+            .expect("read")
+            .expect("the cached transcript");
+        assert_eq!(cached.markdown, transcript.markdown);
+
+        // No search chunks: the classification pass doesn't do the
+        // index's work.
+        let chunks: i64 = state
+            .store
+            .read(
+                |db| Ok(db.query_row("select count(*) from search_chunks", [], |row| row.get(0))?),
+            )
+            .expect("read");
+        assert_eq!(chunks, 0, "the classification pass wrote search chunks");
+
+        // And the indexer knows it has a cached transcript to chunk.
+        let versions = crate::search::versions(state.profile());
+        let unindexed = state
+            .store
+            .read(|db| chatgpt_store::unindexed(db, versions))
+            .expect("read");
+        assert_eq!(unindexed.len(), 1, "the indexer doesn't see the chat");
+        assert!(
+            unindexed[0].cached,
+            "the indexer has no transcript to chunk"
+        );
+        assert_eq!(unindexed[0].id, "a");
+    }
+}
 
 /// The content a model was given: the chat's cached transcript. A result
 /// lands only while the chat's current transcript is still this one, and

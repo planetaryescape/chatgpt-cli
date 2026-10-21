@@ -998,6 +998,29 @@ fn ts_in_terminal(ts: &Ts, args: &[&str], prompt: &str, answer: &str) -> (Option
     )
 }
 
+/// The Rust side's download of the 2 MB chat must not cost what the
+/// search index's work costs: the TypeScript CLI does the same work in
+/// 0.1 s, and the regression this pins cost 18 s on an idle machine and
+/// 42 s to 1 m 18 s on a loaded one
+/// (`docs/issues/parity-classify-transcript-download-cost.md`). Ten
+/// seconds is well under the smallest of those, and a hundred times what
+/// the same work costs now.
+const DOWNLOAD_BOUND_MS: u64 = 10_000;
+
+/// The duration a "Downloaded N transcript(s) (Xs)" note carries, in
+/// milliseconds.
+fn downloaded_ms(shown: &str) -> Option<u64> {
+    let line = shown.lines().find(|line| line.contains("Downloaded "))?;
+    let at = line.rfind(" (")?;
+    let text = line[at + 2..].trim_end_matches(')');
+    let (minutes, rest) = match text.split_once('m') {
+        Some((minutes, rest)) => (minutes.parse::<u64>().ok()?, rest),
+        None => (0, text),
+    };
+    let seconds: f64 = rest.trim_end_matches('s').parse().ok()?;
+    Some(minutes * 60_000 + (seconds * 1000.0).round() as u64)
+}
+
 /// A terminal transcript as text: no carriage returns or escape sequences
 /// (the TS CLI colours `failed:` lines), a live line's redraws as separate
 /// lines, and neither a step's opening line nor its running counts: at a
@@ -1436,6 +1459,15 @@ fn the_model_path_prints_sends_and_saves_as_the_ts_cli_does() {
     let ts_notes = notes(&ts_shown, &ts_config);
     assert_eq!(rust_code, ts_code, "the terminal run's exit status");
     assert_eq!(rust_notes, ts_notes, "the terminal run's notes");
+    // The download must not cost what the search index's work costs.
+    let rust_download = downloaded_ms(&rust_shown).expect("the Rust side's download note");
+    let ts_download = downloaded_ms(&ts_shown).expect("the TS side's download note");
+    eprintln!("======== the download: Rust {rust_download}ms, TS {ts_download}ms");
+    assert!(
+        rust_download <= DOWNLOAD_BOUND_MS,
+        "the Rust side's download took {rust_download}ms (the bound is {DOWNLOAD_BOUND_MS}ms): \
+         the classification pass is doing the search index's work again"
+    );
     let rust_plain = plain(&rust_shown);
     let ts_plain = plain(&ts_shown);
     assert!(
