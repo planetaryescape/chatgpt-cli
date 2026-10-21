@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.3...v0.2.4) (2026-10-21)
+
+
+### Bug Fixes
+
+* the review reads a whole escape sequence, and the backlog says what is true ([31bd379](https://github.com/planetaryescape/chatgpt-cli/commit/31bd37930ea8479e2691da29673b469019258fd6))
+
 ## [0.2.3](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.2...v0.2.3) (2026-10-21)
 
 
