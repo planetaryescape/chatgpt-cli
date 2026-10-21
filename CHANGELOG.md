@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.1...v0.2.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* the daemon's status counts the index, not the passes' counters ([02d6ae6](https://github.com/planetaryescape/chatgpt-cli/commit/02d6ae682a4664a110e8de8328fff8eb6e73315e))
+
 ## [0.2.1](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.0...v0.2.1) (2026-10-02)
 
 
