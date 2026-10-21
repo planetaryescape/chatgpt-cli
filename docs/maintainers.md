@@ -47,9 +47,32 @@ Before a change to the TUI, run `cargo nextest run -p chatgpt-tui` (keys and scr
 
 ### Output pinned from the TS CLI
 
-The CLI began as a TypeScript one, and the Rust port matched its output byte for byte. The parity harnesses that proved it ran both CLIs; they live in tag `v0.1.5`. What the TS CLI printed in their last run is frozen in `crates/cli/tests/golden/*.jsonl`, and `crates/cli/tests/golden.rs` builds the same data for the Rust CLI alone and requires the same output: `list` and `stats` over 120 synthetic chats with every kind of verdict, and `export` plus lexical, semantic, hybrid and remote `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). For an intended change, `CHATGPT_UPDATE_GOLDEN=1 cargo nextest run -p chatgpt-cli --test golden` rewrites the files; read the diff and give the reason in the commit. Deliberate changes so far: search chunks and snippets never hold half an emoji (`CHUNK_VERSION` 2); equal semantic scores are ordered by chat id (stage 7).
+The CLI began as a TypeScript one, and the Rust port matched its output byte for byte. The parity harnesses that proved it ran both CLIs; most of them still live only in tag `v0.1.5` (see [The parity harness](#the-parity-harness) below). What the TS CLI printed in their last run is frozen in `crates/cli/tests/golden/*.jsonl`, and `crates/cli/tests/golden.rs` builds the same data for the Rust CLI alone and requires the same output: `list` and `stats` over 120 synthetic chats with every kind of verdict, and `export` plus lexical, semantic, hybrid and remote `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). For an intended change, `CHATGPT_UPDATE_GOLDEN=1 cargo nextest run -p chatgpt-cli --test golden` rewrites the files; read the diff and give the reason in the commit. Deliberate changes so far: search chunks and snippets never hold half an emoji (`CHUNK_VERSION` 2); equal semantic scores are ordered by chat id (stage 7).
 
 `crates/cli/tests/upgrade_cli.rs` opens an index made by v0.1.5 (`fixtures/v0.1.5.db`, synthetic chats only) with the current daemon and checks every row survives, `native_rows` is dropped, and the transcripts (rendered at version 2) are fetched again from the fake chatgpt.com and chunked.
+
+### The parity harness
+
+`crates/cli/tests/parity_write.rs` runs one write command in both CLIs and compares what they did. The TypeScript CLI and the Rust CLI archive the same chat, each against its own fake chatgpt.com, and their stdout, stderr, exit status and the HTTP writes they sent are compared. Durations and rates are left out of the comparison; everything else on stderr is compared byte for byte. Exit codes are compared as success or failure, because the Rust CLI's invalid-input errors exit 2 where the TS CLI exits 1. A difference fails the test with both sides printed.
+
+Each CLI is also held to the **expected** end state — the chat archived in ChatGPT and in each index, and exactly one write each — not only to the other's. Two CLIs that agree on doing nothing would pass a comparison on its own, so every scenario in the widened write path must say what it expects to have happened.
+
+The TypeScript CLI was this repository's own code until the Rust port replaced it: commit `1b8c950` ("feat: create ChatGPT projects from CLI") is its last state — the commit the port was made from — and an ancestor of `main`. So the harness needs a checkout of it, which is a worktree of this repository:
+
+```sh
+git worktree add ../chatgpt-ts-port-base 1b8c950
+cd ../chatgpt-ts-port-base && bun install
+```
+
+Then point the test at it and run it:
+
+```sh
+CHATGPT_TS_REPO=$PWD/../chatgpt-ts-port-base cargo nextest run -p chatgpt-cli --test parity_write --no-capture
+```
+
+Without `CHATGPT_TS_REPO`, or without a `bun` that runs, the test skips with a note, so CI (which has neither) stays green. The TS CLI reads its own index (`$XDG_DATA_HOME/chatgpt-cli/index.db`), which the Rust CLI's index is copied into, and reaches its fake through a Bun plugin that points its HTTP client there. The plugin throws, rather than let the TS CLI reach the real chatgpt.com, if `src/api/client.ts` no longer holds the string it replaces; the test also reads that file first and fails if its base-URL line changed at all, because the plugin's guard alone lets a different base through. The TS CLI runs with a synthetic `HOME` and its own `XDG_*` directories, so it reads neither the developer's config nor the developer's cookies; that is why the harness looks for a `bun` on `PATH` that runs with that `HOME` (a version manager's shim can need the real one).
+
+The write path is proved for `archive` alone so far. The rest of the v0.1.5 harness (unarchive, delete, rename, title, projects, memories, the Jev guard, and the export and search reads) is still only in the tag.
 
 ### impit
 
