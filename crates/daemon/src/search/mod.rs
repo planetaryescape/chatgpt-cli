@@ -31,6 +31,7 @@ pub fn versions(profile: &Profile) -> ChunkVersions {
 }
 
 /// A scope's search coverage. `archived`: `None` for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Coverage {
     pub chats: u64,
     /// Chats with current chunks.

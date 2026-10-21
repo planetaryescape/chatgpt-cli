@@ -109,6 +109,12 @@ The command doesn't exist in this release. `chatgpt --help` lists the commands. 
 
 The daemon is still embedding, for example after the first sync or after an upgrade rebuilt the search passages. Semantic and hybrid search answer from what's embedded so far; lexical search is complete. `chatgpt daemon status` shows progress, and `chatgpt search-index` waits until it's done.
 
+## `chatgpt daemon status` says `0 of 0 chats indexed`
+
+That is the whole index: the daemon counts the index itself, so `0 of 0` means it holds no chats, not that it hasn't looked yet. Run `chatgpt sync` to fill it.
+
+`N of M chats indexed` with `N` below `M` means the index is incomplete. The same line says what the daemon is doing about it: `indexing now` while it works on the rest, a waiting reason (a rate limit, or the first sync) when it can't, and a `search index error` line when the last attempt failed.
+
 ## `chatgpt` still runs the old TS CLI
 
 An old `bun link` left a `chatgpt` in `~/.bun/bin`, earlier on your PATH than `~/.local/bin`. Remove it (`rm ~/.bun/bin/chatgpt`) or put `~/.local/bin` first; `install.sh` warns about this. The TS CLI's database, `~/.local/share/chatgpt-cli/index.db`, is no longer read and can be deleted.
