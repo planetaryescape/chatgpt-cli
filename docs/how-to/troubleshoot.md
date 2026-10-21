@@ -89,6 +89,12 @@ Open the shared chat in ChatGPT and use its own `/c/<id>` link.
 
 Use `-o <file>` instead of `--copy`.
 
+## The TUI says `N failed` after an apply
+
+The chats that ChatGPT refused keep their marks, so the list still shows them as marked, and the footer names each failure on its own line. Press `x` to retry exactly those chats: type `apply` and press `enter`. Nothing has to be marked again by hand.
+
+A failure that says `it may have applied` means ChatGPT's answer broke off and the change may or may not have happened. Run `chatgpt sync` and check the chat before trying again.
+
 ## The TUI shows `Loading transcript…` for a while
 
 The chat's transcript isn't cached yet, so the TUI fetches it. If it stays, you've probably hit the rate limit; wait a minute. The daemon caches every transcript in the background after each sync; `chatgpt search-index` shows how far it has got.

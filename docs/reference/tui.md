@@ -15,7 +15,7 @@ The TUI reads the local index, so run `chatgpt sync` first. Suggestions come fro
 | Header | `<shown> of <total>`, archived or active, suggestion filter, topic, and any age, brainstorm or title filters. Right side: `marked: N delete, M archive (x to apply)` |
 | Left pane: Conversations | One row per chat: mark (`D`/`A`), last-updated date, suggestion (`?` when unsure), topic or `idea:<kind>` for brainstorms, local display title if available |
 | Right pane: preview | Dates and flags, Jev or Luna verdict and reason, the summary (for chats over ~12k tokens), then the transcript |
-| Footer | Key hints, or the status of the last action |
+| Footer | Key hints, or the status of the last action, and one line per failure of the last apply |
 
 ## Keys
 
@@ -62,6 +62,18 @@ Filters combine: `2` then `y` twice shows delete suggestions older than six mont
 
 `x` opens a dialog: `Archive <n> and permanently delete <m> conversation(s). Deletes cannot be undone.` Type `apply` and press `enter` to go ahead; `esc` or anything else cancels. Nothing changes on ChatGPT before that.
 
+### When an apply fails
+
+When ChatGPT refuses a chat, the apply still goes through for the others:
+
+- The chats that worked are unmarked and gone from the active list.
+- **The chats that failed keep their mark**, so the list still shows them as marked and `x` retries exactly those, without marking anything again.
+- The footer says how many failed (`Applied 2 change(s); 1 failed.`) and names every failure on its own line, so a failed chat stays identifiable even when a filter hides it from the list. The lines stay until the next apply.
+
+The footer grows to hold the failures, up to half the screen; when there are more failures than fit, the last line says how many are hidden. Those are still marked, and the header's mark count says how many.
+
+If the daemon itself can't be reached, nothing is known about which chats changed, so every mark stays and the footer says what went wrong.
+
 ### Other
 
 | Key | Action |
@@ -82,3 +94,4 @@ Transcripts cached by `classify` appear immediately. Others are fetched when you
 
 - The TUI doesn't classify. Run `chatgpt classify` in another terminal and press `r`. Background syncs and the daemon's background Jev show up by themselves within about 30 seconds (not while a box is open); the cursor stays on its chat.
 - Marks aren't saved when you quit.
+- An age filter the CLI can't read (`3x`, or a count too large for a date) shows no chats at all, never every chat, and the footer says why. The `y` key only offers ages that read.

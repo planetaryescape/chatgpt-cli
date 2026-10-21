@@ -8,7 +8,7 @@
 
 mod support;
 
-use fake_chatgpt::Chat;
+use fake_chatgpt::{Chat, WriteFailure};
 use support::{
     Env, Pty, delete_answers, fake_chat_states, indexed_update_time, judge, recording_tool,
 };
@@ -166,6 +166,48 @@ fn apply_changes_exactly_the_marked_chats() {
     let screen = pty.wait_for_screen("Applied 2 change(s).");
     assert!(!screen.contains("marked:"), "{screen}");
     pty.wait_for_screen("chatgpt · 1 of 2 · active");
+    pty.send("q");
+    assert_eq!(pty.finish(), Some(0));
+    assert_eq!(
+        fake_chat_states(&env),
+        [("b-two".to_owned(), true), ("c-three".to_owned(), false)]
+    );
+}
+
+/// One chat of several refuses the change: it keeps its mark, is named
+/// in the status, and `x` retries it on its own.
+#[test]
+fn a_failed_apply_keeps_the_failed_chat_marked_and_names_it() {
+    let env = synced();
+    // The first write, the archive of Two, is turned away.
+    env.fake()
+        .state()
+        .fail_writes
+        .push_back(WriteFailure::Status(500));
+    let mut pty = Pty::spawn(&env, &["tui"], None, ROWS, COLS);
+    pty.wait_for_screen("Hello from a-one");
+    // Jev's delete on One, accepted; then an archive mark on Two.
+    pty.send("\r");
+    pty.wait_for_screen("marked: 1 delete, 0 archive");
+    pty.send("a");
+    pty.wait_for_screen("marked: 1 delete, 1 archive");
+    pty.send("x");
+    pty.wait_for_screen("Archive 1 and permanently delete 1 conversation(s).");
+    pty.send("apply\r");
+    let screen = pty.wait_for_screen("Applied 1 change(s); 1 failed.");
+    assert!(
+        screen.contains("b-two Two: 500 Internal Server Error"),
+        "{screen}"
+    );
+    // Two keeps its mark; One, which was deleted, has none.
+    assert!(screen.contains("marked: 0 delete, 1 archive"), "{screen}");
+    pty.wait_for_screen("chatgpt · 2 of 2 · active");
+    // `x` retries the failed chat on its own, without marking it again.
+    pty.send("x");
+    pty.wait_for_screen("Archive 1 and permanently delete 0 conversation(s).");
+    pty.send("apply\r");
+    let screen = pty.wait_for_screen("Applied 1 change(s).");
+    assert!(!screen.contains("marked:"), "{screen}");
     pty.send("q");
     assert_eq!(pty.finish(), Some(0));
     assert_eq!(

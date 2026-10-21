@@ -61,7 +61,7 @@ fn round_half_up(whole: &str, kept: &str, digits: usize) -> String {
 }
 
 pub use crate::js_regex::{JsRegex, JsString, regex};
-pub use chatgpt_core::js::{number, trim};
+pub use chatgpt_core::js::{iso_from_millis, number, parse_age, trim};
 
 /// How a template literal prints a JSON value (`${value}`): `undefined` for
 /// a missing one, `null`, strings as they are, numbers as JS prints them,
@@ -99,15 +99,6 @@ pub fn truthy(value: &serde_json::Value) -> bool {
         Value::String(text) => !text.is_empty(),
         Value::Array(_) | Value::Object(_) => true,
     }
-}
-
-/// `Date.prototype.toISOString` for a time in milliseconds since 1970:
-/// `YYYY-MM-DDTHH:MM:SS.sssZ`. `None` where JS throws "Invalid time value".
-pub fn iso_from_millis(millis: i64) -> Option<String> {
-    // JS dates span ±8.64e15 ms; toISOString only formats 4-digit years
-    // that way, which covers every date a chat can have.
-    let time = DateTime::<Utc>::from_timestamp_millis(millis)?;
-    Some(time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 /// `new Date().toISOString()`.

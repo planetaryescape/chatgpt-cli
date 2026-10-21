@@ -13,7 +13,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::input::LineInput;
 use crate::model::{
-    AGE_CYCLE, BRAINSTORM_CYCLE, Mark, Suggestion, View, cycle, visible_rows, window_start,
+    AGE_CYCLE, BRAINSTORM_CYCLE, Mark, Suggestion, View, age_error, cycle, visible_rows,
+    window_start,
 };
 
 /// Waiting before a fetch keeps fast `j`/`k` scrolling from firing a
@@ -169,6 +170,15 @@ pub enum Outcome {
     Index(IndexStamp),
 }
 
+/// Whether a failure names the chat `id`: the daemon's failure line is
+/// `<id> <title>: <why>` (`crates/daemon/src/mutate.rs`).
+fn failure_names(failure: &str, id: &str) -> bool {
+    match failure.split_once(' ') {
+        Some((named, _)) => named == id,
+        None => failure == id,
+    }
+}
+
 pub struct App {
     pub rows: Vec<Row>,
     /// `all`, then every topic.
@@ -181,6 +191,10 @@ pub struct App {
     pub marks: HashMap<String, Mark>,
     pub mode: Mode,
     pub status: String,
+    /// The failures of the last apply, one line each: every failed chat
+    /// is named here, so it stays identifiable even when the list no
+    /// longer shows it.
+    pub failures: Vec<String>,
     quit_armed: bool,
     pub preview: Preview,
     clock: fn() -> i64,
@@ -222,6 +236,7 @@ impl App {
             marks: HashMap::new(),
             mode: Mode::Browse,
             status: String::new(),
+            failures: Vec::new(),
             quit_armed: false,
             preview: Preview {
                 key: None,
@@ -636,14 +651,27 @@ impl App {
                 self.mode = Mode::Browse;
                 match result {
                     Ok(failures) => {
-                        self.marks.clear();
-                        self.status = match failures.first() {
-                            None => format!("Applied {total} change(s)."),
-                            Some(first) => format!("{} failed: {first}", failures.len()),
+                        // The chats that failed keep their marks, so `x`
+                        // retries exactly them; the ones that worked are
+                        // unmarked.
+                        self.marks
+                            .retain(|id, _| failures.iter().any(|why| failure_names(why, id)));
+                        let failed = failures.len();
+                        self.failures = failures;
+                        self.status = if failed == 0 {
+                            format!("Applied {total} change(s).")
+                        } else {
+                            format!(
+                                "Applied {} change(s); {failed} failed.",
+                                total.saturating_sub(failed)
+                            )
                         };
                     }
                     // Marks stay, to try again.
-                    Err(why) => self.status = why,
+                    Err(why) => {
+                        self.failures.clear();
+                        self.status = why;
+                    }
                 }
                 self.select(&mut effects, 0);
                 effects.push(self.reload());
@@ -743,10 +771,15 @@ impl App {
 
     fn change_view(&mut self, effects: &mut Vec<Effect>, patch: impl FnOnce(&mut View)) {
         patch(&mut self.view);
-        self.visible = visible_rows(&self.rows, &self.view, (self.clock)());
+        let now = (self.clock)();
+        self.visible = visible_rows(&self.rows, &self.view, now);
         self.selected = 0;
         self.start = 0;
         self.sync_preview(effects);
+        // An age the CLI cannot read shows no chats; say why.
+        if let Some(why) = age_error(&self.view, now) {
+            self.status = why;
+        }
     }
 
     /// A newly selected chat's transcript, or a new revision of the same
