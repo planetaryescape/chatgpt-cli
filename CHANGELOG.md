@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.2...v0.2.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* the TUI keeps the chats that failed, and names every failure ([dd9e95b](https://github.com/planetaryescape/chatgpt-cli/commit/dd9e95be93f0583900d93f9b2e036606e7fd7605))
+
 ## [0.2.2](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.1...v0.2.2) (2026-10-21)
 
 
