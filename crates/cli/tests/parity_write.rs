@@ -135,6 +135,10 @@ fn archiving_a_chat_prints_and_writes_as_the_ts_cli_does() {
         tools: env.tools.clone(),
         fake_url: ts_fake.url.clone(),
         typesafe_url: None,
+        openai_url: None,
+        anthropic_url: None,
+        openai_key: false,
+        anthropic_key: false,
     };
 
     // The write: one chat, archived in ChatGPT and in each index.

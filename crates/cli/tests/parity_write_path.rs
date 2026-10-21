@@ -899,6 +899,10 @@ fn parity() -> Option<Parity> {
         tools: env.tools.clone(),
         fake_url: ts_fake.url.clone(),
         typesafe_url: Some(ts_typesafe.url.clone()),
+        openai_url: None,
+        anthropic_url: None,
+        openai_key: false,
+        anthropic_key: false,
     };
     Some(Parity {
         env,

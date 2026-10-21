@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use fake_chatgpt::models::{ANTHROPIC_KEY, OPENAI_KEY};
 use fake_chatgpt::{COOKIE, FakeChatGpt};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -48,8 +49,7 @@ impl Env {
     /// The stand-in tools: `mode` `ok` or `fail`, and only `tools` of
     /// `codex` and `claude` on `PATH`.
     pub fn set_tools(&self, mode: &str, tools: &[&str]) {
-        let _ = std::fs::remove_dir_all(&self.tools);
-        fake_tools(&self.tools, &self.model_log, mode, tools);
+        set_tools(&self.tools, &self.model_log, mode, tools);
     }
 
     /// The calls the stand-in tools recorded, in the order they started.
@@ -227,7 +227,7 @@ pub fn in_terminal(
 ) -> (Option<i32>, String) {
     let mut pty = Pty::spawn(env, args, stdin_ids, 40, 200);
     // Room for a 2 MB chat's download on a busy machine before the prompt.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     while !pty.text().contains(prompt) && !pty.exited() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -408,7 +408,7 @@ impl Pty {
     /// 2 MB chats after the answer); its status code and everything it
     /// showed.
     pub fn finish_keeping_text(mut self) -> (Option<i32>, String) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 drop(self.stdin.take());
@@ -591,6 +591,13 @@ pub fn judge(db: &rusqlite::Connection, id: &str, update_time: &str, answers: &s
     .unwrap();
 }
 
+/// The stand-in `tools` into `dir`: the ones that were there are taken
+/// away first, so a test can take a stand-in off the `PATH`.
+pub fn set_tools(dir: &Path, log: &Path, mode: &str, tools: &[&str]) {
+    let _ = std::fs::remove_dir_all(dir);
+    fake_tools(dir, log, mode, tools);
+}
+
 /// Write stand-in `tools` into `dir`: scripts that run the debug binary as
 /// the fake `codex` or `claude`, recording calls in `log`.
 pub fn fake_tools(dir: &Path, log: &Path, mode: &str, tools: &[&str]) {
@@ -638,15 +645,23 @@ pub fn model_calls(log: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// Points the TS CLI's HTTP client at its fake chatgpt.com, with its cookie.
+/// Points the TS CLI's HTTP client at its fake chatgpt.com, with its cookie,
+/// and its model APIs at its fake OpenAI and Anthropic.
 /// Verbatim from the v0.1.5 harness: its guard throws rather than let the
-/// TS CLI talk to the real chatgpt.com if `src/api/client.ts` changed.
+/// TS CLI talk to the real chatgpt.com if `src/api/client.ts` changed, and
+/// rather than let it talk to the real OpenAI or Anthropic if
+/// `src/classify/model-api.ts` changed.
 pub const PARITY_PLUGIN: &str = r#"
 import { plugin } from "bun";
 const base = process.env.PARITY_FAKE_BASE;
 const cookie = process.env.PARITY_FAKE_COOKIE;
 const eq = cookie?.indexOf("=") ?? -1;
 if (!base || !cookie || eq < 1) throw new Error("PARITY_FAKE_BASE and PARITY_FAKE_COOKIE (name=value) must be set");
+// The TS CLI's model APIs are hard-coded in its source; they are pointed at
+// their fakes here. Without a fake, an address nothing answers: never the
+// real one.
+const openaiBase = process.env.PARITY_OPENAI_BASE ?? "http://127.0.0.1:9";
+const anthropicBase = process.env.PARITY_ANTHROPIC_BASE ?? "http://127.0.0.1:9";
 plugin({
 	name: "parity",
 	setup(build) {
@@ -659,6 +674,14 @@ plugin({
 			if (!patched.includes(session) || patched.includes("https://chatgpt.com")) {
 				throw new Error("src/api/client.ts changed: update the parity plugin");
 			}
+			return { contents: patched, loader: "ts" };
+		});
+		build.onLoad({ filter: /\/src\/classify\/model-api\.ts$/ }, async ({ path }) => {
+			const source = await Bun.file(path).text();
+			const patched = source
+				.replace('"https://api.openai.com/v1/responses"', JSON.stringify(`${openaiBase}/v1/responses`))
+				.replace('"https://api.anthropic.com/v1/messages"', JSON.stringify(`${anthropicBase}/v1/messages`));
+			if (patched.includes("https://api.")) throw new Error("src/classify/model-api.ts changed: update the parity plugin");
 			return { contents: patched, loader: "ts" };
 		});
 	},
@@ -694,6 +717,16 @@ pub struct Ts {
     pub fake_url: String,
     /// The fake TypeSafe it asks, when it asks one.
     pub typesafe_url: Option<String>,
+    /// The fake OpenAI it asks, when it asks one.
+    pub openai_url: Option<String>,
+    /// The fake Anthropic it asks, when it asks one.
+    pub anthropic_url: Option<String>,
+    /// Whether to give it the OpenAI key: with it it calls the fake
+    /// OpenAI, without it the stand-in `codex`.
+    pub openai_key: bool,
+    /// Whether to give it the Anthropic key: with it it calls the fake
+    /// Anthropic, without it the stand-in `claude`.
+    pub anthropic_key: bool,
 }
 
 impl Ts {
@@ -719,13 +752,19 @@ impl Ts {
                 "TYPESAFE_BASE_URL",
                 self.typesafe_url.as_deref().unwrap_or(UNREACHABLE),
             )
-            // The TypeScript CLI reads no base URL for OpenAI or Anthropic
-            // (both are hard-coded), so the keys are what would reach
-            // them: none.
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("ANTHROPIC_API_KEY")
-            // The Rust CLI's equivalent, in case the TypeScript CLI ever
-            // reads one: nothing answers there either.
+            // The model APIs are hard-coded in the TS CLI's source; the
+            // plugin points them at these, or at an address nothing
+            // answers.
+            .env(
+                "PARITY_OPENAI_BASE",
+                self.openai_url.as_deref().unwrap_or(UNREACHABLE),
+            )
+            .env(
+                "PARITY_ANTHROPIC_BASE",
+                self.anthropic_url.as_deref().unwrap_or(UNREACHABLE),
+            )
+            // The keys are what would reach the providers: the fake's when
+            // the harness asks for the model APIs, none otherwise.
             .env("CHATGPT_MODEL_BASE_URL", UNREACHABLE)
             // Only the stand-in `codex` and `claude`, then the system's own
             // directories: never the developer's own model CLIs.
@@ -741,12 +780,42 @@ impl Ts {
             .env_remove("CHATGPT_BROWSER")
             .env_remove("CHATGPT_BROWSER_PROFILE")
             .current_dir(&self.repo);
+        if self.openai_key {
+            command.env("OPENAI_API_KEY", OPENAI_KEY);
+        } else {
+            command.env_remove("OPENAI_API_KEY");
+        }
+        if self.anthropic_key {
+            command.env("ANTHROPIC_API_KEY", ANTHROPIC_KEY);
+        } else {
+            command.env_remove("ANTHROPIC_API_KEY");
+        }
         command
     }
 
     /// The exit code, stdout and stderr of one run.
     pub fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
         let output = self.command(args).output().unwrap();
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    }
+
+    /// [`Ts::run`], with `stdin` written to the command: how a key is
+    /// read.
+    pub fn run_with_stdin(&self, args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
+        use std::io::Write;
+        let mut child = self
+            .command(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+        let output = child.wait_with_output().unwrap();
         (
             output.status.code(),
             String::from_utf8(output.stdout).unwrap(),
