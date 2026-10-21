@@ -87,7 +87,7 @@ impl Env {
             // Vectors without the model, and never a download from the
             // internet (a test that wants the real path overrides both).
             .env("CHATGPT_TEST_EMBEDDER", "fake")
-            .env("CHATGPT_MODEL_BASE_URL", "http://127.0.0.1:9")
+            .env("CHATGPT_MODEL_BASE_URL", UNREACHABLE)
             .env_remove("CHATGPT_INSTANCE")
             .env_remove("CHATGPT_BROWSER")
             .env_remove("CHATGPT_BROWSER_PROFILE")
@@ -95,12 +95,20 @@ impl Env {
             .env_remove("CHATGPT_REQUEST_TIMEOUT_MS")
             // Jev: never the developer's key or TypeSafe itself.
             .env_remove("TYPESAFE_API_KEY")
-            .env("TYPESAFE_BASE_URL", "http://127.0.0.1:9")
+            .env("TYPESAFE_BASE_URL", UNREACHABLE)
             // Nor OpenAI's or Anthropic's.
             .env_remove("OPENAI_API_KEY")
             .env_remove("ANTHROPIC_API_KEY")
-            .env("CHATGPT_TEST_OPENAI_URL", "http://127.0.0.1:9")
-            .env("CHATGPT_TEST_ANTHROPIC_URL", "http://127.0.0.1:9")
+            .env("CHATGPT_TEST_OPENAI_URL", UNREACHABLE)
+            .env("CHATGPT_TEST_ANTHROPIC_URL", UNREACHABLE)
+            // A proxy would carry the fake's traffic — a chat title, a
+            // summary — off the machine.
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("ALL_PROXY")
+            .env_remove("http_proxy")
+            .env_remove("https_proxy")
+            .env_remove("all_proxy")
             .env_remove("CHATGPT_TEST_AUTO_JEV_LIMIT")
             .env_remove("CHATGPT_TEST_AUTO_JEV_SINCE");
         match &self.fake {
@@ -113,7 +121,7 @@ impl Env {
             // fails fast instead of reaching chatgpt.com.
             None => {
                 command
-                    .env("CHATGPT_BASE_URL", "http://127.0.0.1:9")
+                    .env("CHATGPT_BASE_URL", UNREACHABLE)
                     .env_remove("CHATGPT_TEST_COOKIE");
             }
         }
@@ -628,6 +636,123 @@ pub fn model_calls(log: &Path) -> Vec<Value> {
         .iter()
         .map(|path| serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
         .collect()
+}
+
+/// Points the TS CLI's HTTP client at its fake chatgpt.com, with its cookie.
+/// Verbatim from the v0.1.5 harness: its guard throws rather than let the
+/// TS CLI talk to the real chatgpt.com if `src/api/client.ts` changed.
+pub const PARITY_PLUGIN: &str = r#"
+import { plugin } from "bun";
+const base = process.env.PARITY_FAKE_BASE;
+const cookie = process.env.PARITY_FAKE_COOKIE;
+const eq = cookie?.indexOf("=") ?? -1;
+if (!base || !cookie || eq < 1) throw new Error("PARITY_FAKE_BASE and PARITY_FAKE_COOKIE (name=value) must be set");
+plugin({
+	name: "parity",
+	setup(build) {
+		build.onLoad({ filter: /\/src\/api\/client\.ts$/ }, async ({ path }) => {
+			const source = await Bun.file(path).text();
+			const session = `({ browser: "fake", profile: undefined, cookies: [{ name: ${JSON.stringify(cookie.slice(0, eq))}, value: ${JSON.stringify(cookie.slice(eq + 1))} }] })`;
+			const patched = source
+				.replace('const BASE = "https://chatgpt.com";', `const BASE = ${JSON.stringify(base)};`)
+				.replace("readBrowserSession(this.browserSelection())", session);
+			if (!patched.includes(session) || patched.includes("https://chatgpt.com")) {
+				throw new Error("src/api/client.ts changed: update the parity plugin");
+			}
+			return { contents: patched, loader: "ts" };
+		});
+	},
+});
+"#;
+
+/// An address nothing answers: the base URL for a service a test must not
+/// reach. `127.0.0.1:9` is the discard port; nothing listens on it.
+pub const UNREACHABLE: &str = "http://127.0.0.1:9";
+
+/// The TypeScript CLI, run against its own fake chatgpt.com and its own
+/// fake TypeSafe: a Bun process with the plugin preloaded, a synthetic
+/// `HOME` and its own `XDG_*` directories, so it reads neither the
+/// developer's config nor the developer's cookies.
+///
+/// It is sealed off from every real service, the way the Rust CLI's
+/// environment is: only the stand-in `codex` and `claude` are on its
+/// `PATH`, its TypeSafe base URL always points at the fake (or at
+/// [`UNREACHABLE`]), and it carries no OpenAI or Anthropic key.
+#[derive(Clone)]
+pub struct Ts {
+    pub bun: PathBuf,
+    /// The TypeScript CLI's checkout.
+    pub repo: PathBuf,
+    /// Where its own home, config and cache live.
+    pub work: PathBuf,
+    pub data_home: PathBuf,
+    pub home: PathBuf,
+    pub plugin: PathBuf,
+    /// The stand-in `codex` and `claude`, and only they, on its `PATH`.
+    pub tools: PathBuf,
+    /// The fake chatgpt.com it talks to.
+    pub fake_url: String,
+    /// The fake TypeSafe it asks, when it asks one.
+    pub typesafe_url: Option<String>,
+}
+
+impl Ts {
+    pub fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = std::process::Command::new(&self.bun);
+        command
+            .arg("--preload")
+            .arg(&self.plugin)
+            .arg(self.repo.join("src/cli.ts"))
+            .args(args)
+            .env("XDG_DATA_HOME", &self.data_home)
+            .env("XDG_CONFIG_HOME", self.work.join("config"))
+            .env("XDG_CACHE_HOME", self.work.join("cache"))
+            .env("HOME", &self.home)
+            .env("PARITY_FAKE_BASE", &self.fake_url)
+            .env("PARITY_FAKE_COOKIE", fake_chatgpt::COOKIE)
+            // The fake's key, never the developer's.
+            .env("TYPESAFE_API_KEY", fake_chatgpt::typesafe::API_KEY)
+            // The TypeSafe SDK falls back to `https://api.typesafe.ai` when
+            // this is unset, so it is always set: the fake, or an address
+            // nothing answers. Never removed.
+            .env(
+                "TYPESAFE_BASE_URL",
+                self.typesafe_url.as_deref().unwrap_or(UNREACHABLE),
+            )
+            // The TypeScript CLI reads no base URL for OpenAI or Anthropic
+            // (both are hard-coded), so the keys are what would reach
+            // them: none.
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("ANTHROPIC_API_KEY")
+            // The Rust CLI's equivalent, in case the TypeScript CLI ever
+            // reads one: nothing answers there either.
+            .env("CHATGPT_MODEL_BASE_URL", UNREACHABLE)
+            // Only the stand-in `codex` and `claude`, then the system's own
+            // directories: never the developer's own model CLIs.
+            .env("PATH", tools_path(&self.tools))
+            // A proxy would carry the fake's traffic — a chat title, a
+            // summary — off the machine.
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("ALL_PROXY")
+            .env_remove("http_proxy")
+            .env_remove("https_proxy")
+            .env_remove("all_proxy")
+            .env_remove("CHATGPT_BROWSER")
+            .env_remove("CHATGPT_BROWSER_PROFILE")
+            .current_dir(&self.repo);
+        command
+    }
+
+    /// The exit code, stdout and stderr of one run.
+    pub fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        let output = self.command(args).output().unwrap();
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    }
 }
 
 /// The TypeScript CLI's checkout, from `CHATGPT_TS_REPO`: the parity
