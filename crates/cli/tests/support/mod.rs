@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use fake_chatgpt::{COOKIE, FakeChatGpt};
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 pub struct Env {
@@ -434,6 +435,73 @@ pub fn fake_chat_states(env: &Env) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// The requests that change a chat, a project or a memory, and the
+/// single-chat reads a project move's check makes, in order. What the
+/// parity harness compares between the two CLIs.
+pub fn writes(fake: &FakeChatGpt) -> Vec<String> {
+    fake.calls()
+        .into_iter()
+        .filter(|call| {
+            call.starts_with("PATCH")
+                || call.starts_with("DELETE")
+                || call.contains("/rename")
+                || call.contains("/projects")
+                || call.contains("/sidebar")
+                || call.contains("/memories")
+                || call.starts_with("GET /backend-api/conversation/")
+        })
+        .collect()
+}
+
+/// `(0.3s)`, `(1m02s)`: a duration in brackets.
+fn is_duration(text: &str) -> bool {
+    !text.is_empty()
+        && text.ends_with(['s', 'm'])
+        && text
+            .chars()
+            .all(|c| c.is_ascii_digit() || ".hms".contains(c))
+}
+
+/// stderr without what varies run to run: a running count keeps its label,
+/// its count and its cost or failures; a summary loses its duration. What
+/// the parity harness compares between the two CLIs.
+pub fn normalize(stderr: &str) -> String {
+    let mut out = String::new();
+    for line in stderr.split('\n') {
+        let line = line.trim_start_matches("\r\u{1b}[2K");
+        if line.contains(['█', '░']) {
+            let label = line.split("  ").next().unwrap_or("");
+            let count = line
+                .split_whitespace()
+                .find(|word| {
+                    word.contains('/')
+                        && word.chars().next().is_some_and(|c| c.is_ascii_digit())
+                        && !word.ends_with("/s")
+                })
+                .unwrap_or("");
+            // The running cost isn't compared: which concurrent calls have
+            // finished when the first count is drawn varies run to run. The
+            // step's summary line still carries the cost.
+            let detail = line
+                .rsplit(" · ")
+                .next()
+                .filter(|last| last.ends_with("failed"))
+                .unwrap_or("");
+            out.push_str(&format!("{label}  {count} {detail}\n"));
+            continue;
+        }
+        let line = match line.rfind(" (") {
+            Some(at) if line.ends_with(')') && is_duration(&line[at + 2..line.len() - 1]) => {
+                &line[..at]
+            }
+            _ => line,
+        };
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// `id`'s `update_time` in the daemon's index.
 pub fn indexed_update_time(env: &Env, id: &str) -> String {
     env.index_db()
@@ -560,4 +628,116 @@ pub fn model_calls(log: &Path) -> Vec<Value> {
         .iter()
         .map(|path| serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
         .collect()
+}
+
+/// The TypeScript CLI's checkout, from `CHATGPT_TS_REPO`: the parity
+/// harnesses skip without it, because the TS CLI no longer lives in this
+/// repository (it was deleted when the Rust port replaced it; its last
+/// state is commit `1b8c950`, an ancestor of `main`).
+pub fn ts_repo() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os("CHATGPT_TS_REPO")?);
+    path.join("src/cli.ts").is_file().then_some(path)
+}
+
+/// bun on PATH, if any: the parity harnesses skip without it.
+pub fn bun() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("bun"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The first bun on PATH that runs with `home` as its HOME. A version
+/// manager's shim can need the real HOME to find its own install, and the
+/// TS CLI must not see the real one: `None` when no bun on PATH runs there.
+pub fn bun_for(home: &Path) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("bun"))
+        .filter(|candidate| candidate.is_file())
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .env("HOME", home)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+}
+
+/// The TS CLI's tables, which the daemon's first migration copies column
+/// for column.
+pub const TS_SCHEMA: &str = include_str!("../../../store/migrations/0001_index.sql");
+
+/// The TS CLI's own index, where it looks for it
+/// (`src/index/store.ts`: `$XDG_DATA_HOME/chatgpt-cli/index.db`), with the
+/// TS CLI's tables. Returns its path.
+pub fn ts_index(data_home: &Path) -> PathBuf {
+    let dir = data_home.join("chatgpt-cli");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("index.db");
+    let _ = std::fs::remove_file(&path);
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(TS_SCHEMA).unwrap();
+    path
+}
+
+/// Copy the Rust index's chats into the TS index (the same rows in the
+/// same order, and the same `synced_at`), so both CLIs read the same data.
+/// Returns how many chats it copied.
+pub fn copy_chats(rust_index: &Path, ts_index: &Path) -> usize {
+    let rust = Connection::open_with_flags(rust_index, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let ts = Connection::open(ts_index).unwrap();
+    ts.execute("delete from conversations", []).unwrap();
+    let mut rows = rust
+        .prepare("select id, title, create_time, update_time, is_archived, pinned, project_id from conversations order by rowid")
+        .unwrap();
+    let mut insert = ts
+        .prepare("insert into conversations values (?, ?, ?, ?, ?, ?, ?)")
+        .unwrap();
+    let mut copied = 0;
+    let mut query = rows.query([]).unwrap();
+    while let Some(row) = query.next().unwrap() {
+        let values: Vec<rusqlite::types::Value> = (0..7).map(|i| row.get(i).unwrap()).collect();
+        insert.execute(rusqlite::params_from_iter(values)).unwrap();
+        copied += 1;
+    }
+    let synced: String = rust
+        .query_row(
+            "select value from meta where key = 'synced_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    ts.execute(
+        "insert or replace into meta values ('synced_at', ?)",
+        [synced],
+    )
+    .unwrap();
+    copied
+}
+
+/// Copy the TS index's judgments, follow-ups, Luna reviews and memory
+/// classifications into the Rust index as they are, so both CLIs read the
+/// same verdicts. Returns how many judgments it copied.
+pub fn copy_judgments(ts_index: &Path, rust_index: &Path) -> usize {
+    let rust = Connection::open(rust_index).unwrap();
+    rust.busy_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    rust.execute("attach database ? as ts", [ts_index.display().to_string()])
+        .unwrap();
+    rust.execute_batch(
+        "insert or replace into judgments (id, update_time, version, content_kind, answers, classified_at)
+            select id, update_time, version, content_kind, answers, classified_at from ts.judgments;
+         insert or replace into deep_judgments select * from ts.deep_judgments;
+         insert or replace into luna_judgments select * from ts.luna_judgments;
+         insert or replace into memory_judgments select * from ts.memory_judgments;",
+    )
+    .unwrap();
+    let copied: i64 = rust
+        .query_row("select count(*) from ts.judgments", [], |row| row.get(0))
+        .unwrap();
+    rust.execute("detach database ts", []).unwrap();
+    usize::try_from(copied).unwrap()
 }
