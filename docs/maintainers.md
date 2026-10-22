@@ -69,7 +69,7 @@ The model path's harness asserts the differences `docs/issues/classify-followups
 - the subscription CLIs' environment: the Rust CLI runs `codex` and `claude` with only what they need to find their own login, the TS CLI with its whole environment, API keys included. The harness compares the calls' arguments and stdin, not their environment, and asserts the difference instead;
 - at a terminal, a step opens with its label where the TS CLI draws its bar at zero, and the TS CLI colours its `failed:` lines. The terminal transcript is compared without the step lines, the colours and the durations.
 
-Nothing else differs: all 31 commands print the same notes, steps, cost lines and failures, send the same Jev, OpenAI and Anthropic requests and the same subscription CLI calls byte for byte, and end with the same verdicts, titles and memory classifications.
+Nothing else differs: all 32 commands print the same notes, steps, cost lines and failures, send the same Jev, OpenAI and Anthropic requests and the same subscription CLI calls byte for byte, and end with the same verdicts, titles and memory classifications.
 
 A write that answers 404 has its own test, `a_404_drops_the_chat_from_both_indexes`: both CLIs fail, both drop the chat from their index (the Rust daemon reads a 404 as "the chat is gone"), and both leave it in ChatGPT's own list, so an expected-state assertion for a failing command has to expect the row's absence.
 
