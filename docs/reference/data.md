@@ -55,7 +55,7 @@ sqlite3 ~/Library/Application\ Support/chatgpt-cli/chatgpt.db "select model, cou
 | `CHATGPT_INSTANCE` | another daemon and index, `chatgpt-cli-<name>` (one account per instance) | the installed instance |
 | `CHATGPT_LOG` | the daemon's log filter (`RUST_LOG` syntax) | `info` |
 | `XDG_CACHE_HOME` | where the embedding model is cached | `~/.cache` |
-| `PAGER` | `v` (view) in `chatgpt review` and `chatgpt tui` | `less` |
+| `PAGER` | `v` (view) in `chatgpt review` and `chatgpt tui`; it gets the transcript without control characters other than newlines and tabs | `less` |
 
 ## Credentials
 

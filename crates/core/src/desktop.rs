@@ -80,9 +80,9 @@ pub fn open_chat(id: &str) -> Result<(), DesktopError> {
     Ok(())
 }
 
-/// `$PAGER` (else `less`) with `-R`, `text` on its stdin, until it quits.
-/// A `PAGER` with arguments (`less -S`) keeps them. The caller hands it
-/// the terminal.
+/// `$PAGER` (else `less`) with `-R`, `text` on its stdin without its
+/// control characters ([`pageable`]), until it quits. A `PAGER` with
+/// arguments (`less -S`) keeps them. The caller hands it the terminal.
 pub fn page(text: &str) -> Result<(), DesktopError> {
     let pager = std::env::var("PAGER")
         .ok()
@@ -105,8 +105,36 @@ pub fn page(text: &str) -> Result<(), DesktopError> {
         })?;
     if let Some(mut stdin) = child.stdin.take() {
         // A pager quit early stops reading; that's fine.
-        let _ = stdin.write_all(text.as_bytes());
+        let _ = stdin.write_all(pageable(text).as_bytes());
     }
     let _ = child.wait();
     Ok(())
+}
+
+/// `text` with newlines and tabs but no other control character. A chat
+/// can carry escape sequences (pasted, or echoed from a web page), and a
+/// pager other than `less -R` would hand them to the terminal, which can
+/// set the clipboard or the window title, or draw over what's shown. The
+/// TUI's preview drops them too.
+fn pageable(text: &str) -> String {
+    text.chars()
+        .filter(|&c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pageable;
+
+    #[test]
+    fn a_paged_transcript_keeps_its_lines_and_tabs() {
+        assert_eq!(pageable("# One\n\n\tcode ✓\n"), "# One\n\n\tcode ✓\n");
+    }
+
+    #[test]
+    fn a_paged_transcript_loses_escape_sequences_and_other_controls() {
+        // OSC 52 (clipboard), a title, SGR, a C1 CSI, a carriage return and a bell.
+        let chat = "a\x1b]52;c;cHduZWQ=\x07b\x1b]0;title\x1b\\c\x1b[31md\u{9b}2Je\rf\x07";
+        assert_eq!(pageable(chat), "a]52;c;cHduZWQ=b]0;title\\c[31md2Jef");
+    }
 }
