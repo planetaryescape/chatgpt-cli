@@ -52,9 +52,6 @@ const KEY_WAIT: Duration = Duration::from_millis(50);
 /// terminal that's been restored.
 static PANICKED: AtomicBool = AtomicBool::new(false);
 
-/// Set while `$PAGER` has the terminal: Ctrl-C there is the pager's.
-static PAGING: AtomicBool = AtomicBool::new(false);
-
 /// The keyboard thread's reads, which stop while `$PAGER` has the
 /// terminal: a key read here would never reach the pager.
 #[derive(Default)]
@@ -361,19 +358,12 @@ impl Signals {
         })
     }
 
-    /// The first of them stops the TUI, which restores the terminal;
-    /// except SIGINT while `$PAGER` runs, which is Ctrl-C in the pager.
+    /// The first of them stops the TUI, which restores the terminal.
     async fn watch(mut self, events: Sender<Event>) {
-        let number = loop {
-            tokio::select! {
-                _ = self.terminate.recv() => break 15,
-                _ = self.hangup.recv() => break 1,
-                _ = self.interrupt.recv() => {
-                    if !PAGING.load(Ordering::SeqCst) {
-                        break 2;
-                    }
-                }
-            }
+        let number = tokio::select! {
+            _ = self.terminate.recv() => 15,
+            _ = self.hangup.recv() => 1,
+            _ = self.interrupt.recv() => 2,
         };
         let _ = events.send(Event::Signal(number));
     }
@@ -526,9 +516,7 @@ fn page(
     app: &mut App,
 ) -> std::io::Result<()> {
     restore();
-    PAGING.store(true, Ordering::SeqCst);
-    let paged = chatgpt_core::desktop::page(markdown);
-    PAGING.store(false, Ordering::SeqCst);
+    let paged = crate::pager::page(markdown);
     Screen::take()?;
     repaint(terminal)?;
     app.status = match paged {

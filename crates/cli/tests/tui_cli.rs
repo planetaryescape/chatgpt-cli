@@ -10,7 +10,8 @@ mod support;
 
 use fake_chatgpt::{Chat, WriteFailure};
 use support::{
-    Env, Pty, delete_answers, fake_chat_states, indexed_update_time, judge, recording_tool,
+    Env, Pty, delete_answers, fake_chat_states, indexed_update_time, judge, paged,
+    pager_until_interrupted, recording_tool,
 };
 
 const ROWS: u16 = 30;
@@ -242,20 +243,6 @@ fn a_local_title_goes_to_the_index_and_a_refused_one_says_why() {
     );
 }
 
-/// What the recording `$PAGER` at `log` was given, once it holds `text`.
-fn paged(log: &std::path::Path, text: &str) -> String {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match std::fs::read_to_string(log) {
-            Ok(paged) if paged.contains(text) => return paged,
-            _ => {
-                assert!(std::time::Instant::now() < deadline, "the pager never ran");
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        }
-    }
-}
-
 /// `v` hands the terminal to `$PAGER` with the transcript, and the TUI
 /// takes it back and answers keys after.
 #[test]
@@ -279,6 +266,28 @@ fn v_pages_the_transcript_and_tab_scrolls_the_preview() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(pty.screen().contains("Hello from a-one"));
     pty.send("\tj");
+    pty.wait_for_screen("Hello from b-two");
+    pty.send("q");
+    assert_eq!(pty.finish(), Some(0));
+}
+
+/// Ctrl-C in `$PAGER` is the pager's alone: one it dies of leaves the TUI
+/// running.
+#[test]
+fn ctrl_c_that_ends_the_pager_leaves_the_tui_running() {
+    let mut env = synced();
+    let paging = pager_until_interrupted(&env);
+    env.extra_env.push((
+        "PAGER".into(),
+        env.tools.join("pager").display().to_string(),
+    ));
+    let mut pty = Pty::spawn(&env, &["tui"], None, ROWS, COLS);
+    pty.wait_for_screen("Hello from a-one");
+    pty.send("v");
+    paged(&paging, "paging");
+    pty.send("\x03");
+    pty.wait_for_screen("Hello from a-one");
+    pty.send("j");
     pty.wait_for_screen("Hello from b-two");
     pty.send("q");
     assert_eq!(pty.finish(), Some(0));

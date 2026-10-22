@@ -634,6 +634,7 @@ dependencies = [
  "chatgpt-protocol",
  "chrono",
  "insta",
+ "nix",
  "ratatui",
  "serde_json",
  "textwrap",

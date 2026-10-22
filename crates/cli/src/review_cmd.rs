@@ -184,7 +184,7 @@ async fn triage(
                 if let Some(markdown) = loaded.get(&row.id).and_then(|chat| chat.markdown.as_ref())
                 {
                     tty.cooked()?;
-                    if let Err(error) = chatgpt_core::desktop::page(markdown) {
+                    if let Err(error) = chatgpt_tui::pager::page(markdown) {
                         print(&format!("({error})\n"));
                     }
                     tty.raw()?;

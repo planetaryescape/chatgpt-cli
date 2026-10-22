@@ -8,7 +8,8 @@ mod support;
 
 use fake_chatgpt::Chat;
 use support::{
-    Env, Pty, delete_answers, fake_chat_states, indexed_update_time, judge, recording_tool,
+    Env, Pty, delete_answers, fake_chat_states, indexed_update_time, judge, paged,
+    pager_until_interrupted, recording_tool,
 };
 
 fn chats() -> Vec<Chat> {
@@ -223,6 +224,28 @@ fn view_pages_the_transcript_and_open_hands_the_link_to_the_browser() {
         std::fs::read_to_string(open).unwrap(),
         "args:https://chatgpt.com/c/a-one\n"
     );
+}
+
+/// Ctrl-C in `$PAGER` is the pager's alone: one it dies of leaves the
+/// review running.
+#[test]
+fn ctrl_c_that_ends_the_pager_leaves_the_review_running() {
+    let mut env = synced();
+    let paging = pager_until_interrupted(&env);
+    env.extra_env.push((
+        "PAGER".into(),
+        env.tools.join("pager").display().to_string(),
+    ));
+    let mut pty = Pty::spawn(&env, &["review", "a-one"], None, 40, 120);
+    pty.wait_for("[1/1]  One");
+    pty.send("v");
+    paged(&paging, "paging");
+    pty.send("\x03");
+    // Shown again after the pager.
+    pty.wait_for("[1/1]  One");
+    pty.send("q");
+    pty.wait_for("Reviewed 0");
+    assert_eq!(pty.finish(), Some(0));
 }
 
 #[test]

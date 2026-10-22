@@ -10,6 +10,8 @@ chatgpt-core = { workspace = true }
 chatgpt-launcher = { workspace = true }
 chatgpt-protocol = { workspace = true }
 chrono = { workspace = true }
+# `$PAGER` runs as a foreground job (`pager`).
+nix = { workspace = true, features = ["term"] }
 ratatui = { workspace = true }
 textwrap = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
