@@ -130,7 +130,21 @@ impl Models {
                 self.set_tools("fail", &["codex"]);
                 support::fake_tools(&self.tools, &self.log, "ok", &["claude"]);
             }
+            StandIns::BothFail => self.set_tools("fail", &["codex", "claude"]),
         }
+    }
+
+    /// How the fake OpenAI and Anthropic answer a scenario. Each scenario
+    /// sets its own, as it sets its stand-ins, so a failure never outlives
+    /// the scenario that wanted it.
+    fn set_apis(&self, apis: Apis) {
+        let (openai, anthropic) = match apis {
+            Apis::Answer => (None, None),
+            Apis::OpenAiFails => (Some(500), None),
+            Apis::BothFail => (Some(500), Some(500)),
+        };
+        self.openai.state().fail = openai;
+        self.anthropic.state().fail = anthropic;
     }
 
     /// The subscription CLIs' calls, as comparable text, sorted (they run
@@ -278,6 +292,30 @@ enum StandIns {
     /// Both on the `PATH`; `codex` fails, so a summary falls back to
     /// `claude`.
     CodexFails,
+    /// Both on the `PATH`, both failing: a summary has nowhere to go.
+    BothFail,
+}
+
+/// How the fake OpenAI and Anthropic answer, when a scenario has their
+/// keys. A failure is a 500 whose body, `{"error":"secret"}`, the Rust CLI
+/// must never quote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Apis {
+    /// Both answer.
+    Answer,
+    /// OpenAI fails, so a summary falls back to Anthropic.
+    OpenAiFails,
+    /// Both fail: a summary has nowhere to go.
+    BothFail,
+}
+
+/// The `failed:` line each side prints when every summariser failed. The
+/// TS CLI quotes each provider's body and each tool's stderr; the Rust CLI
+/// says only how each failed (`docs/issues/classify-followups.md`,
+/// bullet 1). It is the one line of stderr the two sides may differ in.
+struct Failure {
+    ts: &'static str,
+    rust: &'static str,
 }
 
 /// One scenario: the command, and what it must do.
@@ -293,6 +331,8 @@ struct Scenario {
     with_anthropic: bool,
     /// The stand-in subscription CLIs on the `PATH`, and how they answer.
     stand_ins: StandIns,
+    /// How the fake OpenAI and Anthropic answer.
+    apis: Apis,
     /// The exit status the TS CLI must give.
     ts_code: i32,
     /// The exit status the Rust CLI must give: 2 where the TS CLI gives 1
@@ -308,6 +348,9 @@ struct Scenario {
     openai: usize,
     /// The Anthropic requests this scenario must make, on each side.
     anthropic: usize,
+    /// When every summariser fails: the line each side must print instead
+    /// of the other's.
+    failure: Option<Failure>,
 }
 
 /// The scenarios, in the order they run. The order matters: each one
@@ -327,6 +370,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -334,6 +378,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["configure", "anthropic"],
@@ -341,6 +386,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -348,6 +394,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["configure", "openai"],
@@ -355,6 +402,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -362,6 +410,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["configure"],
@@ -369,6 +418,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -376,6 +426,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["configure", "openai", "--remove"],
@@ -383,6 +434,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -390,6 +442,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["configure", "jev", "--remove"],
@@ -397,6 +450,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -404,6 +458,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // No provider to remove.
         Scenario {
@@ -412,6 +467,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 2,
             stdout: None,
@@ -419,6 +475,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // An unknown provider.
         Scenario {
@@ -427,6 +484,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 2,
             stdout: None,
@@ -434,6 +492,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // A blank key.
         Scenario {
@@ -442,6 +501,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 2,
             stdout: None,
@@ -449,6 +509,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["configure", "anthropic", "--remove"],
@@ -456,6 +517,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -463,6 +525,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // The Jev guard asks Jev about each chat and summarises the long
         // one, so it needs the stand-in model CLIs as well as the fake
@@ -475,6 +538,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -482,6 +546,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 1,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // classify: a filter, then everything (summaries, follow-up, Luna
         // and titles), then again (all cached), then --redo.
@@ -492,6 +557,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 1,
             stdout: Some(""),
@@ -499,6 +565,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 5,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["classify", "-y"],
@@ -506,6 +573,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 1,
             stdout: Some(""),
@@ -513,6 +581,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 7,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["classify"],
@@ -520,6 +589,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 1,
             stdout: Some(""),
@@ -527,6 +597,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 1,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["classify", "c-idea", "e-long", "--redo"],
@@ -534,6 +605,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -541,6 +613,69 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
+        },
+        // OpenAI fails: the long chat's summary, made again, falls back to
+        // Anthropic. Nothing else asks OpenAI (the chat already has its
+        // title, and Jev keeps it without Luna), so its failure costs only
+        // the attempt, and neither side says it failed.
+        Scenario {
+            args: &["classify", "e-long", "--redo", "-y"],
+            stdin: "",
+            with_openai: true,
+            with_anthropic: true,
+            stand_ins: StandIns::Answer,
+            apis: Apis::OpenAiFails,
+            ts_code: 0,
+            rust_code: 0,
+            stdout: Some(""),
+            jev: 1,
+            tools: 0,
+            openai: 1,
+            anthropic: 1,
+            failure: None,
+        },
+        // Both APIs fail: the long chat has no summary, so Jev isn't asked
+        // about it and both sides report the summarisers' failures.
+        Scenario {
+            args: &["classify", "e-long", "--redo", "-y"],
+            stdin: "",
+            with_openai: true,
+            with_anthropic: true,
+            stand_ins: StandIns::Answer,
+            apis: Apis::BothFail,
+            ts_code: 1,
+            rust_code: 1,
+            stdout: Some(""),
+            jev: 0,
+            tools: 0,
+            openai: 1,
+            anthropic: 1,
+            failure: Some(Failure {
+                ts: r#"failed: e-long Long essay: No summariser succeeded. gpt-6-luna (API): 127.0.0.1 returned 500: {"error":"secret"} | claude-haiku (API): 127.0.0.1 returned 500: {"error":"secret"}"#,
+                rust: "failed: e-long Long essay: No summariser succeeded. gpt-6-luna (API): 127.0.0.1 returned 500 | claude-haiku (API): 127.0.0.1 returned 500",
+            }),
+        },
+        // Both subscription CLIs fail: the same, through `codex` and
+        // `claude`.
+        Scenario {
+            args: &["classify", "e-long", "--redo", "-y"],
+            stdin: "",
+            with_openai: false,
+            with_anthropic: false,
+            stand_ins: StandIns::BothFail,
+            apis: Apis::Answer,
+            ts_code: 1,
+            rust_code: 1,
+            stdout: Some(""),
+            jev: 0,
+            tools: 2,
+            openai: 0,
+            anthropic: 0,
+            failure: Some(Failure {
+                ts: "failed: e-long Long essay: No summariser succeeded. gpt-6-luna: codex exited 1: SENTINEL fake codex failure with private text | claude-haiku: claude -p exited 1: SENTINEL fake claude failure with private text",
+                rust: "failed: e-long Long essay: No summariser succeeded. gpt-6-luna: codex exited 1 | claude-haiku: claude -p exited 1 without a JSON answer",
+            }),
         },
         // `codex` fails: the long chat's summary, made again, falls back
         // to `claude`. Nothing else asks `codex` (the chat already has its
@@ -553,6 +688,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::CodexFails,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -560,6 +696,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 2,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["classify", "--title", "junk", "--pinned", "--limit", "1"],
@@ -567,6 +704,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -574,6 +712,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // An unknown chat.
         Scenario {
@@ -582,6 +721,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 2,
             stdout: None,
@@ -589,6 +729,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // A bad age.
         Scenario {
@@ -597,6 +738,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 2,
             stdout: None,
@@ -604,6 +746,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // titles.
         Scenario {
@@ -612,6 +755,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 1,
             stdout: Some(""),
@@ -619,6 +763,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 1,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["titles", "--title", "idea|maybe", "--redo"],
@@ -626,6 +771,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -633,6 +779,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 1,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["titles", "f-pinned"],
@@ -640,6 +787,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 1,
             stdout: Some(""),
@@ -647,6 +795,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // memory classify: four quick passes, and one memory's Luna
         // review through `codex`.
@@ -656,6 +805,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -663,6 +813,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 1,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["memory", "classify", "--format", "json"],
@@ -670,6 +821,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -677,6 +829,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &[
@@ -691,6 +844,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -698,6 +852,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["memory", "classify", "--format", "ids", "--limit", "2"],
@@ -705,6 +860,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -712,6 +868,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["memory", "classify", "--suggest", "review"],
@@ -719,6 +876,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -726,6 +884,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // An unknown format.
         Scenario {
@@ -734,6 +893,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: false,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 1,
             rust_code: 2,
             stdout: None,
@@ -741,6 +901,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 0,
+            failure: None,
         },
         // With API keys: OpenAI and Anthropic instead of the CLIs (the
         // long chat's summary is made again).
@@ -750,6 +911,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: true,
             with_anthropic: true,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -757,6 +919,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 1,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["titles", "c-idea", "d-product", "--redo"],
@@ -764,6 +927,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: true,
             with_anthropic: true,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -771,6 +935,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 1,
             anthropic: 0,
+            failure: None,
         },
         Scenario {
             args: &["memory", "classify", "--redo", "--format", "ids"],
@@ -778,6 +943,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: true,
             with_anthropic: true,
             stand_ins: StandIns::Answer,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: None,
@@ -785,6 +951,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 1,
             anthropic: 0,
+            failure: None,
         },
         // The Anthropic API alone: no OpenAI key and no `codex` on the
         // PATH, so Anthropic is the only summariser left and the long
@@ -795,6 +962,7 @@ fn scenarios() -> Vec<Scenario> {
             with_openai: false,
             with_anthropic: true,
             stand_ins: StandIns::Absent,
+            apis: Apis::Answer,
             ts_code: 0,
             rust_code: 0,
             stdout: Some(""),
@@ -802,6 +970,7 @@ fn scenarios() -> Vec<Scenario> {
             tools: 0,
             openai: 0,
             anthropic: 1,
+            failure: None,
         },
     ]
 }
@@ -954,23 +1123,9 @@ fn fell_back_to_claude(
     jev: &[String],
     stderr: &str,
 ) {
-    let tools: Vec<&str> = calls
-        .iter()
-        .map(|call| call["tool"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(tools, ["codex", "claude"], "{side}: the summarisers tried");
-    let (codex, claude) = (&calls[0], &calls[1]);
-    let stdin = claude["stdin"].as_str().unwrap_or_default();
-    assert!(
-        stdin.starts_with("Title: Long essay\n\n") && stdin.contains("word word"),
-        "{side}: claude was not sent the long chat"
-    );
+    tried_codex_then_claude(side, calls);
     assert_eq!(
-        codex["stdin"], claude["stdin"],
-        "{side}: claude was sent another chat than codex"
-    );
-    assert_eq!(
-        claude["args"],
+        calls[1]["args"],
         json!([
             "-p",
             "--model",
@@ -990,6 +1145,116 @@ fn fell_back_to_claude(
         ]),
         "{side}: claude's arguments"
     );
+    judged_from(
+        "claude-haiku",
+        "Claude Summary of Title: Long essay",
+        side,
+        db,
+        jev,
+        stderr,
+    );
+}
+
+/// One side's summary calls to the subscription CLIs in a scenario,
+/// oldest first: `codex`, then `claude` with the same long chat.
+fn tried_codex_then_claude(side: &str, calls: &[Value]) {
+    let tools: Vec<&str> = calls
+        .iter()
+        .map(|call| call["tool"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(tools, ["codex", "claude"], "{side}: the summarisers tried");
+    let (codex, claude) = (&calls[0], &calls[1]);
+    let stdin = claude["stdin"].as_str().unwrap_or_default();
+    assert!(
+        stdin.starts_with("Title: Long essay\n\n") && stdin.contains("word word"),
+        "{side}: claude was not sent the long chat"
+    );
+    assert_eq!(
+        codex["stdin"], claude["stdin"],
+        "{side}: claude was sent another chat than codex"
+    );
+}
+
+/// What one side must have done when OpenAI failed on `e-long`'s summary:
+/// asked OpenAI, then Anthropic with the same chat, saved Anthropic's
+/// summary, judged the chat from it, and said nothing of OpenAI's failure.
+/// `openai` and `anthropic` are what the side's fakes held before the
+/// scenario.
+fn fell_back_to_anthropic(
+    side: &str,
+    models: &Models,
+    (openai, anthropic): (usize, usize),
+    db: &rusqlite::Connection,
+    jev: &[String],
+    stderr: &str,
+) {
+    asked_openai_then_anthropic(side, models, (openai, anthropic));
+    judged_from(
+        "claude-haiku (API)",
+        "Summary of Title: Long essay",
+        side,
+        db,
+        jev,
+        stderr,
+    );
+}
+
+/// One side's summary requests to the model APIs in a scenario: OpenAI
+/// once, then Anthropic once, about the long chat, each with the summary
+/// instructions. The fakes stamp when each request arrived, so the order
+/// is observed across the two servers. `openai` and `anthropic` are what
+/// the fakes held before the scenario.
+fn asked_openai_then_anthropic(side: &str, models: &Models, (openai, anthropic): (usize, usize)) {
+    let openai_state = models.openai.state();
+    let anthropic_state = models.anthropic.state();
+    assert_eq!(
+        openai_state.bodies.len() - openai,
+        1,
+        "{side}: OpenAI requests"
+    );
+    assert_eq!(
+        anthropic_state.bodies.len() - anthropic,
+        1,
+        "{side}: Anthropic requests"
+    );
+    assert!(
+        openai_state.arrived[openai] < anthropic_state.arrived[anthropic],
+        "{side}: Anthropic was asked before OpenAI"
+    );
+    let asked: Value = serde_json::from_str(&openai_state.bodies[openai]).unwrap();
+    let fallback: Value = serde_json::from_str(&anthropic_state.bodies[anthropic]).unwrap();
+    let input = asked["input"].as_str().unwrap_or_default();
+    assert!(
+        input.starts_with("Title: Long essay\n\n") && input.contains("word word"),
+        "{side}: OpenAI was not sent the long chat"
+    );
+    assert_eq!(
+        asked["instructions"], SUMMARY_PROMPT,
+        "{side}: OpenAI's instructions"
+    );
+    assert_eq!(
+        fallback.pointer("/messages/0/content"),
+        Some(&json!(input)),
+        "{side}: Anthropic was sent another chat than OpenAI"
+    );
+    assert_eq!(
+        fallback["system"], SUMMARY_PROMPT,
+        "{side}: Anthropic's instructions"
+    );
+}
+
+/// The end of a fallback, on one side: `model`'s `summary` saved for
+/// `e-long`, Jev asked about it once, and the chat judged from it. The
+/// fallback is quiet on both sides: only the cost line names the
+/// summariser that answered.
+fn judged_from(
+    model: &str,
+    summary: &str,
+    side: &str,
+    db: &rusqlite::Connection,
+    jev: &[String],
+    stderr: &str,
+) {
     let saved: (String, String) = db
         .query_row(
             "select summary, model from summaries where id = 'e-long'",
@@ -999,16 +1264,13 @@ fn fell_back_to_claude(
         .unwrap();
     assert_eq!(
         saved,
-        (
-            "Claude Summary of Title: Long essay".to_owned(),
-            "claude-haiku".to_owned()
-        ),
+        (summary.to_owned(), model.to_owned()),
         "{side}: the saved summary"
     );
     assert_eq!(jev.len(), 1, "{side}: Jev requests");
     assert!(
-        jev[0].contains("Claude Summary of Title: Long essay"),
-        "{side}: Jev was not asked about claude's summary"
+        jev[0].contains(summary),
+        "{side}: Jev was not asked about {model}'s summary"
     );
     let judged: String = db
         .query_row(
@@ -1018,16 +1280,57 @@ fn fell_back_to_claude(
         )
         .unwrap();
     assert_eq!(judged, "summary", "{side}: what Jev judged e-long from");
-    // The fallback is quiet on both sides: only the cost line names the
-    // summariser that answered. A failure that does surface is quoted by
-    // the TS CLI and not by the Rust CLI
-    // (`docs/issues/classify-followups.md`, bullet 1).
     assert!(
-        stderr.contains("  summaries (claude-haiku) "),
+        stderr.contains(&format!("  summaries ({model}) ")),
         "{side}: {stderr}"
     );
-    assert!(!stderr.contains("SENTINEL"), "{side}: {stderr}");
     assert!(!stderr.contains("failed"), "{side}: {stderr}");
+    assert!(!stderr.contains("SENTINEL"), "{side}: {stderr}");
+    assert!(!stderr.contains("secret"), "{side}: {stderr}");
+}
+
+/// One chat's saved judgment, whole: what it was judged from, the
+/// answers, and when.
+fn judgment(db: &rusqlite::Connection, id: &str) -> Option<(String, String, String, String)> {
+    db.query_row(
+        "select version, content_kind, answers, classified_at from judgments where id = ?",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .ok()
+}
+
+/// What one side must have left when every summariser failed on
+/// `e-long`: no summary, and the judgment it had before, not one made
+/// from a summary.
+fn nothing_saved(
+    side: &str,
+    db: &rusqlite::Connection,
+    before: Option<&(String, String, String, String)>,
+) {
+    let summaries: u32 = db
+        .query_row(
+            "select count(*) from summaries where id = 'e-long'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(summaries, 0, "{side}: a summary was saved");
+    assert!(before.is_some(), "{side}: e-long had no judgment to keep");
+    assert_eq!(
+        judgment(db, "e-long").as_ref(),
+        before,
+        "{side}: e-long's judgment changed"
+    );
+}
+
+/// `stderr` with the `failed:` line one side must print, `line`, in
+/// place of the line itself: the two sides word it differently on
+/// purpose, and everything else is compared.
+fn expected_failure(side: &str, stderr: &str, line: &str) -> String {
+    let found = stderr.split('\n').filter(|shown| *shown == line).count();
+    assert_eq!(found, 1, "{side}: expected the line\n{line}\nin\n{stderr}");
+    stderr.replace(line, "<every summariser failed>")
 }
 
 /// The rows `list --json --all` prints, parsed.
@@ -1243,10 +1546,13 @@ fn the_model_path_prints_sends_and_saves_as_the_ts_cli_does() {
     for scenario in scenarios() {
         let args = scenario.args;
         // The long chat's summary is made again: through the API, or
-        // through `claude` when `codex` fails.
+        // through `claude` when `codex` fails, or not at all when both fail.
         if (scenario.with_openai
             || scenario.with_anthropic
-            || scenario.stand_ins == StandIns::CodexFails)
+            || matches!(
+                scenario.stand_ins,
+                StandIns::CodexFails | StandIns::BothFail
+            ))
             && args.first() == Some(&"classify")
         {
             for db in [
@@ -1261,13 +1567,19 @@ fn the_model_path_prints_sends_and_saves_as_the_ts_cli_does() {
         ts.anthropic_key = scenario.with_anthropic;
         rust_models.set_stand_ins(scenario.stand_ins);
         ts_models.set_stand_ins(scenario.stand_ins);
-        // The seeded difference reaches the fallback too, and first: the
-        // TS side's `claude` fails as well, so it has no summariser left.
-        if scenario.stand_ins == StandIns::CodexFails
+        rust_models.set_apis(scenario.apis);
+        ts_models.set_apis(scenario.apis);
+        // The seeded difference reaches the first fallback too, and first:
+        // the TS side's fallback fails as well, so it has no summariser
+        // left.
+        if (scenario.stand_ins == StandIns::CodexFails || scenario.apis == Apis::OpenAiFails)
             && std::env::var_os("CHATGPT_PARITY_SEED_DIFFERENCE").is_some()
         {
             ts_models.set_tools("fail", &["codex", "claude"]);
+            ts_models.set_apis(Apis::BothFail);
         }
+        let rust_judged = judgment(&env.index_db(), "e-long");
+        let ts_judged = judgment(&rusqlite::Connection::open(&ts_db_path).unwrap(), "e-long");
         let rust_before = rust_models.typesafe.calls();
         let ts_before = ts_models.typesafe.calls();
         let rust_tools_before = model_calls(&rust_models.log).len();
@@ -1289,24 +1601,44 @@ fn the_model_path_prints_sends_and_saves_as_the_ts_cli_does() {
 
         // The proof: the two sides, side by side.
         eprintln!(
-            "======== {args:?} (openai key: {}, anthropic key: {}, stand-ins: {:?})",
-            scenario.with_openai, scenario.with_anthropic, scenario.stand_ins
+            "======== {args:?} (openai key: {}, anthropic key: {}, stand-ins: {:?}, APIs: {:?})",
+            scenario.with_openai, scenario.with_anthropic, scenario.stand_ins, scenario.apis
         );
         eprintln!("--- TS exit: {ts_code:?}  stdout: {ts_out:?}");
         eprintln!("--- TS stderr:\n{ts_err}");
         eprintln!("--- Rust exit: {rust_code:?}  stdout: {rust_out:?}");
         eprintln!("--- Rust stderr:\n{rust_err}");
 
-        let ts_run = Run {
+        let mut ts_run = Run {
             code: ts_code,
             stdout: ts_out.replace(&ts_config.display().to_string(), "<config>"),
             stderr: steady(&ts_err, &ts_config),
         };
-        let rust_run = Run {
+        let mut rust_run = Run {
             code: rust_code,
             stdout: rust_out.replace(&rust_config.display().to_string(), "<config>"),
             stderr: steady(&rust_err, &rust_config),
         };
+        // Every summariser failed: each side prints its own line, and the
+        // rest of stderr is compared as usual.
+        if let Some(failure) = &scenario.failure {
+            ts_run.stderr = expected_failure("TS", &ts_run.stderr, failure.ts);
+            rust_run.stderr = expected_failure("Rust", &rust_run.stderr, failure.rust);
+        }
+        // The Rust CLI never quotes a provider's body or a tool's stderr;
+        // the TS CLI does, when a failure surfaces.
+        for secret in ["secret", "SENTINEL"] {
+            assert!(
+                !rust_err.contains(secret),
+                "{args:?}: the Rust CLI quoted {secret:?}:\n{rust_err}"
+            );
+        }
+        if scenario.failure.is_some() {
+            assert!(
+                ts_err.contains("secret") || ts_err.contains("SENTINEL"),
+                "{args:?}: the TS CLI no longer quotes the failure:\n{ts_err}"
+            );
+        }
         let found = difference(&ts_run, &rust_run);
         assert!(
             found.is_none(),
@@ -1343,6 +1675,44 @@ fn the_model_path_prints_sends_and_saves_as_the_ts_cli_does() {
             rust_anthropic, scenario.anthropic,
             "{args:?} Anthropic requests"
         );
+        if scenario.apis == Apis::OpenAiFails {
+            fell_back_to_anthropic(
+                "Rust",
+                &rust_models,
+                (rust_openai_before, rust_anthropic_before),
+                &env.index_db(),
+                &rust_models.typesafe.state().bodies[rust_before..],
+                &rust_err,
+            );
+            fell_back_to_anthropic(
+                "TS",
+                &ts_models,
+                (ts_openai_before, ts_anthropic_before),
+                &rusqlite::Connection::open(&ts_db_path).unwrap(),
+                &ts_models.typesafe.state().bodies[ts_before..],
+                &ts_err,
+            );
+        }
+        if scenario.apis == Apis::BothFail {
+            asked_openai_then_anthropic(
+                "Rust",
+                &rust_models,
+                (rust_openai_before, rust_anthropic_before),
+            );
+            asked_openai_then_anthropic("TS", &ts_models, (ts_openai_before, ts_anthropic_before));
+        }
+        if scenario.stand_ins == StandIns::BothFail {
+            tried_codex_then_claude("Rust", &model_calls(&rust_models.log)[rust_tools_before..]);
+            tried_codex_then_claude("TS", &model_calls(&ts_models.log)[ts_tools_before..]);
+        }
+        if scenario.failure.is_some() {
+            nothing_saved("Rust", &env.index_db(), rust_judged.as_ref());
+            nothing_saved(
+                "TS",
+                &rusqlite::Connection::open(&ts_db_path).unwrap(),
+                ts_judged.as_ref(),
+            );
+        }
         if scenario.stand_ins == StandIns::CodexFails {
             fell_back_to_claude(
                 "Rust",
