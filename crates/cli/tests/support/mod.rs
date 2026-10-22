@@ -539,6 +539,39 @@ pub fn recording_tool(env: &Env, name: &str) -> PathBuf {
     log
 }
 
+/// What a `$PAGER` wrote to `log`, once it holds `text`.
+pub fn paged(log: &Path, text: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match std::fs::read_to_string(log) {
+            Ok(paged) if paged.contains(text) => return paged,
+            _ => {
+                assert!(std::time::Instant::now() < deadline, "the pager never ran");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+/// `pager` in [`Env::tools`]: it reads what it's given, then writes
+/// `paging` to the file returned and runs until Ctrl-C ends it, as a
+/// pager that doesn't catch SIGINT does.
+pub fn pager_until_interrupted(env: &Env) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let paging = env.home.path().join("paging");
+    let script = env.tools.join("pager");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat > /dev/null\necho paging > '{}'\nexec sleep 30\n",
+            paging.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    paging
+}
+
 impl Drop for Env {
     fn drop(&mut self) {
         let _ = self.cmd().args(["daemon", "stop"]).output();

@@ -11,12 +11,14 @@
 //! - [`app`]: the state and what each key does;
 //! - [`ui`]: drawing it;
 //! - [`run`]: the terminal, the keyboard and the daemon requests;
-//! - [`connections`]: the daemon connections those requests share.
+//! - [`connections`]: the daemon connections those requests share;
+//! - [`pager`]: `$PAGER` as a foreground job, which `review` shares.
 
 mod app;
 mod connections;
 mod input;
 mod model;
+pub mod pager;
 mod run;
 mod ui;
 
