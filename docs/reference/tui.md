@@ -84,7 +84,7 @@ If the daemon itself can't be reached, nothing is known about which chats change
 | Key | Action |
 |---|---|
 | `c` | Copy the selected chat's transcript as markdown |
-| `v` | View the selected chat's transcript in `$PAGER` (`less` if unset), with `-R` added. Quitting the pager returns to the TUI |
+| `v` | View the selected chat's transcript in `$PAGER` (`less` if unset), with `-R` added. Control characters other than newlines and tabs are dropped first, as in the preview, so an escape sequence in a chat never reaches the terminal. Quitting the pager returns to the TUI |
 | `o` | Open the selected chat in your browser |
 | `r` | Reload from the local index, for example after `chatgpt classify` in another terminal |
 | `n` | Edit the selected chat's local display title; `enter` saves and `esc` cancels. ChatGPT's own title is unchanged |

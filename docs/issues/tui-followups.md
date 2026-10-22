@@ -10,6 +10,7 @@ Recorded on 2026-10-02 from stage 6a (native `tui` and `review`). None blocks a 
 - ~~**`review` loads one chat at a time.**~~ Fixed: the next chat is fetched on a thread of its own while the current one is on screen. Test: `review_command_cli::the_next_chat_is_fetched_while_this_one_is_read`.
 - ~~**`review`'s verdicts** come from a `List` of every chat.~~ Fixed: `Selection.verdicts` (protocol, additive) makes `Select` return each row with its verdict and topic, as `List` does. Covered by `review_command_cli::anything_but_apply_changes_nothing` (the verdict shows).
 - ~~**The preview wraps the whole transcript.**~~ Fixed: it wraps only as far as it's shown, plus a page. Test: `tui::a_long_transcript_is_wrapped_only_as_far_as_its_shown`.
+- **Ctrl-C that ends the pager also ends the TUI.** Found on 2026-10-22, reviewing PR #23. The TUI ignores SIGINT only while `PAGING` is set (`crates/tui/src/run.rs`, `Signals::watch`), and the signal task reads the flag when it gets to the signal, not when the signal arrived. A pager that exits on SIGINT clears the flag first, so the TUI quits too: 3 of 3 live runs with `PAGER` a `sh` script ending in `exec cat`. `less` traps SIGINT and raw-mode pagers (`moar`, `most`, vim) never raise it, so the default setup is unaffected. Fix: run the pager in its own process group and make it the terminal's foreground group (`tcsetpgrp`, with SIGTTOU blocked while the TUI takes the terminal back), as a shell does, so Ctrl-C never reaches the TUI.
 
 ## Nits
 
