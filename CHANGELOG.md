@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.6](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.5...v0.2.6) (2026-10-22)
+
+
+### Features
+
+* tui pane focus and $PAGER view ([e6867f5](https://github.com/planetaryescape/chatgpt-cli/commit/e6867f5479d3f894954f8de9800d1a2c4d6d03bc))
+
+
+### Bug Fixes
+
+* Ctrl-C in the pager is the pager's alone ([079ef14](https://github.com/planetaryescape/chatgpt-cli/commit/079ef14b4433c3f8820e3e2034cfee42dd15a3bf))
+* the pager never gets a chat's escape sequences ([b96df1e](https://github.com/planetaryescape/chatgpt-cli/commit/b96df1e9c336439ee2354b985fc4efbfe32b0665))
+
+
+### Documentation
+
+* count the codex fallback among the model-path commands ([e8aa3ef](https://github.com/planetaryescape/chatgpt-cli/commit/e8aa3ef9f4c3a2b466d07703b9874edcad8d11d4))
+
 ## [0.2.5](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.4...v0.2.5) (2026-10-22)
 
 
