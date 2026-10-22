@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.4...v0.2.5) (2026-10-22)
+
+
+### Bug Fixes
+
+* classifying a long chat must not pay for the search index ([de9e194](https://github.com/planetaryescape/chatgpt-cli/commit/de9e194e8e0dc4fa0d0e5f45fdc701d91e606137))
+
 ## [0.2.4](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.3...v0.2.4) (2026-10-21)
 
 
