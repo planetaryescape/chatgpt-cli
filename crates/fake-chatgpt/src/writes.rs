@@ -175,10 +175,9 @@ fn apply(state: &mut State, write: Write, request: &Request) -> ResponseTemplate
             ResponseTemplate::new(200).set_body_json(json!({ "items": items, "cursor": cursor }))
         }
         Write::CreateProject => {
-            let name = body(request)["name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
+            let body = body(request);
+            let name = body["name"].as_str().unwrap_or_default().to_owned();
+            state.project_bodies.push(body);
             state.created_projects += 1;
             let id = format!("g-p-new{}", state.created_projects);
             state.projects.push(Project::new(&id, &name));

@@ -168,6 +168,8 @@ pub struct State {
     pub projects: Vec<Project>,
     /// How many projects `POST /backend-api/projects` made.
     pub created_projects: u32,
+    /// The body of every `POST /backend-api/projects`, in order.
+    pub project_bodies: Vec<Value>,
     /// The projects `DELETE /backend-api/gizmos/{id}` deleted, in order.
     pub deleted_projects: Vec<String>,
     /// What the memory summary answers.

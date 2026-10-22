@@ -39,6 +39,16 @@ const OLD_DAY: &str = "2024-02";
 const SIDEBAR: &str =
     "GET /backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0&limit=20&owned_only=false";
 
+/// The request both CLIs make to create a project.
+const CREATE_PROJECT: &str = "POST /backend-api/projects";
+
+/// The request both CLIs make to list the saved memories.
+const MEMORIES: &str = "GET /backend-api/memories?include_memory_entries=true";
+
+/// The request both CLIs make to read the memory summary (a POST).
+const MEMORY_SUMMARY: &str =
+    "POST /backend-api/memories/about_you/summary?source=personalization-setting";
+
 /// The v0.1.5 harness's chat set: enough old chats for a preview's
 /// "… and N more", the four the suggestions select, a long chat and the
 /// awkward ones (a legacy chat, an archived pair, a fresh chat).
@@ -291,6 +301,10 @@ struct Scenario {
     memories_gone: &'static [&'static str],
     /// The manual local titles both indexes must hold.
     local_titles: &'static [(&'static str, &'static str)],
+    /// The names of the projects each CLI must create, in order: each one
+    /// a `POST /backend-api/projects` with ChatGPT's defaults, and a project
+    /// in both fakes. Empty means neither CLI may create one.
+    created: &'static [&'static str],
 }
 
 /// The scenarios, in the order they run. Each one's expectations are the
@@ -311,6 +325,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "--older-than", "1y", "--pinned", "--dry-run"],
@@ -325,6 +340,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["delete", "--title", "^old note 1", "--limit", "3", "-n"],
@@ -339,6 +355,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["unarchive", "--older-than", "1y", "-n"],
@@ -353,6 +370,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["unarchive", "--all", "--title", "archived|fresh", "-n"],
@@ -367,6 +385,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "--brainstorm", "-n"],
@@ -381,6 +400,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // Selection errors: the TS CLI exits 1, the Rust CLI 2.
         Scenario {
@@ -396,6 +416,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "nope", "-y"],
@@ -410,6 +431,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "z-arch0", "-y"],
@@ -424,6 +446,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["unarchive", "f-fresh", "-y"],
@@ -438,6 +461,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "n-0", "-y"],
@@ -452,6 +476,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "--older-than", "3x", "-n"],
@@ -466,6 +491,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["archive", "--suggest", "burn", "-n"],
@@ -480,6 +506,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // The cached verdicts, previewed.
         Scenario {
@@ -495,6 +522,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &[
@@ -516,6 +544,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // The changes.
         Scenario {
@@ -534,6 +563,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["unarchive", "n-02", "-y"],
@@ -548,6 +578,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["delete", "n-05", "n-08", "n-11", "-y"],
@@ -566,6 +597,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &[
@@ -592,6 +624,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["rename", "n-10", "Renamed note"],
@@ -606,6 +639,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // A legacy chat's rename answers 500 and applies: both CLIs report
         // the failure and exit 1, and the title changed.
@@ -623,6 +657,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["title", "n-13", "  A   local title  "],
@@ -637,6 +672,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[("n-13", "A local title")],
+            created: &[],
         },
         Scenario {
             args: &["title", "n-13", " "],
@@ -651,6 +687,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[("n-13", "A local title")],
+            created: &[],
         },
         // The projects.
         Scenario {
@@ -666,6 +703,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &[
@@ -682,6 +720,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // n-01's move answers 500 and applies: both CLIs read the chat back
         // to see it landed, and both moved it.
@@ -703,6 +742,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[("n-01", Some("g-p-ideas")), ("n-14", Some("g-p-ideas"))],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["project", "remove", "g-p-ideas", "n-14", "n-16", "-y"],
@@ -717,6 +757,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[("n-14", None)],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["project", "remove", "Ideas", "n-16", "-y"],
@@ -731,6 +772,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // A read-only project, and an unknown one: the TS CLI exits 1, the
         // Rust CLI 2.
@@ -747,6 +789,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["project", "add", "g-p", "n-16", "-y"],
@@ -761,14 +804,16 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
-        // The memories.
+        // New projects: after every scenario that lists the projects, so
+        // the ones made here change no other scenario's output.
         Scenario {
-            args: &["memory", "delete", "mem-a", "MEM-AAA", "-n"],
+            args: &["project", "create", "  chatgpt-cli test  "],
             ts_code: 0,
             rust_code: 0,
-            stdout: "",
-            writes: &["GET /backend-api/memories?include_memory_entries=true"],
+            stdout: "g-p-new1  chatgpt-cli test\n",
+            writes: &[SIDEBAR, CREATE_PROJECT],
             archived: &[],
             gone: &[],
             renamed: &[],
@@ -776,13 +821,239 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &["chatgpt-cli test"],
+        },
+        // A name that is a project's already, ignoring case, and a blank
+        // one: the TS CLI exits 1, the Rust CLI 2, and neither creates one.
+        Scenario {
+            args: &["project", "create", "WRITING"],
+            ts_code: 1,
+            rust_code: 2,
+            stdout: "",
+            writes: &[SIDEBAR],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["project", "create", " "],
+            ts_code: 1,
+            rust_code: 2,
+            stdout: "",
+            writes: &[],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["project", "create", "Another", "--json"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: "{\n  \"id\": \"g-p-new2\",\n  \"name\": \"Another\",\n  \"canWrite\": true\n}\n",
+            writes: &[SIDEBAR, CREATE_PROJECT],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &["Another"],
+        },
+        // The memories: read before any is deleted, so all three are there.
+        Scenario {
+            args: &["memory", "list"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: concat!(
+                "ID                                    UPDATED      CONTENT\n",
+                "mem-aaa  2026-09-01  Prefers tea, not \"coffee\"\n",
+                "mem-bbb  2026-09-02  y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y ",
+                "y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y…\n",
+                "mem-ccc  2026-09-03  Unconfirmable\n",
+            ),
+            writes: &[MEMORIES],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "list", "--format", "ids"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: "mem-aaa\nmem-bbb\nmem-ccc\n",
+            writes: &[MEMORIES],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "list", "--format", "csv", "--search", "TEA"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: "id,content,updated_at,status,conversation_id\nmem-aaa,\"Prefers tea,\n not \"\"coffee\"\"\",2026-09-01T00:00:00Z,active,\n",
+            writes: &[MEMORIES],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        // As ChatGPT sent it: every field, in its order, the float as is.
+        Scenario {
+            args: &["memory", "list", "--format", "json", "--limit", "1"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: concat!(
+                "[\n  {\n",
+                "    \"id\": \"mem-aaa\",\n",
+                "    \"content\": \"Prefers tea,\\n not \\\"coffee\\\"\",\n",
+                "    \"updated_at\": \"2026-09-01T00:00:00Z\",\n",
+                "    \"status\": \"active\",\n",
+                "    \"conversation_id\": null,\n",
+                "    \"gizmo_id\": null,\n",
+                "    \"created_timestamp\": 1.5,\n",
+                "    \"last_updated\": null,\n",
+                "    \"labels\": null\n",
+                "  }\n]\n",
+            ),
+            writes: &[MEMORIES],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "list", "--format", "ids", "--search", "zzz"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: "",
+            writes: &[MEMORIES],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "list", "--format", "xml"],
+            ts_code: 1,
+            rust_code: 2,
+            stdout: "",
+            writes: &[],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "summary"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: "Work\nBuilds CLIs\n\nHome\nTwo kids\n",
+            writes: &[MEMORY_SUMMARY],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "summary", "--format", "json"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: concat!(
+                "{\n  \"sections\": [\n",
+                "    {\n      \"id\": \"1\",\n      \"title\": \"Work\",\n      \"description\": \"Builds CLIs\"\n    },\n",
+                "    {\n      \"id\": \"2\",\n      \"title\": \"Home\",\n      \"description\": \"Two kids\"\n    }\n",
+                "  ],\n",
+                "  \"generatedAtIso\": \"2026-09-28T00:00:00.000Z\",\n",
+                "  \"emptyStateMessage\": null,\n",
+                "  \"sourceChecksum\": \"c\"\n}\n",
+            ),
+            writes: &[MEMORY_SUMMARY],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "summary", "--format", "xml"],
+            ts_code: 1,
+            rust_code: 2,
+            stdout: "",
+            writes: &[],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
+        },
+        Scenario {
+            args: &["memory", "delete", "mem-a", "MEM-AAA", "-n"],
+            ts_code: 0,
+            rust_code: 0,
+            stdout: "",
+            writes: &[MEMORIES],
+            archived: &[],
+            gone: &[],
+            renamed: &[],
+            index_titles: &[],
+            moved: &[],
+            memories_gone: &[],
+            local_titles: &[],
+            created: &[],
         },
         Scenario {
             args: &["memory", "delete", "mem", "-n"],
             ts_code: 1,
             rust_code: 2,
             stdout: "",
-            writes: &["GET /backend-api/memories?include_memory_entries=true"],
+            writes: &[MEMORIES],
             archived: &[],
             gone: &[],
             renamed: &[],
@@ -790,6 +1061,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &[],
             local_titles: &[],
+            created: &[],
         },
         // mem-ccc's delete is not confirmed: both CLIs report it as failed
         // and exit 1, and both deleted what ChatGPT answered.
@@ -801,7 +1073,7 @@ fn scenarios() -> Vec<Scenario> {
             writes: &[
                 "DELETE /backend-api/memories/mem-aaa",
                 "DELETE /backend-api/memories/mem-ccc",
-                "GET /backend-api/memories?include_memory_entries=true",
+                MEMORIES,
             ],
             archived: &[],
             gone: &[],
@@ -810,6 +1082,7 @@ fn scenarios() -> Vec<Scenario> {
             moved: &[],
             memories_gone: &["mem-aaa", "mem-ccc"],
             local_titles: &[],
+            created: &[],
         },
     ]
 }
@@ -933,6 +1206,8 @@ fn the_whole_write_path_prints_and_writes_as_the_ts_cli_does() {
         let args = scenario.args;
         let rust_seen = writes(env.fake()).len();
         let ts_seen = writes(&ts_fake).len();
+        let rust_bodies_seen = env.fake().state().project_bodies.len();
+        let ts_bodies_seen = ts_fake.state().project_bodies.len();
         let (ts_code, ts_out, ts_err) = ts.run(args);
         let (rust_code, rust_out, rust_err) = rust(&env, args);
         env.wait_for_indexer();
@@ -1083,6 +1358,40 @@ fn the_whole_write_path_prints_and_writes_as_the_ts_cli_does() {
                     local_titles(db).contains(&(id.to_string(), (*title).to_owned())),
                     "{args:?} {side} has no local title for {id}: {:?}",
                     local_titles(db)
+                );
+            }
+        }
+        // The projects created: each one asked for with ChatGPT's defaults
+        // and there in both fakes, and none at all when none is expected.
+        let expected_bodies: Vec<Value> = scenario
+            .created
+            .iter()
+            .map(|name| {
+                json!({ "emoji": null, "instructions": "", "memory_scope": "unset",
+                        "name": name, "theme": null })
+            })
+            .collect();
+        for (side, fake, seen) in [
+            ("Rust fake", env.fake(), rust_bodies_seen),
+            ("TS fake", &ts_fake, ts_bodies_seen),
+        ] {
+            assert_eq!(
+                fake.state().project_bodies[seen..],
+                expected_bodies,
+                "{args:?} {side} was not asked to create the expected projects"
+            );
+        }
+        for name in scenario.created {
+            for (side, fake) in [("Rust fake", env.fake()), ("TS fake", &ts_fake)] {
+                let names: Vec<String> = fake
+                    .state()
+                    .projects
+                    .iter()
+                    .map(|project| project.name.clone())
+                    .collect();
+                assert!(
+                    names.iter().any(|project| project == name),
+                    "{args:?} {side} has no project {name:?}: {names:?}"
                 );
             }
         }
