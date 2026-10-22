@@ -30,12 +30,13 @@ pub fn transcript_chunks(markdown: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     for section in sections {
         let text: Vec<u16> = chatgpt_core::js::trim(section).encode_utf16().collect();
+        let mut boundaries = Boundaries::new(&text);
         let mut start = 0;
         while start < text.len() {
             let mut end = (start + MAX_CHUNK_CHARS).min(text.len());
             if end < text.len() {
-                let boundary =
-                    last_index_of(&text, b'\n', end).max(last_index_of(&text, b' ', end));
+                let (newline, space) = boundaries.at(end);
+                let boundary = newline.max(space);
                 if let Some(at) = boundary.filter(|&at| at > start + MAX_CHUNK_CHARS / 2) {
                     end = at;
                 } else if is_high_surrogate(text[end - 1]) {
@@ -72,12 +73,47 @@ fn is_low_surrogate(unit: u16) -> bool {
     (0xDC00..0xE000).contains(&unit)
 }
 
-/// `text.lastIndexOf(c, from)`: the last `c` at or before `from`.
-fn last_index_of(text: &[u16], c: u8, from: usize) -> Option<usize> {
-    let end = from.min(text.len().saturating_sub(1));
-    text.get(..=end)?
-        .iter()
-        .rposition(|&unit| unit == u16::from(c))
+/// The last line break and the last space at or before a cut.
+///
+/// The cuts move forward, so the text is scanned once and the two are
+/// remembered as the scan passes them. Looking each cut up from the start
+/// of the text again costs the whole text per cut: a 2 MB chat with no
+/// line break in it is 2,779 cuts over three billion comparisons.
+struct Boundaries<'a> {
+    text: &'a [u16],
+    /// How much of the text has been scanned.
+    scanned: usize,
+    newline: Option<usize>,
+    space: Option<usize>,
+}
+
+impl<'a> Boundaries<'a> {
+    fn new(text: &'a [u16]) -> Self {
+        Self {
+            text,
+            scanned: 0,
+            newline: None,
+            space: None,
+        }
+    }
+
+    /// The last line break and the last space at or before `from`, as
+    /// `text.lastIndexOf` finds them. `from` must not go backwards: the
+    /// cut only moves forward.
+    fn at(&mut self, from: usize) -> (Option<usize>, Option<usize>) {
+        let end = from.min(self.text.len().saturating_sub(1));
+        while self.scanned <= end && self.scanned < self.text.len() {
+            let unit = self.text[self.scanned];
+            if unit == u16::from(b'\n') {
+                self.newline = Some(self.scanned);
+            }
+            if unit == u16::from(b' ') {
+                self.space = Some(self.scanned);
+            }
+            self.scanned += 1;
+        }
+        (self.newline, self.space)
+    }
 }
 
 /// `trim()` on a string that may hold half a surrogate pair at either end.
@@ -132,6 +168,26 @@ mod tests {
             .map(String::len)
             .collect();
         assert_eq!(lengths, [800, 800, 260]);
+    }
+
+    /// The cut falls on the later of the last line break and the last
+    /// space, as it always did.
+    #[test]
+    fn the_cut_falls_on_the_later_break_or_space() {
+        let mut text = "x".repeat(300);
+        text.push(' ');
+        text.push_str(&"x".repeat(299));
+        text.push('\n');
+        text.push_str(&"x".repeat(200));
+        let markdown = format!("# T\n\n---\n\n{text}");
+        let chunks = transcript_chunks(&markdown);
+        // The line break at 600 is the later of the two, so the cut is
+        // there.
+        assert!(chunks[0].ends_with(&"x".repeat(299)), "{}", chunks[0]);
+        assert_eq!(chunks[0].matches('\n').count(), 0);
+        assert_eq!(chunks[0].matches(' ').count(), 1);
+        // The next chunk overlaps it by 80 units.
+        assert!(chunks[1].starts_with(&"x".repeat(41)), "{}", chunks[1]);
     }
 
     #[test]

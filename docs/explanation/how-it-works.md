@@ -36,7 +36,7 @@ A ChatGPT conversation is a tree: editing or regenerating a message creates a br
 
 Classification runs in the daemon. `crates/daemon/src/classify/pipeline.rs` runs three steps:
 
-1. **Download.** Transcripts come from `POST /conversations/batch`, 10 per call. Single-chat fetches get rate-limited within minutes; the batch endpoint doesn't at this pace. Each batch is cached as it arrives.
+1. **Download.** Transcripts come from `POST /conversations/batch`, 10 per call. Single-chat fetches get rate-limited within minutes; the batch endpoint doesn't at this pace. Each batch is cached as it arrives, and only as the transcript: the search index's passages are the indexer's work, cut in the background, so a long chat costs a download and nothing more.
 2. **Judge short chats.** Chats up to ~12,000 tokens go to Jev whole, four at a time.
 3. **Summarise and judge long chats.** Longer chats are first summarised by Codex (`gpt-6-luna`), or by `claude -p` with Haiku if Codex fails, then judged from the summary. Summarising beats cutting the transcript short, which would lose how the chat ended. Jev's accuracy also drops as its input grows, which is why the cutoff is well under its 32k-token limit.
 
