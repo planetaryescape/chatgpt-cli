@@ -16,6 +16,9 @@ pub const ANTHROPIC_KEY: &str = "ant-test-key";
 pub struct ModelState {
     /// Every request body, as sent.
     pub bodies: Vec<String>,
+    /// When each of `bodies` arrived, so a test can order requests across
+    /// two fakes.
+    pub arrived: Vec<std::time::Instant>,
     /// Answer every request with this status.
     pub fail: Option<u16>,
 }
@@ -38,6 +41,7 @@ impl Respond for Handler {
         state
             .bodies
             .push(String::from_utf8_lossy(&request.body).into_owned());
+        state.arrived.push(std::time::Instant::now());
         let header = |name: &str| {
             request
                 .headers
