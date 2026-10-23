@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.6...v0.2.7) (2026-10-23)
+
+
+### Features
+
+* support Chromium authentication and Linux x86_64 releases ([6d198cf](https://github.com/planetaryescape/chatgpt-cli/commit/6d198cf31e30d28c1fee067589fa106cb2eceee2))
+
 ## [0.2.6](https://github.com/planetaryescape/chatgpt-cli/compare/v0.2.5...v0.2.6) (2026-10-22)
 
 
