@@ -9,7 +9,7 @@ chatgpt --browser chrome sync
 chatgpt --browser chrome --profile "Profile 1" sync
 ```
 
-Supported browser names are `safari`, `chrome`, `firefox`, `dia`, `arc`, `brave` and `edge`. `--profile` takes a Chromium or Firefox profile directory name. To keep the choice for your shell, set `CHATGPT_BROWSER` and optionally `CHATGPT_BROWSER_PROFILE`; no session token is saved in the CLI config. An index holds one ChatGPT account's chats, and a sync from another account is refused. If you use different accounts, give each one its own instance with `CHATGPT_INSTANCE=<name>`, which has its own daemon and index.
+On macOS, supported browser names are `safari`, `chrome`, `firefox`, `dia`, `arc`, `brave` and `edge`; on Linux, use `chromium`. `--profile` takes a Chromium or Firefox profile directory name. To keep the choice for your shell, set `CHATGPT_BROWSER` and optionally `CHATGPT_BROWSER_PROFILE`; no session token is saved in the CLI config. An index holds one ChatGPT account's chats, and a sync from another account is refused. If you use different accounts, give each one its own instance with `CHATGPT_INSTANCE=<name>`, which has its own daemon and index.
 
 ## Model API keys
 
