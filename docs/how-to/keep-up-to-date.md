@@ -72,6 +72,27 @@ Cost this run:
 
 Prices live in `crates/daemon/src/classify/costs.rs`, with their sources.
 
+## Upgrade the binary with checksum verification
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh
+chatgpt --version
+```
+
+The installer selects Linux x86_64 (glibc), macOS Apple Silicon or macOS Intel from `uname`, downloads the latest release archive and its `.sha256` file, and verifies the checksum before extracting or replacing `~/.local/bin/chatgpt`. It uses `sha256sum` when available, otherwise `shasum -a 256`; installation fails if neither is available. Linux ARM64 and musl archives are not provided.
+
+The Linux CI and release workflows select Ubuntu 22.04 and require its runtime to report glibc 2.35. Check the successful build and smoke-test logs for your version in [CI](https://github.com/planetaryescape/chatgpt-cli/actions/workflows/ci.yml) and [Release Please](https://github.com/planetaryescape/chatgpt-cli/actions/workflows/release-please.yml) before relying on compatibility with your distribution. CI retains its tested Linux debug binary as `linux-x86_64-candidate` for one day for pre-release testing; release archives contain the release build.
+
+To install an archive you've already downloaded, keep its published checksum beside it and choose an installation prefix:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh -o install-chatgpt.sh
+sh install-chatgpt.sh --archive "./chatgpt-v<version>-linux-x86_64.tar.gz" --prefix "$HOME/.local"
+"$HOME/.local/bin/chatgpt" --version
+```
+
+Replace `<version>` with the release number. macOS archives keep the names `chatgpt-v<version>-macos-aarch64.tar.gz` and `chatgpt-v<version>-macos-x86_64.tar.gz`. `--version <version>` or `CHATGPT_VERSION` selects a download version; `--prefix <dir>` or `CHATGPT_INSTALL_PREFIX` changes the default prefix. The installer warns if another `chatgpt` comes earlier on `PATH`. A release stays a draft until all three platform builds have installed and checked their own archives and uploaded them with checksums.
+
 ## After upgrading from 0.2.0
 
 The rendering of canvas edits changed (render version 3: they match by UTF-16 code unit, as JavaScript does), so every cached transcript is out of date. The daemon fetches each chat once more in the background through ChatGPT's batch endpoint, then chunks and embeds it again: about six minutes for 800 chats, plus the embedding. Judgments, titles and summaries are kept. Search keeps answering meanwhile, from the chats already re-fetched; `daemon status` shows the progress. Chunks that could hold invalid text from before 0.1.6 are dropped, and chunks the embedding model fails on are now set aside for a day rather than until the daemon restarts.

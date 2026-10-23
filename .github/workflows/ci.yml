@@ -1,7 +1,6 @@
 # Adapted from ms-todo .github/workflows/ci.yml @ 72a406042a4d46c2f8cc7c3afe6bda12e11f923b
 # (action pins; fmt, clippy and nextest). Changes: the full Rust suite runs on
-# macOS only, because reading browser cookies is macOS-only; Ubuntu builds and
-# tests the platform-free crates.
+# macOS and Linux, including the PTY tests.
 name: CI
 
 on:
@@ -37,13 +36,42 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo nextest run --locked
+      - name: Installer tests
+        run: python3 -m unittest discover -s tests -p test_install.py -v
 
   rust-linux:
-    name: Rust (Ubuntu, platform-free crates)
-    runs-on: ubuntu-latest
+    name: Rust (Linux x86_64, glibc 2.35)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Build and test core and protocol
-        run: cargo test --locked -p chatgpt-core -p chatgpt-protocol
+      - uses: taiki-e/install-action@23c1afe4238f0421bd35351b5c0a6d40ceef5283 # nextest
+      - name: Verify Linux build baseline
+        run: |
+          test "$(uname -m)" = x86_64
+          getconf GNU_LIBC_VERSION
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          rustc --version --verbose
+          ldd --version
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build linked binary
+        run: cargo build --locked --bin chatgpt
+      - name: Smoke test linked binary
+        run: |
+          target/debug/chatgpt --version
+          ldd target/debug/chatgpt
+      - name: Tests
+        run: cargo nextest run --locked
+      - name: Installer tests
+        run: python3 -m unittest discover -s tests -p test_install.py -v
+      - name: Upload Linux candidate for pre-release smoke
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-x86_64-candidate
+          path: target/debug/chatgpt
+          retention-days: 1
+          if-no-files-found: error

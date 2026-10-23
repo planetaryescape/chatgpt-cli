@@ -1,7 +1,7 @@
 #!/bin/sh
 # Adapted from ms-todo install.sh @ 72a406042a4d46c2f8cc7c3afe6bda12e11f923b
 # (POSIX sh, so `curl -fsSL .../install.sh | sh` works where sh is dash;
-# sha256 checked before anything is installed). Changes: macOS only, a
+# sha256 checked before anything is installed). Changes: platform selection, a
 # --prefix, a local --archive, and a warning when another `chatgpt` earlier
 # on PATH would run instead (the retired TS CLI's `bun link` left one in
 # ~/.bun/bin).
@@ -16,12 +16,12 @@ usage() {
   cat <<'EOF'
 usage: install.sh [--version <version>] [--prefix <dir>] [--archive <file>]
 
-Installs the chatgpt release archive for this Mac into <prefix>/bin, after
+Installs the chatgpt release archive for this OS into <prefix>/bin, after
 checking it against the .sha256 file published with it.
 
   --version <v>     Release version, e.g. v0.1.0. Defaults to the latest.
   --prefix <dir>    Install into <dir>/bin. Defaults to ~/.local.
-  --archive <file>  Install a local chatgpt-v<ver>-macos-<arch>.tar.gz
+  --archive <file>  Install a local chatgpt-v<ver>-<os>-<arch>.tar.gz
                     (with <file>.sha256 beside it) instead of downloading.
 
 Environment: CHATGPT_VERSION, CHATGPT_INSTALL_PREFIX.
@@ -65,13 +65,23 @@ need() {
 }
 
 need tar
-need shasum
+if command -v sha256sum >/dev/null 2>&1; then
+  checksum="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  checksum="shasum"
+else
+  echo "sha256sum or shasum is required to verify the archive" >&2
+  exit 69
+fi
 
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) arch="aarch64" ;;
-  Darwin:x86_64) arch="x86_64" ;;
+os="$(uname -s)"
+machine="$(uname -m)"
+case "$os:$machine" in
+  Darwin:arm64) platform="macos"; arch="aarch64" ;;
+  Darwin:x86_64) platform="macos"; arch="x86_64" ;;
+  Linux:x86_64) platform="linux"; arch="x86_64" ;;
   *)
-    echo "no prebuilt chatgpt for $(uname -s) $(uname -m): it reads browser cookies on macOS only" >&2
+    echo "no prebuilt chatgpt for $os $machine: supported platforms are macOS arm64/x86_64 and Linux x86_64 (glibc)" >&2
     exit 69
     ;;
 esac
@@ -80,6 +90,10 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
 if [ -n "$archive_file" ]; then
+  case "$archive_file" in
+    /*) ;;
+    *) archive_file="$PWD/$archive_file" ;;
+  esac
   [ -f "$archive_file" ] || { echo "no archive at $archive_file" >&2; exit 66; }
   [ -f "$archive_file.sha256" ] || { echo "no checksum at $archive_file.sha256" >&2; exit 66; }
   archive="$(basename "$archive_file")"
@@ -99,13 +113,40 @@ else
     esac
   fi
   tag="v${version#v}"
-  archive="chatgpt-${tag}-macos-${arch}.tar.gz"
+  archive="chatgpt-${tag}-${platform}-${arch}.tar.gz"
   base_url="https://github.com/$repo/releases/download/$tag"
   curl -fL --proto '=https' --tlsv1.2 -o "$tmpdir/$archive" "$base_url/$archive"
   curl -fL --proto '=https' --tlsv1.2 -o "$tmpdir/$archive.sha256" "$base_url/$archive.sha256"
 fi
 
-(cd "$tmpdir" && shasum -a 256 -c "$archive.sha256")
+# Some sha256sum implementations accept an empty manifest as success. Require
+# a digest for this archive before asking the checker to verify its contents.
+digest=""
+checksum_archive=""
+read -r digest checksum_archive < "$tmpdir/$archive.sha256" || true
+case "$digest" in
+  *[!0-9a-fA-F]*|"")
+    echo "invalid SHA-256 checksum for $archive" >&2
+    exit 65
+    ;;
+esac
+if [ "${#digest}" -ne 64 ]; then
+  echo "invalid SHA-256 checksum for $archive" >&2
+  exit 65
+fi
+case "$checksum_archive" in
+  "$archive"|"./$archive"|"*$archive"|"*./$archive") ;;
+  *)
+    echo "the checksum does not name $archive" >&2
+    exit 65
+    ;;
+esac
+
+if [ "$checksum" = "sha256sum" ]; then
+  (cd "$tmpdir" && sha256sum -c "./$archive.sha256")
+else
+  (cd "$tmpdir" && shasum -a 256 -c "./$archive.sha256")
+fi
 
 mkdir -p "$tmpdir/unpacked"
 tar -xzf "$tmpdir/$archive" -C "$tmpdir/unpacked"
@@ -114,6 +155,10 @@ if [ ! -x "$tmpdir/unpacked/chatgpt" ]; then
   exit 65
 fi
 
+case "$prefix" in
+  /*) ;;
+  *) prefix="$PWD/$prefix" ;;
+esac
 bin_dir="$prefix/bin"
 mkdir -p "$bin_dir"
 install -m 0755 "$tmpdir/unpacked/chatgpt" "$bin_dir/chatgpt"
