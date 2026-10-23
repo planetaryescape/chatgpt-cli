@@ -304,6 +304,74 @@ fn add_local_titles(db: &Connection) {
 /// comparing, for an intended change: review the diff before committing.
 const UPDATE_ENV: &str = "CHATGPT_UPDATE_GOLDEN";
 
+/// SQLite's BM25 uses the platform's C `log`, whose last bits can differ.
+/// Replace only score tokens; every other byte, including rank order, must match.
+fn same_lexical_scores(actual: &str, expected: &str, format: &str) -> bool {
+    let pattern = match format {
+        "json" => r#"(?m)^(    "score": )(-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)(,)"#,
+        // Four CSV fields precede the score. Quoted fields may contain commas,
+        // doubled quotes and newlines; their bytes remain in the comparison.
+        "csv" => {
+            r#"(?m)^((?:(?:"(?:[^"]|"")*"|[^,"\r\n]*),){4}")(-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)(",)"#
+        }
+        _ => return actual == expected,
+    };
+    let pattern = regex::Regex::new(pattern).unwrap();
+    let scores: Vec<_> = pattern.captures_iter(expected).collect();
+    let actual_scores: Vec<_> = pattern.captures_iter(actual).collect();
+    if scores.len() != actual_scores.len() {
+        return false;
+    }
+    for (actual, expected) in actual_scores.iter().zip(&scores) {
+        let actual: f64 = actual[2].parse().unwrap();
+        let expected: f64 = expected[2].parse().unwrap();
+        if !actual.is_finite()
+            || !expected.is_finite()
+            || actual.to_bits().abs_diff(expected.to_bits()) > 4
+        {
+            return false;
+        }
+    }
+    let mut scores = scores.iter();
+    let normalized = pattern.replace_all(actual, |found: &regex::Captures<'_>| {
+        format!("{}{}{}", &found[1], &scores.next().unwrap()[2], &found[3])
+    });
+    normalized == expected
+}
+
+#[test]
+fn lexical_score_roundoff_keeps_every_other_byte_and_rejects_real_score_changes() {
+    for (format, expected) in [
+        (
+            "json",
+            "[\n  {\n    \"id\": \"one\",\n    \"score\": 1.3168644178541482,\n    \"snippet\": \"unchanged\"\n  }\n]\n",
+        ),
+        (
+            "csv",
+            "\"id\",\"title\",\"updated\",\"archived\",\"score\",\"snippet\"\n\"one\",\"Title,\n\"\"quoted\"\"\",\"date\",\"false\",\"1.3168644178541482\",\"unchanged\"\n",
+        ),
+    ] {
+        let roundoff = expected.replace("1.3168644178541482", "1.3168644178541484");
+        assert_ne!(roundoff, expected);
+        assert!(same_lexical_scores(&roundoff, expected, format));
+        for changed in [
+            roundoff.replace("unchanged", "different"),
+            roundoff.replace("one", "two"),
+            expected.replace("1.3168644178541482", "1.31686441785415"),
+            format!("{roundoff}\n"),
+            String::new(),
+        ] {
+            assert!(
+                !same_lexical_scores(&changed, expected, format),
+                "{changed}"
+            );
+        }
+    }
+    let first = "    \"score\": 1.0,\n    \"score\": 2.0,\n";
+    let reversed = "    \"score\": 2.0,\n    \"score\": 1.0,\n";
+    assert!(!same_lexical_scores(reversed, first, "json"));
+}
+
 /// Run every command in `golden/<name>.jsonl` and compare. Returns how
 /// many it compared.
 fn replay(env: &Env, name: &str) -> usize {
@@ -355,7 +423,17 @@ fn replay(env: &Env, name: &str) -> usize {
                 output.status
             );
             if let Some(expected) = entry["stdout"].as_str() {
-                assert_eq!(stdout, expected, "{args:?}");
+                let format = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "--format")
+                    .map(|pair| pair[1].as_str())
+                    .unwrap_or("table");
+                let linux_lexical = cfg!(target_os = "linux")
+                    && name == "export_search"
+                    && args.first().is_some_and(|arg| arg == "search");
+                if !linux_lexical || !same_lexical_scores(&stdout, expected, format) {
+                    assert_eq!(stdout, expected, "{args:?}");
+                }
             }
             if let Some(expected) = entry["stderr"].as_str() {
                 assert_eq!(stderr, expected, "{args:?} stderr");
