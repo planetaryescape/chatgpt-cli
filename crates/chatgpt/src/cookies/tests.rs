@@ -11,6 +11,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 use super::chromium::{decrypt_chromium_cookie, derive_chromium_key};
+use super::platform::default_browser_from_plist;
 use super::safari::parse_safari_cookies;
 use super::*;
 
@@ -126,7 +127,14 @@ fn session_for(
     home: &Path,
     preferred: Option<Browser>,
 ) -> Result<BrowserSession, CookieError> {
-    read_browser_session_with(&selection, home, preferred, &test_password)
+    read_browser_session_with(
+        &selection,
+        home,
+        preferred,
+        Platform::MacOs,
+        None,
+        &test_password,
+    )
 }
 
 fn chrome(profile: Option<&str>) -> BrowserSelection {
@@ -215,7 +223,7 @@ fn decrypts_chrome_session_cookies_and_ignores_lookalike_domains() {
     let cookies = read_chromium_cookies(
         &root,
         "Default",
-        "Chrome Safe Storage",
+        Encryption::MacOs("Chrome Safe Storage"),
         CHATGPT_HOST,
         &test_password,
     )
@@ -259,7 +267,7 @@ fn skips_the_keychain_when_a_profile_has_no_session() {
     let cookies = read_chromium_cookies(
         &root,
         "Default",
-        "Chrome Safe Storage",
+        Encryption::MacOs("Chrome Safe Storage"),
         "other.example",
         &no_keychain,
     )
@@ -286,7 +294,7 @@ fn reads_a_browser_login_still_in_sqlites_write_ahead_log() {
     let cookies = read_chromium_cookies(
         &root,
         "Default",
-        "Chrome Safe Storage",
+        Encryption::MacOs("Chrome Safe Storage"),
         CHATGPT_HOST,
         &no_keychain,
     )
@@ -307,7 +315,7 @@ fn drops_expired_chromium_cookies() {
     let cookies = read_chromium_cookies(
         &root,
         "Default",
-        "Chrome Safe Storage",
+        Encryption::MacOs("Chrome Safe Storage"),
         CHATGPT_HOST,
         &no_keychain,
     )
@@ -512,7 +520,10 @@ fn validates_the_selection() {
         session_for(unknown, home.path(), None)
             .unwrap_err()
             .to_string(),
-        "Unsupported browser \"netscape\". Choose dia, chrome, safari, firefox, arc, brave, edge."
+        format!(
+            "Unsupported browser \"netscape\". Choose {}.",
+            browser_list()
+        )
     );
     assert!(matches!(
         session_for(BrowserSelection::default(), home.path(), None),

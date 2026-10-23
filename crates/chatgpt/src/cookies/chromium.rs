@@ -1,4 +1,4 @@
-//! Chromium cookie stores (Dia, Chrome, Arc, Brave, Edge).
+//! Chromium cookie stores (macOS browsers and Linux Chromium).
 //!
 //! Ported from the TS CLI's `src/auth/chromium-cookies.ts` and the profile
 //! ordering in `browser-cookies.ts` @ 1b8c950.
@@ -115,6 +115,12 @@ fn is_numbered_profile(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Encryption<'a> {
+    MacOs(&'a str),
+    Linux,
+}
+
 /// Reads unexpired cookies for `host` and `.host` from one profile.
 ///
 /// It returns nothing, without touching the Keychain, unless the profile has a
@@ -122,7 +128,7 @@ fn is_numbered_profile(name: &str) -> bool {
 pub(crate) fn read_chromium_cookies(
     user_data: &Path,
     profile: &str,
-    keychain_service: &str,
+    encryption: Encryption<'_>,
     host: &str,
     read_password: &dyn Fn(&str) -> Result<String, CookieError>,
 ) -> Result<Vec<BrowserCookie>, CookieError> {
@@ -168,16 +174,27 @@ pub(crate) fn read_chromium_cookies(
         return Ok(Vec::new());
     }
     let mut key = None;
+    let mut linux = super::linux::Decryptor::default();
     rows.into_iter()
         .map(|row| {
-            let value = if !row.value.is_empty() {
-                row.value
-            } else {
-                let key = match key {
-                    Some(key) => key,
-                    None => *key.insert(derive_chromium_key(&read_password(keychain_service)?)),
-                };
-                decrypt_chromium_cookie(&row.encrypted, &key, schema >= 24)?
+            let value = match encryption {
+                Encryption::Linux if !row.value.is_empty() && !row.encrypted.is_empty() => {
+                    return Err(CookieError::Decrypt(
+                        "cookie has both plaintext and encrypted values",
+                    ));
+                }
+                Encryption::Linux if row.encrypted.is_empty() => row.value,
+                Encryption::Linux => {
+                    linux.decrypt(&row.encrypted, &row.domain, schema >= 24, read_password)?
+                }
+                Encryption::MacOs(_) if !row.value.is_empty() => row.value,
+                Encryption::MacOs(service) => {
+                    let key = match key {
+                        Some(key) => key,
+                        None => *key.insert(derive_chromium_key(&read_password(service)?)),
+                    };
+                    decrypt_chromium_cookie(&row.encrypted, &key, schema >= 24)?
+                }
             };
             Ok(BrowserCookie {
                 name: row.name,

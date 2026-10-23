@@ -1,9 +1,11 @@
-//! Reads the chatgpt.com session cookie from the user's macOS browser.
+//! Reads the chatgpt.com session cookie from a supported local browser.
 //!
 //! Ported from the TS CLI's `src/auth/browser-cookies.ts` @ 1b8c950.
 
 mod chromium;
 mod firefox;
+mod linux;
+mod platform;
 mod safari;
 
 use std::fmt;
@@ -15,8 +17,11 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::http::Secret;
 
-use chromium::{ChromiumBrowser, chromium_profiles, keychain_password, read_chromium_cookies};
+use chromium::{
+    ChromiumBrowser, Encryption, chromium_profiles, keychain_password, read_chromium_cookies,
+};
 use firefox::{firefox_profiles, read_firefox_cookies};
+use platform::Platform;
 use safari::read_safari_cookies;
 
 pub const CHATGPT_HOST: &str = "chatgpt.com";
@@ -48,18 +53,16 @@ pub enum Browser {
     Arc,
     Brave,
     Edge,
+    Chromium,
 }
 
 impl Browser {
-    pub const ALL: [Browser; 7] = [
-        Browser::Dia,
-        Browser::Chrome,
-        Browser::Safari,
-        Browser::Firefox,
-        Browser::Arc,
-        Browser::Brave,
-        Browser::Edge,
-    ];
+    #[cfg(target_os = "macos")]
+    pub const ALL: [Browser; 7] = platform::MACOS_BROWSERS;
+    #[cfg(target_os = "linux")]
+    pub const ALL: [Browser; 1] = platform::LINUX_BROWSERS;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    pub const ALL: [Browser; 0] = [];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -70,6 +73,7 @@ impl Browser {
             Browser::Arc => "arc",
             Browser::Brave => "brave",
             Browser::Edge => "edge",
+            Browser::Chromium => "chromium",
         }
     }
 
@@ -93,6 +97,7 @@ impl Browser {
             Browser::Arc => ("Arc/User Data", "Arc Safe Storage"),
             Browser::Brave => ("BraveSoftware/Brave-Browser", "Brave Safe Storage"),
             Browser::Edge => ("Microsoft Edge", "Microsoft Edge Safe Storage"),
+            Browser::Chromium => ("chromium", ""),
             Browser::Safari | Browser::Firefox => return None,
         };
         Some(ChromiumBrowser {
@@ -112,10 +117,7 @@ impl FromStr for Browser {
     type Err = CookieError;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        Browser::ALL
-            .into_iter()
-            .find(|browser| browser.name() == name)
-            .ok_or_else(|| CookieError::UnsupportedBrowser(name.to_owned()))
+        Platform::current().select(name)
     }
 }
 
@@ -123,16 +125,32 @@ fn browser_list() -> String {
     Browser::ALL.map(Browser::name).join(", ")
 }
 
+fn no_default_browser_message() -> String {
+    if Platform::current() == Platform::MacOs {
+        format!(
+            "Could not identify your macOS default browser. Choose one with --browser: {}.",
+            browser_list()
+        )
+    } else {
+        "Could not identify a supported default browser. Use --browser chromium on Linux."
+            .to_owned()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CookieError {
-    #[error("Browser session reading currently supports macOS only.")]
+    #[error("Browser session reading supports macOS and Linux (Chromium only).")]
     UnsupportedPlatform,
     #[error("--profile requires --browser (or CHATGPT_BROWSER).")]
     ProfileWithoutBrowser,
     #[error("Unsupported browser \"{0}\". Choose {list}.", list = browser_list())]
     UnsupportedBrowser(String),
-    #[error("Could not identify your macOS default browser. Choose one with --browser: {list}.", list = browser_list())]
+    #[error("{message}", message = no_default_browser_message())]
     NoDefaultBrowser,
+    #[error(
+        "Could not read Chromium Safe Storage with secret-tool: {0}. Run from your desktop session with its Secret Service keyring unlocked; install secret-tool if missing."
+    )]
+    SecretService(&'static str),
     #[error("Safari does not have selectable cookie profiles.")]
     SafariProfile,
     #[error("Profile \"{profile}\" was not found in {browser}. Available profiles: {available}.")]
@@ -317,44 +335,13 @@ fn unix_now() -> Duration {
         .unwrap_or_default()
 }
 
-const LAUNCH_SERVICES_PLIST: &str =
-    "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist";
-
-/// The macOS default browser: the https handler with the newest modification date.
+/// The supported browser registered as the system HTTPS handler.
 pub fn default_browser(home: &Path) -> Option<Browser> {
-    if !cfg!(target_os = "macos") {
-        return None;
+    match Platform::current() {
+        Platform::MacOs => platform::macos_default_browser(home),
+        Platform::Linux => linux::default_browser(),
+        Platform::Unsupported => None,
     }
-    let plist = plist::Value::from_file(home.join(LAUNCH_SERVICES_PLIST)).ok()?;
-    default_browser_from_plist(&plist)
-}
-
-fn default_browser_from_plist(plist: &plist::Value) -> Option<Browser> {
-    let handlers = plist.as_dictionary()?.get("LSHandlers")?.as_array()?;
-    let modified = |handler: &plist::Dictionary| {
-        handler
-            .get("LSHandlerModificationDate")
-            .and_then(|date| {
-                date.as_real()
-                    .or_else(|| date.as_signed_integer().map(|n| n as f64))
-            })
-            .unwrap_or(0.0)
-    };
-    handlers
-        .iter()
-        .filter_map(plist::Value::as_dictionary)
-        .filter(|handler| {
-            handler
-                .get("LSHandlerURLScheme")
-                .and_then(plist::Value::as_string)
-                == Some("https")
-        })
-        // max_by keeps the last of equal maxima; reversing keeps the first,
-        // matching the TS stable sort when dates tie or are missing.
-        .rev()
-        .max_by(|a, b| modified(a).total_cmp(&modified(b)))
-        .and_then(|handler| handler.get("LSHandlerRoleAll")?.as_string())
-        .and_then(Browser::for_bundle_id)
 }
 
 /// Reads the session from the requested browser, or the default one.
@@ -365,16 +352,31 @@ pub fn read_browser_session(
     home: &Path,
     preferred: Option<Browser>,
 ) -> Result<BrowserSession, CookieError> {
-    if !cfg!(target_os = "macos") {
+    if Platform::current() == Platform::Unsupported {
         return Err(CookieError::UnsupportedPlatform);
     }
-    read_browser_session_with(selection, home, preferred, &keychain_password)
+    let config_home = std::env::var_os("XDG_CONFIG_HOME");
+    let read_password = if Platform::current() == Platform::Linux {
+        &linux::keyring_password as &dyn Fn(&str) -> Result<String, CookieError>
+    } else {
+        &keychain_password
+    };
+    read_browser_session_with(
+        selection,
+        home,
+        preferred,
+        Platform::current(),
+        config_home.as_deref().map(Path::new),
+        read_password,
+    )
 }
 
 fn read_browser_session_with(
     selection: &BrowserSelection,
     home: &Path,
     preferred: Option<Browser>,
+    platform: Platform,
+    config_home: Option<&Path>,
     read_password: &dyn Fn(&str) -> Result<String, CookieError>,
 ) -> Result<BrowserSession, CookieError> {
     let profile = selection.profile.clone();
@@ -382,17 +384,27 @@ fn read_browser_session_with(
         return Err(CookieError::ProfileWithoutBrowser);
     }
     let browser = match &selection.browser {
-        Some(name) => name.parse()?,
+        Some(name) => platform.select(name)?,
         None => preferred.ok_or(CookieError::NoDefaultBrowser)?,
     };
-    read_from_browser(browser, profile.as_deref(), home, read_password)?
-        .ok_or(CookieError::NoSession { browser, profile })
+    platform.select(browser.name())?;
+    read_from_browser(
+        browser,
+        profile.as_deref(),
+        home,
+        platform,
+        config_home,
+        read_password,
+    )?
+    .ok_or(CookieError::NoSession { browser, profile })
 }
 
 fn read_from_browser(
     browser: Browser,
     profile: Option<&str>,
     home: &Path,
+    platform: Platform,
+    config_home: Option<&Path>,
     read_password: &dyn Fn(&str) -> Result<String, CookieError>,
 ) -> Result<Option<BrowserSession>, CookieError> {
     if browser == Browser::Safari {
@@ -408,6 +420,7 @@ fn read_from_browser(
     }
     let chromium = browser.chromium();
     let root = match &chromium {
+        _ if platform == Platform::Linux => platform::linux_root(home, config_home),
         Some(chromium) => home
             .join("Library/Application Support")
             .join(chromium.directory),
@@ -437,7 +450,11 @@ fn read_from_browser(
             Some(chromium) => read_chromium_cookies(
                 &root,
                 &candidate,
-                chromium.keychain_service,
+                if platform == Platform::Linux {
+                    Encryption::Linux
+                } else {
+                    Encryption::MacOs(chromium.keychain_service)
+                },
                 CHATGPT_HOST,
                 read_password,
             )?,

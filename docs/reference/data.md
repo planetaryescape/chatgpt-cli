@@ -49,9 +49,9 @@ sqlite3 ~/Library/Application\ Support/chatgpt-cli/chatgpt.db "select model, cou
 | `TYPESAFE_API_KEY` | Jev, during `classify` and `--check` (the background Jev uses only the configured key) | configured `jev` key; otherwise required |
 | `OPENAI_API_KEY` | Luna review, local titles, and first summary provider | configured key, then Codex CLI if absent |
 | `ANTHROPIC_API_KEY` | summary fallback | configured key, then Claude CLI if absent |
-| `CHATGPT_BROWSER` | select a browser session (`dia`, `chrome`, `safari`, `firefox`, `arc`, `brave`, `edge`) | macOS default browser |
+| `CHATGPT_BROWSER` | select a browser session (Linux: `chromium`; macOS: `dia`, `chrome`, `safari`, `firefox`, `arc`, `brave`, `edge`) | system HTTPS default browser, if supported |
 | `CHATGPT_BROWSER_PROFILE` | select a Chromium or Firefox profile directory | browser's last used or first session profile |
-| `XDG_CONFIG_HOME` | where `config.json` lives | `~/.config` |
+| `XDG_CONFIG_HOME` | where `config.json` lives; also the Linux Chromium profile root (absolute paths only for Chromium) | `~/.config` |
 | `CHATGPT_INSTANCE` | another daemon and index, `chatgpt-cli-<name>` (one account per instance) | the installed instance |
 | `CHATGPT_LOG` | the daemon's log filter (`RUST_LOG` syntax) | `info` |
 | `XDG_CACHE_HOME` | where the embedding model is cached | `~/.cache` |
@@ -61,13 +61,25 @@ sqlite3 ~/Library/Application\ Support/chatgpt-cli/chatgpt.db "select model, cou
 
 | Credential | Source | Needed by |
 |---|---|---|
-| ChatGPT session | Local browser cookie store; Chromium cookies are decrypted with that browser's macOS Keychain item, Firefox cookies are in `cookies.sqlite`, and Safari cookies are in `Cookies.binarycookies` | every command that talks to ChatGPT |
+| ChatGPT session | Local browser cookie store; macOS Chromium browsers use their Keychain item, Linux Chromium uses the existing Secret Service secret, Firefox uses `cookies.sqlite`, and Safari uses `Cookies.binarycookies` | every command that talks to ChatGPT |
 | ChatGPT access token | exchanged from the session at `/api/auth/session` by the daemon, kept in its memory only, and exchanged again when ChatGPT rejects it | same |
 | TypeSafe key | `TYPESAFE_API_KEY` or configured `jev` key | chat and memory classification, `--check` |
 | OpenAI key or Codex login | `OPENAI_API_KEY`, configured `openai` key, then existing `codex` login | summarising long chats, Luna review and local titles |
 | Anthropic key or Claude login | `ANTHROPIC_API_KEY`, configured `anthropic` key, then existing `claude` login | summary fallback |
 
 `chatgpt configure` writes only the API keys you enter to `config.json` with mode `0600`. The daemon reads the ChatGPT session from the selected browser once, and again when ChatGPT rejects its token; logging out there also logs `chatgpt` out. The selected browser is not saved in `config.json`.
+
+### Linux Chromium uses your desktop keyring
+
+Select an existing Chromium session with `chatgpt --browser chromium --profile Default sync`. Linux reads profiles under `$XDG_CONFIG_HOME/chromium`, or `~/.config/chromium` when `XDG_CONFIG_HOME` is unset, empty or relative. Profile order is the last-used profile in `Local State`, then `Default`, then the remaining `Profile N` directories alphabetically. An explicit profile is read alone. A missing session never causes a switch to another browser.
+
+Default-browser detection requires `xdg-mime query default x-scheme-handler/https` to return `chromium.desktop` or `chromium-browser.desktop`. An unsupported handler requires `--browser chromium`; desktop files and their `Exec` fields are not executed.
+
+For encrypted `v11` cookies, install `secret-tool` (usually supplied by `libsecret`) and run from your desktop session with its Secret Service keyring unlocked. `chatgpt` runs only `secret-tool lookup application chromium`, captures its output privately, and stops the lookup after 30 seconds. It never creates or replaces a secret. If the lookup fails or times out, the error gives keyring guidance without including the child command's output. Check that the tool, desktop session bus and unlocked keyring are available.
+
+Linux `v10` cookies use Chromium's legacy key only when their prefix is `v10`; a failed `v11` lookup never falls back to that key. Encrypted cookies in schema 24 and newer must match their host hash. Cookie databases are opened read-only, including pending WAL changes. Profiles without an unexpired session cookie do not trigger a keyring lookup.
+
+Linux support covers a native Chromium profile and Secret Service. Other Linux browsers, KWallet and sandboxed browser packages are outside this release's scope.
 
 ## What goes where
 
