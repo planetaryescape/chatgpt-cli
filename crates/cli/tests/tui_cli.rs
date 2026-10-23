@@ -83,12 +83,17 @@ fn browse_filter_preview_copy_mark_and_quit_without_applying() {
     assert_eq!(cached, 1);
 
     pty.send("c");
-    pty.wait_for_screen("Copied \"Two\" (0 KB).");
-    assert!(
-        std::fs::read_to_string(&pbcopy)
-            .unwrap()
-            .starts_with("args:\n# Two\n\nhttps://chatgpt.com/c/b-two")
-    );
+    if cfg!(target_os = "macos") {
+        pty.wait_for_screen("Copied \"Two\" (0 KB).");
+        assert!(
+            std::fs::read_to_string(&pbcopy)
+                .unwrap()
+                .starts_with("args:\n# Two\n\nhttps://chatgpt.com/c/b-two")
+        );
+    } else {
+        pty.wait_for_screen("--copy uses pbcopy and only works on macOS.");
+        assert!(!pbcopy.exists(), "an unsupported copy invoked pbcopy");
+    }
 
     pty.send("ka");
     pty.wait_for_screen("marked: 0 delete, 1 archive (x to apply)");

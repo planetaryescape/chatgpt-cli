@@ -2,11 +2,11 @@
 
 > **Unofficial API disclaimer:** This CLI uses private ChatGPT web app APIs discovered by reverse engineering. It works with the current web app as of 28 September 2026, but OpenAI can change those APIs without notice. There is no guarantee it will keep working. This project is not affiliated with or endorsed by OpenAI. Contributions that help keep it working are welcome.
 
-Search, export and manage your ChatGPT history from the terminal. `chatgpt` uses your existing browser session on macOS, keeps a local SQLite index, and offers a terminal UI for reviewing conversations. Search can use full text, a local embedding model, or both. Optional Jev and Luna classification suggests what to keep, archive or delete.
+Search, export and manage your ChatGPT history from the terminal. `chatgpt` uses your existing browser session on macOS or Linux, keeps a local SQLite index, and offers a terminal UI for reviewing conversations. Search can use full text, a local embedding model, or both. Optional Jev and Luna classification suggests what to keep, archive or delete.
 
 ## Quick start
 
-You need macOS and a browser logged in to [chatgpt.com](https://chatgpt.com). Supported browsers are Safari, Chrome, Firefox, Dia, Arc, Brave and Edge. Install the latest release into `~/.local/bin`:
+You need macOS or Linux x86_64 with glibc 2.35 or newer, and a supported browser logged in to [chatgpt.com](https://chatgpt.com) on that machine. macOS supports Safari, Chrome, Firefox, Dia, Arc, Brave and Edge. Linux supports native Chromium with a Secret Service keyring. Install the latest release into `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/planetaryescape/chatgpt-cli/main/install.sh | sh
@@ -16,9 +16,18 @@ chatgpt list --limit 10
 
 The installer checks the release's SHA-256 before installing, and warns when another `chatgpt` comes earlier on your PATH. To pick a release or a place, pipe into `sh -s -- --version v0.1.5 --prefix <dir>` (installs into `<dir>/bin`).
 
-The CLI uses your macOS default browser. To choose another browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync`. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
+The CLI uses the system's HTTPS default browser when supported. To choose a browser or profile, put the flags before the command: `chatgpt --browser chrome --profile "Profile 1" sync` on macOS, or `chatgpt --browser chromium --profile Default sync` on Linux. `CHATGPT_BROWSER` and `CHATGPT_BROWSER_PROFILE` also work. On macOS, Chromium browsers may ask for access to their **Safe Storage** Keychain item; Safari may need Full Disk Access for your terminal. Commands operate on active chats by default. Add `--archived` or `--all` when you intend to include archived chats.
 
-Every command talks to a background daemon, which the first command starts. It reads your browser session once and keeps the token in memory (no Keychain prompt per command), keeps the local index, the search index and its embeddings fresh, and judges new chats with Jev once you configure a Jev key. `list` and `search` answer from the index without touching the network. `chatgpt daemon status` shows what it's doing, and `chatgpt daemon install` starts it at login. See [how it works](docs/explanation/rust-daemon.md).
+On Linux, install `secret-tool` and `xdg-mime` using your distribution's package manager, and keep your desktop keyring unlocked. Sign in to ChatGPT in Chromium through a local or remote desktop; there is no terminal-only login flow. A headless machine still needs that initial browser session and access to its user's Secret Service. Check the required tools, then sync:
+
+```sh
+command -v chromium secret-tool xdg-mime
+chatgpt --browser chromium sync
+```
+
+Other Linux browsers, KWallet, sandboxed browser packages and Linux ARM64 are outside this release's scope. Clipboard copying, desktop link opening and login startup are supported on macOS; Linux login startup with systemd is not implemented.
+
+Every command talks to a background daemon, which the first command starts. It reads your browser session once and keeps the token in memory, keeps the local index, the search index and its embeddings fresh, and judges new chats with Jev once you configure a Jev key. `list` and `search` answer from the index without touching the network. `chatgpt daemon status` shows what it's doing; on macOS, `chatgpt daemon install` writes its login-startup configuration. See [how it works](docs/explanation/rust-daemon.md).
 
 ## What you can do
 
@@ -56,7 +65,7 @@ Suggestions are advisory. The dry runs show the selected chats before anything c
 
 ## Data and privacy
 
-The CLI reads the ChatGPT session from your browser and exchanges it for an access token in memory. The daemon stores the conversation index, cached transcripts, judgments and search vectors in `~/Library/Application Support/chatgpt-cli/chatgpt.db`; optional model keys live in `~/.config/chatgpt-cli/config.json`. Neither location belongs in Git.
+The CLI reads the ChatGPT session from your browser and exchanges it for an access token in memory. The daemon stores the conversation index, cached transcripts, judgments and search vectors in `~/Library/Application Support/chatgpt-cli/chatgpt.db` on macOS, or `$XDG_DATA_HOME/chatgpt-cli/chatgpt.db` on Linux (default `~/.local/share/chatgpt-cli/chatgpt.db`). Optional model keys live in `~/.config/chatgpt-cli/config.json`. These locations do not belong in Git.
 
 Local embedding does not send transcript text to Hugging Face. Classification and summarisation **do** send the relevant chat or saved-memory content to the configured model providers. Read [data, files and credentials](docs/reference/data.md) before using those features on sensitive conversations.
 

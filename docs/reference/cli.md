@@ -43,7 +43,7 @@ Commands:
   help          Print this message or the help of the given subcommand(s)
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
   -V, --version         Print version
@@ -60,7 +60,7 @@ Arguments:
   [provider]  jev, openai, or anthropic
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --remove          Remove the selected provider's stored key
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -74,7 +74,7 @@ Update the local index: new and changed chats, plus archive state
 Usage: chatgpt sync [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --full            Rebuild from scratch (also drops chats deleted in the browser)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -88,7 +88,7 @@ List conversations from the local index
 Usage: chatgpt list [OPTIONS]
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -115,7 +115,7 @@ Chat suggestions, brainstorms and topics, plus saved-memory suggestions
 Usage: chatgpt stats [OPTIONS]
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -142,7 +142,7 @@ Arguments:
   <QUERY>  
 
 Options:
-      --browser <name>   Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>   Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --semantic         Rank by local embedding similarity
       --hybrid           Combine full-text and semantic ranking
       --profile <name>   Use a browser profile directory (with --browser)
@@ -163,7 +163,7 @@ Usage: chatgpt search-index [OPTIONS]
 
 Options:
       --archived        Index archived conversations instead of active ones
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --all             Index both active and archived conversations
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -184,7 +184,7 @@ Commands:
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -197,7 +197,7 @@ List saved memories from ChatGPT
 Usage: chatgpt memory list [OPTIONS]
 
 Options:
-      --browser <name>   Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>   Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --search <text>    Only memories whose content contains text
       --limit <n>        At most n saved memories
       --profile <name>   Use a browser profile directory (with --browser)
@@ -213,7 +213,7 @@ Classify saved memories for keep, delete, or review with Jev and Luna; never del
 Usage: chatgpt memory classify [OPTIONS]
 
 Options:
-      --browser <name>    Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>    Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --suggest <action>  Show only keep, delete, or review
       --limit <n>         At most n results after filtering
       --profile <name>    Use a browser profile directory (with --browser)
@@ -230,7 +230,7 @@ Read ChatGPT's generated memory summary
 Usage: chatgpt memory summary [OPTIONS]
 
 Options:
-      --browser <name>   Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>   Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --format <format>  Output format: json or table [default: table]
       --profile <name>   Use a browser profile directory (with --browser)
   -h, --help             Print help
@@ -247,7 +247,7 @@ Arguments:
   <ids>...  Saved memory ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
   -n, --dry-run         Preview without deleting memories
       --profile <name>  Use a browser profile directory (with --browser)
   -y, --yes             Skip the confirmation prompt
@@ -270,7 +270,7 @@ Commands:
   help    Print this message or the help of the given subcommand(s)
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -286,7 +286,7 @@ Arguments:
   <name>  
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --json            Output JSON
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -300,7 +300,7 @@ List projects available to your account
 Usage: chatgpt project list [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --json            Output JSON
       --limit <n>       At most n projects
       --profile <name>  Use a browser profile directory (with --browser)
@@ -319,7 +319,7 @@ Arguments:
   <ids>...   Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
   -n, --dry-run         Preview without changing anything
       --profile <name>  Use a browser profile directory (with --browser)
   -y, --yes             Skip the confirmation prompt
@@ -340,7 +340,7 @@ Arguments:
   <ids>...   Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
   -n, --dry-run         Preview without changing anything
       --profile <name>  Use a browser profile directory (with --browser)
   -y, --yes             Skip the confirmation prompt
@@ -360,7 +360,7 @@ Arguments:
   <project>  Project name, id or id prefix
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
   -n, --dry-run         Preview without changing anything
       --profile <name>  Use a browser profile directory (with --browser)
   -y, --yes             Skip the confirmation prompt
@@ -378,7 +378,7 @@ Arguments:
   <LINK>  Chat link, id, or id prefix
 
 Options:
-      --browser <name>   Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>   Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
   -o, --output [<file>]  Write to a file (default name: from the title)
   -c, --copy             Copy to the clipboard
       --profile <name>   Use a browser profile directory (with --browser)
@@ -398,7 +398,7 @@ Arguments:
   [ids]...  Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -428,7 +428,7 @@ Arguments:
   [ids]...  Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -459,7 +459,7 @@ Arguments:
 
 Options:
       --archived        Allow an archived conversation
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --all             Allow either active or archived
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -476,7 +476,7 @@ Arguments:
   [ids]...  Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -502,7 +502,7 @@ Browse, filter and triage conversations in a terminal UI
 Usage: chatgpt tui [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -518,7 +518,7 @@ Arguments:
   [ids]...  Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -549,7 +549,7 @@ Arguments:
   [ids]...  Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -580,7 +580,7 @@ Arguments:
   [ids]...  Conversation ids or id prefixes, or `-` to read them from stdin
 
 Options:
-      --browser <name>       Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>       Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --older-than <age>     Last updated more than <age> ago (30d, 12w, 6m, 2y)
       --newer-than <age>     Last updated within <age>
       --profile <name>       Use a browser profile directory (with --browser)
@@ -613,7 +613,7 @@ Arguments:
 
 Options:
       --archived        Allow an archived conversation
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --all             Allow either active or archived
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -636,7 +636,7 @@ Commands:
   help       Print this message or the help of the given subcommand(s)
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -649,7 +649,7 @@ Show the daemon's state, starting it if it isn't running
 Usage: chatgpt daemon status [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --json            Output JSON
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
@@ -663,7 +663,7 @@ Stop the daemon
 Usage: chatgpt daemon stop [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -676,7 +676,7 @@ Print the daemon's log
 Usage: chatgpt daemon logs [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
   -f, --follow          Keep printing new lines as they're written
   -n, --lines <LINES>   How many of the last lines to print first [default: 50]
       --profile <name>  Use a browser profile directory (with --browser)
@@ -691,7 +691,7 @@ Start the daemon at login (writes a macOS LaunchAgent; doesn't load it)
 Usage: chatgpt daemon install [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -704,7 +704,7 @@ Stop starting the daemon at login (removes the LaunchAgent)
 Usage: chatgpt daemon uninstall [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```
@@ -717,7 +717,7 @@ Run the daemon in the foreground
 Usage: chatgpt daemon run [OPTIONS]
 
 Options:
-      --browser <name>  Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+      --browser <name>  Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
       --profile <name>  Use a browser profile directory (with --browser)
   -h, --help            Print help
 ```

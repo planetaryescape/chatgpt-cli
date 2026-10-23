@@ -20,6 +20,8 @@ Full sync: 45 chats (42 active, 3 archived), +45 vs before, in 3.9s.
 
 If you use a Chromium browser, macOS may ask for Keychain access to that browser's Safe Storage item the first time. Choose **Always Allow**, or it will ask again each time the daemon starts. Safari may require Full Disk Access for your terminal.
 
+On Linux, sign in to ChatGPT in native Chromium on that machine and keep its Secret Service keyring unlocked. Run `chatgpt --browser chromium sync` to select it explicitly. Initial sign-in needs a local or remote desktop, including when you otherwise use the machine over SSH.
+
 Check the index:
 
 ```sh

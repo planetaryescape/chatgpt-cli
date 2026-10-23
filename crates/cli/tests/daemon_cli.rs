@@ -253,11 +253,7 @@ fn a_retired_request_from_an_older_client_gets_an_error_not_a_hang() {
 }
 
 fn paths(env: &Env) -> chatgpt_core::Paths {
-    chatgpt_core::Paths::under(
-        chatgpt_core::Instance::Named("dev".into()),
-        &env.home.path().join("Library/Application Support"),
-        None,
-    )
+    env.paths("dev")
 }
 
 fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
@@ -294,7 +290,7 @@ fn stuck_daemon(env: &Env, marker: &str) -> (std::process::Child, u32) {
         .env("CHATGPT_TEST_STALL_STARTUP", &marker)
         .spawn()
         .unwrap();
-    let pid_file = env.data_dir().join("run/daemon.pid");
+    let pid_file = env.paths("dev").pid_file();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if marker.exists() {
@@ -455,7 +451,7 @@ fn a_probe_that_fails_after_a_replacement_never_stops_the_replacement() {
     // request times out (A's connection stays with the silent listener,
     // whose socket file the new daemon replaces).
     let mut replacement = env.std_cmd().args(["daemon", "run"]).spawn().unwrap();
-    let pid_file = env.data_dir().join("run/daemon.pid");
+    let pid_file = env.paths("dev").pid_file();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let new_pid: u32 = loop {
         let named = std::fs::read_to_string(&pid_file)

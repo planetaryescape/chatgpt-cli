@@ -14,7 +14,7 @@ use clap::{Args, Parser, Subcommand};
     arg_required_else_help = true
 )]
 pub struct Cli {
-    /// Use a specific browser: dia, chrome, safari, firefox, arc, brave, or edge
+    /// Use a specific browser (Linux: chromium; macOS: dia, chrome, safari, firefox, arc, brave, or edge)
     #[arg(long, global = true, value_name = "name")]
     pub browser: Option<String>,
     /// Use a browser profile directory (with --browser)

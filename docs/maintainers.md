@@ -33,6 +33,8 @@ Don't set `RUSTFLAGS`: it replaces the `reqwest_unstable` cfg in `.cargo/config.
 
 Tests use temporary SQLite fixtures and never call chatgpt.com, TypeSafe or a summariser. `PATH` holds only stand-in `codex` and `claude` (the debug binary's hidden `__fake-model-cli`) and the system's own directories, and the API base URLs point at fakes (`TYPESAFE_BASE_URL`, `CHATGPT_TEST_OPENAI_URL`, `CHATGPT_TEST_ANTHROPIC_URL` and the other `CHATGPT_TEST_*` overrides, honoured by debug builds only). Debug builds run as the `dev` instance (`~/Library/Application Support/chatgpt-cli-dev`), so a local build never touches the installed daemon.
 
+CI runs the workspace checks on macOS and Linux x86_64. The Linux job links and executes the binary on Ubuntu 22.04 (glibc 2.35), runs the PTY tests with Linux `script` arguments, and uploads a one-day candidate artifact for a pre-release live smoke. Linux cookie fixtures run on both hosts through explicit platform inputs; they never read a real desktop keyring. Run the isolated installer checks with `python3 -m unittest discover -s tests -p test_install.py -v`.
+
 For anything touching the API, rendering or classification, also run the real command against your own account:
 
 ```sh
@@ -48,6 +50,8 @@ Before a change to the TUI, run `cargo nextest run -p chatgpt-tui` (keys and scr
 ### Output pinned from the TS CLI
 
 The CLI began as a TypeScript one, and the Rust port matched its output byte for byte. The parity harnesses that proved it ran both CLIs; most of them still live only in tag `v0.1.5` (see [The parity harness](#the-parity-harness) below). What the TS CLI printed in their last run is frozen in `crates/cli/tests/golden/*.jsonl`, and `crates/cli/tests/golden.rs` builds the same data for the Rust CLI alone and requires the same output: `list` and `stats` over 120 synthetic chats with every kind of verdict, and `export` plus lexical, semantic, hybrid and remote `search` over rich conversation trees (`crates/fake-chatgpt/src/fixtures.rs`). For an intended change, `CHATGPT_UPDATE_GOLDEN=1 cargo nextest run -p chatgpt-cli --test golden` rewrites the files; read the diff and give the reason in the commit. Deliberate changes so far: search chunks and snippets never hold half an emoji (`CHUNK_VERSION` 2); equal semantic scores are ordered by chat id (stage 7).
+
+On Linux, lexical JSON/CSV search scores may differ from the macOS golden by at most four floating-point units in the last place: SQLite's BM25 calls the platform C `log` function. Only those numeric score tokens get this allowance; every other output byte and result order must still match. macOS comparisons and the golden files remain unchanged. The comparator has negative controls for changed scores, content, order and formatting.
 
 `crates/cli/tests/upgrade_cli.rs` opens an index made by v0.1.5 (`fixtures/v0.1.5.db`, synthetic chats only) with the current daemon and checks every row survives, `native_rows` is dropped, and the transcripts (rendered at version 2) are fetched again from the fake chatgpt.com and chunked.
 
@@ -151,7 +155,7 @@ The database holds private conversations that mention other people.
 
 Settle these with the owner before changing them.
 
-- **Auth comes from a local browser session.** Use the macOS default browser unless `--browser` and `--profile` select another source. Do not silently fall back to another browser, which may be logged into a different account. No separate login flow or stored ChatGPT tokens.
+- **Auth comes from a local browser session.** Use a supported system HTTPS default browser unless `--browser` and `--profile` select another source. Linux supports native Chromium with Secret Service; macOS supports the browsers listed below. Do not silently fall back to another browser, which may be logged into a different account. No separate login flow or stored ChatGPT tokens.
 - **HTTP goes through `impit`.** Plain fetch and curl are blocked by Cloudflare. Headless Chrome was challenged too; a visible browser works but can't run for every command.
 - **Model credentials.** Environment variables take precedence over `~/.config/chatgpt-cli/config.json`. A configured OpenAI or Anthropic key replaces that provider's subscription CLI for model work. Without those keys, summaries try Codex `gpt-6-luna`, then `claude -p --model haiku`.
 - **Memory classification.** The saved-memory rubric and version are separate from chat classification; see `docs/reference/memory-classification.md`. Quick decisions can only keep or route to Luna. Every delete suggestion needs Luna review. Do not infer memory staleness from an archived source chat.
@@ -164,7 +168,7 @@ Settle these with the owner before changing them.
 
 ## Out of scope
 
-- Other operating systems for browser-session auth. macOS supports Safari, Chrome, Firefox, Dia, Arc, Brave and Edge.
+- Browser-session auth beyond macOS and Linux Chromium with Secret Service. macOS supports Safari, Chrome, Firefox, Dia, Arc, Brave and Edge. Other Linux browsers, KWallet, sandboxed browser packages and terminal-only login are out of scope. Linux distribution is x86_64 glibc only; Linux ARM64, musl, systemd login startup and Linux desktop copy/open actions are not implemented.
 - Sending messages or starting chats. Verified 2026-09-28: a send without sentinel tokens gets `403 Unusual activity has been detected from your device`, and the tokens need Turnstile and fingerprinting programs that only a real browser runs. See [The chatgpt.com web API](explanation/chatgpt-api.md#sending-messages).
 - Shared links (`/share/…`).
 - A web UI.

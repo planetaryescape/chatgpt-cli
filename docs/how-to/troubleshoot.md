@@ -17,6 +17,19 @@ The selected browser profile has no usable chatgpt.com session.
 1. Open chatgpt.com in your browser and log in.
 2. Run `chatgpt sync`. If you use several browsers or profiles, choose one: `chatgpt --browser chrome --profile "Profile 1" sync`.
 
+On Linux, select native Chromium: `chatgpt --browser chromium --profile Default sync`. Sign in through a local or remote desktop on the Linux machine itself. A login in your Mac's browser does not create a session on a remote Linux machine.
+
+## Linux cannot read Chromium Safe Storage
+
+```sh
+command -v secret-tool
+chatgpt --browser chromium sync
+```
+
+Install `secret-tool` if it is missing, unlock the Chromium user's Secret Service keyring, and retry from that desktop user's session. The lookup stops after 30 seconds if it cannot finish. SSH sessions need access to that user's desktop session bus and unlocked keyring. Keep secret values out of terminal output; do not run the key lookup yourself to diagnose it.
+
+Linux currently supports native Chromium with Secret Service. KWallet and sandboxed browser packages need a different integration and are not supported.
+
 ## Safari cookies are blocked by macOS
 
 Grant Full Disk Access to the terminal app running `chatgpt`, then retry `chatgpt --browser safari sync`. Safari stores cookies in its protected application container.
