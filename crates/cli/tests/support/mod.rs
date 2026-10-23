@@ -81,6 +81,7 @@ impl Env {
             .env("PATH", tools_path(&self.tools))
             .env("XDG_DATA_HOME", home.join("xdg-data"))
             .env("XDG_CONFIG_HOME", home.join("xdg-config"))
+            .env("XDG_RUNTIME_DIR", home.join("xdg-run"))
             // The embedding model's cache: never the developer's.
             .env("XDG_CACHE_HOME", home.join("xdg-cache"))
             .env("CHATGPT_TEST_FAST_RETRY", "1")
@@ -195,13 +196,25 @@ impl Env {
     }
 
     pub fn data_dir(&self) -> PathBuf {
-        self.home
-            .path()
-            .join("Library/Application Support/chatgpt-cli-dev")
+        self.paths("dev").data_dir
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.data_dir().join("run/daemon.sock")
+        self.paths("dev").socket_path()
+    }
+
+    pub fn paths(&self, instance: &str) -> chatgpt_core::Paths {
+        let home = self.home.path();
+        let (data, runtime) = if cfg!(target_os = "macos") {
+            (home.join("Library/Application Support"), None)
+        } else {
+            (home.join("xdg-data"), Some(home.join("xdg-run")))
+        };
+        chatgpt_core::Paths::under(
+            chatgpt_core::Instance::Named(instance.into()),
+            &data,
+            runtime.as_deref(),
+        )
     }
 
     /// The daemon's own index, to write fixtures into. It exists once the
@@ -293,7 +306,11 @@ impl Pty {
             None => format!("stty rows {rows} cols {cols}; {pipe}exec {command}"),
         };
         let mut command = std::process::Command::new("script");
-        command.args(["-q", "/dev/null", "/bin/sh", "-c", &script]);
+        if cfg!(target_os = "linux") {
+            command.args(["-q", "-e", "-f", "-c", &script, "/dev/null"]);
+        } else {
+            command.args(["-q", "/dev/null", "/bin/sh", "-c", &script]);
+        }
         for (name, value) in template.get_envs() {
             match value {
                 Some(value) => command.env(name, value),

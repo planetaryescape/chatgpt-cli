@@ -538,10 +538,7 @@ fn a_metadata_only_change_keeps_judgments_current_after_indexing() {
     let mut env = Env::with_fake(chats());
     env.extra_env
         .push(("CHATGPT_INSTANCE".into(), "s2move".into()));
-    let data = env
-        .home
-        .path()
-        .join("Library/Application Support/chatgpt-cli-s2move/chatgpt.db");
+    let data = env.paths("s2move").database_file();
     env.cmd().arg("sync").assert().success();
     wait_indexed(&env);
     let old = "2026-09-26T10:00:00.000000Z";
