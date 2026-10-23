@@ -7,6 +7,7 @@ Where `chatgpt` keeps data, which credentials it reads, and what it sends to whi
 | Path | Contents |
 |---|---|
 | `~/Library/Application Support/chatgpt-cli/` | The daemon's directory (0700): `chatgpt.db`, the SQLite database (0600) with the chat index, cached transcripts, search index and embeddings, summaries, judgments and local titles; `run/` (socket, pid file and lock); and `logs/` (one log a day, seven kept). `CHATGPT_INSTANCE=<name>` uses `chatgpt-cli-<name>` instead; debug builds use `chatgpt-cli-dev` |
+| `$XDG_DATA_HOME/chatgpt-cli/` (Linux, default `~/.local/share/chatgpt-cli/`) | The same database and logs as on macOS. Socket, pid file and lock live in `$XDG_RUNTIME_DIR/chatgpt-cli/` when a runtime directory is available, otherwise in the data directory's `run/`. Named and debug instances use the same suffixes as on macOS |
 | `~/.cache/chatgpt-cli/models` | Downloaded local embedding model. Set `XDG_CACHE_HOME` to move it to `$XDG_CACHE_HOME/chatgpt-cli/models` |
 | `~/.config/chatgpt-cli/config.json` | Optional Jev, OpenAI, and Anthropic API keys saved by `chatgpt configure`, owner-readable only. Set `XDG_CONFIG_HOME` to move it |
 
@@ -55,6 +56,8 @@ sqlite3 ~/Library/Application\ Support/chatgpt-cli/chatgpt.db "select model, cou
 | `CHATGPT_INSTANCE` | another daemon and index, `chatgpt-cli-<name>` (one account per instance) | the installed instance |
 | `CHATGPT_LOG` | the daemon's log filter (`RUST_LOG` syntax) | `info` |
 | `XDG_CACHE_HOME` | where the embedding model is cached | `~/.cache` |
+| `XDG_DATA_HOME` | Linux daemon data directory parent | `~/.local/share` |
+| `XDG_RUNTIME_DIR` | Linux daemon socket, pid file and lock directory parent | data directory's `run/` when unavailable |
 | `PAGER` | `v` (view) in `chatgpt review` and `chatgpt tui`; it gets the transcript without control characters other than newlines and tabs | `less` |
 
 ## Credentials

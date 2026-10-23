@@ -2,7 +2,7 @@
 
 ## Choose a ChatGPT browser
 
-`chatgpt` uses the macOS default browser unless you select another one. Put global flags before the command:
+`chatgpt` uses a supported system HTTPS default browser unless you select another one. Linux supports native Chromium with Secret Service; use `--browser chromium`. Put global flags before the command:
 
 ```sh
 chatgpt --browser chrome sync
